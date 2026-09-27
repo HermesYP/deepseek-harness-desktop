@@ -1,0 +1,40 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "DeepSeek Harness",
+  "version": "0.1.7-rc.2",
+  "identifier": "ai.deepseek.harness.desktop",
+  "build": {
+    "beforeDevCommand": "",
+    "beforeBuildCommand": "",
+    "frontendDist": "../../ui/dist"
+  },
+  "app": {
+    "withGlobalTauri": true,
+    "windows": [],
+    "security": {
+      "csp": null
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": ["nsis"],
+    "icon": ["icons/icon.ico", "icons/icon.png"],
+    "resources": {
+      "../../ui/dist/": "ui/",
+      "../../runtime-payload/dsh/": "dsh/"
+    },
+    "publisher": "DeepSeek",
+    "category": "Productivity",
+    "shortDescription": "DeepSeek Harness Desktop",
+    "longDescription": "DeepSeek Harness Desktop — the DeepSeek Harness agent harness as a desktop application.",
+    "copyright": "Copyright © DeepSeek",
+    "windows": {
+      "nsis": {
+        "installMode": "currentUser",
+        "languages": ["SimpChinese", "English"],
+        "displayLanguageSelector": true,
+        "startMenuFolder": "DeepSeek Harness"
+      }
+    }
+  }
+}

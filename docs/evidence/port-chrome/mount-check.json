@@ -1,0 +1,35 @@
+{
+  "cdp": "http://127.0.0.1:9222",
+  "url": "http://127.0.0.1:49173/",
+  "mounted": true,
+  "state": {
+    "title": "DeepSeek Harness",
+    "lang": "en",
+    "platformMarker": "win32",
+    "windowsTitlebar": null,
+    "themeSource": "system",
+    "rootChildren": 1,
+    "pluginStyles": 138,
+    "hasBootGlobal": true,
+    "hasModuleLoader": true,
+    "hasDesktopBoot": true,
+    "hasDesktopMarker": true,
+    "hasHostPaths": false,
+    "hasNewSession": true,
+    "hasComposerHint": true,
+    "hasSettingsText": false,
+    "hasSettingsControl": false,
+    "sidebarLabels": [
+      "New SessionCtrl+N",
+      "Plugins",
+      "More",
+      "Default workspace",
+      "Standard mode",
+      "Workspace Write",
+      "DeepSeek-V41-FlashHigh"
+    ],
+    "bootText": null,
+    "textSample": "New Session\nCtrl\n+\nN\nPlugins\nWorkspaces\nDefault workspace\nNew Session\nMore\nInto the Unknown\nPreview\nDefault workspace\nStandard mode\nDescribe what you want to build, / commands, @ files or sessions\nWorkspace Write\nDeepSeek-V41-Flash\nHigh"
+  },
+  "consoleErrors": []
+}

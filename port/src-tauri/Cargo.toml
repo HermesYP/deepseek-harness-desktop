@@ -1,0 +1,96 @@
+[workspace]
+resolver = "2"
+members = [
+  "crates/dsh-core",
+  "crates/dsh-runtime",
+  "crates/dsh-gateway",
+  "app",
+]
+
+[workspace.package]
+version = "0.1.7-rc.2"
+edition = "2021"
+license = "MIT"
+repository = "https://github.com/deepseek-ai/deepseek-harness"
+publish = false
+
+[workspace.dependencies]
+# --- serialization / typing ---
+serde = { version = "1", features = ["derive"] }
+# `preserve_order`: `IndexInjection.global` values are `unknown` on the wire and
+# must round-trip byte-identically with the TypeScript mirror (JSON.stringify
+# preserves key order).
+serde_json = { version = "1", features = ["preserve_order"] }
+thiserror = "2"
+
+# --- async runtime ---
+tokio = { version = "1", features = [
+  "rt-multi-thread",
+  "macros",
+  "sync",
+  "time",
+  "process",
+  "io-util",
+  "io-std",
+  "net",
+  "signal",
+  "fs",
+] }
+futures-util = "0.3"
+
+# --- HTTP / WebSocket gateway ---
+axum = { version = "0.8", features = ["ws"] }
+reqwest = { version = "0.12", default-features = false, features = [
+  "json",
+  "stream",
+  "rustls-tls",
+  # Transparent decompression. The proxy withholds `content-encoding` from the
+  # renderer, matching Electron whose network stack decompresses the body
+  # (`apps/desktop/src/web-document.ts:58-62`). Without these features reqwest
+  # forwards the body STILL COMPRESSED while the header is withheld, so the
+  # browser parses gzip bytes as JavaScript, the classic <script> fires onload
+  # anyway, nothing registers, and create() throws `client-modules: HTML did not
+  # preload @deepseek-ai/dsh-client-modules/client.js` (finding F-33).
+  "gzip",
+  "brotli",
+  "deflate",
+] }
+tokio-tungstenite = "0.26"
+mime_guess = "2"
+
+# --- desktop ---
+tauri = { version = "2", features = ["tray-icon", "image-png", "image-ico", "devtools"] }
+tauri-plugin-dialog = "2"
+tauri-plugin-clipboard-manager = "2"
+tauri-plugin-opener = "2"
+tauri-plugin-single-instance = "2"
+
+# --- OS-backed credential storage (Windows Credential Manager / macOS Keychain / Linux Secret Service) ---
+keyring = { version = "3", features = ["windows-native", "apple-native", "sync-secret-service"] }
+
+# --- crypto (browser-session cookie signing; secrets stay in the OS credential store) ---
+sha2 = "0.10"
+hmac = "0.12"
+subtle = "2"
+getrandom = "0.3"
+
+# --- misc ---
+uuid = { version = "1", features = ["v4"] }
+chrono = { version = "0.4", features = ["serde"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
+tracing-appender = "0.2"
+dirs = "6"
+fs4 = "0.12"
+base64 = "0.22"
+url = "2"
+
+[profile.release]
+codegen-units = 1
+lto = "fat"
+opt-level = "s"
+panic = "abort"
+strip = true
+
+[profile.dev]
+opt-level = 0

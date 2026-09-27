@@ -1,0 +1,521 @@
+{
+  "generatedAt": "2026-09-24T15:29:46.823Z",
+  "referenceRoot": "C:\\Users\\Yoova\\OneDrive\\Dokumen\\Coding\\dsh\\docs\\evidence\\reference",
+  "portRoot": "C:\\Users\\Yoova\\OneDrive\\Dokumen\\Coding\\dsh\\docs\\evidence\\reference",
+  "trackedFacts": [
+    "title",
+    "lang",
+    "landmarkCount",
+    "fonts",
+    "textSample"
+  ],
+  "counts": {
+    "identical": 56,
+    "action-error": 20
+  },
+  "totals": {
+    "compared": 76
+  },
+  "rows": [
+    {
+      "id": "desktop-1280x800/light/00-boot",
+      "verdict": "identical",
+      "differences": []
+    },
+    {
+      "id": "desktop-1280x800/light/01-onboarding-notice",
+      "verdict": "identical",
+      "differences": []
+    },
+    {
+      "id": "desktop-1280x800/light/02-notice-dismissed",
+      "verdict": "action-error",
+      "differences": [
+        "actionError"
+      ],
+      "note": {
+        "reference": "TimeoutError: locator.click: Timeout 2500ms exceeded.\nCall log:\n\u001b[2m  - waiting for locator('button:has-text(\"Continue\")').first()\u001b[22m\n\u001b[2m    - locator resolved to <button disabled type=\"button\" class=\"szVqxa_primaryButton\">Save and continue</button>\u001b[22m\n\u001b[2m  - attempting click action\u001b[22m\n\u001b[2m    2 × waiting for element to be visible, enabled and stable\u001b[22m\n\u001b[2m      - element is not enabled\u001b[22m\n\u001b[2m    - retrying click action\u001b[22m\n\u001b[2m    - waiting 20ms\u001b[22m\n\u001b[2m    2 × waiting for element to be visible, enabled and stable\u001b[22m\n\u001b[2m      - element is not enabled\u001b[22m\n\u001b[2m    - retrying click action\u001b[22m\n\u001b[2m      - waiting 100ms\u001b[22m\n\u001b[2m    5 × waiting for element to be visible, enabled and stable\u001b[22m\n\u001b[2m      - element is not enabled\u001b[22m\n\u001b[2m    - retrying click action\u001b[22m\n\u001b[2m      - waiting 500ms\u001b[22m\n",
+        "port": "TimeoutError: locator.click: Timeout 2500ms exceeded.\nCall log:\n\u001b[2m  - waiting for locator('button:has-text(\"Continue\")').first()\u001b[22m\n\u001b[2m    - locator resolved to <button disabled type=\"button\" class=\"szVqxa_primaryButton\">Save and continue</button>\u001b[22m\n\u001b[2m  - attempting click action\u001b[22m\n\u001b[2m    2 × waiting for element to be visible, enabled and stable\u001b[22m\n\u001b[2m      - element is not enabled\u001b[22m\n\u001b[2m    - retrying click action\u001b[22m\n\u001b[2m    - waiting 20ms\u001b[22m\n\u001b[2m    2 × waiting for element to be visible, enabled and stable\u001b[22m\n\u001b[2m      - element is not enabled\u001b[22m\n\u001b[2m    - retrying click action\u001b[22m\n\u001b[2m      - waiting 100ms\u001b[22m\n\u001b[2m    5 × waiting for element to be visible, enabled and stable\u001b[22m\n\u001b[2m      - element is not enabled\u001b[22m\n\u001b[2m    - retrying click action\u001b[22m\n\u001b[2m      - waiting 500ms\u001b[22m\n"
+      }
+    },
+    {
+      "id": "desktop-1280x800/light/03-empty-session",
+      "verdict": "identical",
+      "differences": []
+    },
+    {
+      "id": "desktop-1280x800/light/04-focus-composer",
+      "verdict": "identical",
+      "differences": []
+    },
+    {
+      "id": "desktop-1280x800/light/05-composer-typed",
+      "verdict": "identical",
+      "differences": []
+    },
+    {
+      "id": "desktop-1280x800/light/06-mode-menu",
+      "verdict": "identical",
+      "differences": []
+    },
+    {
+      "id": "desktop-1280x800/light/07-mode-dismiss",
+      "verdict": "action-error",
+      "differences": [
+        "actionError"
+      ],
+      "note": {
+        "reference": "TimeoutError: locator.click: Timeout 2500ms exceeded.\nCall log:\n\u001b[2m  - waiting for locator('button:has-text(\"Workspace Write\")').first()\u001b[22m\n\u001b[2m    - locator resolved to <button type=\"button\" class=\"WPyIlq_trigger\" aria-label=\"Access mode, current: Workspace Write\">…</button>\u001b[22m\n\u001b[2m  - attempting click action\u001b[22m\n\u001b[2m    2 × waiting for element to be visible, enabled and stable\u001b[22m\n\u001b[2m      - element is visible, enabled and stable\u001b[22m\n\u001b[2m      - scrolling into view if needed\u001b[22m\n\u001b[2m      - done scrolling\u001b[22m\n\u001b[2m      - <div class=\"szVqxa_editorActions\">…</div> from <div role=\"presentation\" class=\"_root_17i0t_6\">…</div> subtree intercepts pointer events\u001b[22m\n\u001b[2m    - retrying click action\u001b[22m\n\u001b[2m    - waiting 20ms\u001b[22m\n\u001b[2m    - waiting for element to be visible, enabled and stable\u001b[22m\n\u001b[2m    - element is visible, enabled and stable\u001b[22m\n\u001b[2m    - scrolling into view if needed\u001b[22m\n\u001b[2m    - done scrolling\u001b[22m\n\u001b[2m    - <div class=\"szVqxa_editorActions\">…</div> from <div role=\"presentation\" class=\"_root_17i0t_6\">…</div> subtree intercepts pointer events\u001b[22m\n\u001b[2m  2 × retrying click action\u001b[22m\n\u001b[2m      - waiting 100ms\u001b[22m\n\u001b[2m      - waiting for element to be visible, enabled and stable\u001b[22m\n\u001b[2m      - element is visible, enabled and stable\u001b[22m\n\u001b[2m      - scrolling into view if needed\u001b[22m\n\u001b[2m      - done scrolling\u001b[22m\n\u001b[2m      - <div aria-hidden=\"true\" class=\"_mask_17i0t_18\"></div> from <div role=\"presentation\" class=\"_root_17i0t_6\">…</div> subtree intercepts pointer events\u001b[22m\n\u001b[2m  2 × retrying click action\u001b[22m\n\u001b[2m      - waiting 500ms\u001b[22m\n\u001b[2m      - waiting for element to be visible, enabled and stable\u001b[22m\n\u001b[2m      - element is visible, enabled and stable\u001b[22m\n\u001b[2m      - scrolling into view if needed\u001b[22m\n\u001b[2m      - done scrolling\u001b[22m\n\u001b[2m      - <div class=\"szVqxa_editorActions\">…</div> from <div role=\"presentation\" class=\"_root_17i0t_6\">…</div> subtree intercepts pointer events\u001b[22m\n\u001b[2m  2 × retrying click action\u001b[22m\n\u001b[2m      - waiting 500ms\u001b[22m\n\u001b[2m      - waiting for element to be visible, enabled and stable\u001b[22m\n\u001b[2m      - element is visible, enabled and stable\u001b[22m\n\u001b[2m      - scrolling into view if needed\u001b[22m\n\u001b[2m      - done scrolling\u001b[22m\n\u001b[2m      - <div aria-hidden=\"true\" class=\"_mask_17i0t_18\"></div> from <div role=\"presentation\" class=\"_root_17i0t_6\">…</div> subtree intercepts pointer events\u001b[22m\n\u001b[2m  - retrying click action\u001b[22m\n\u001b[2m    - waiting 500ms\u001b[22m\n",
+        "port": "TimeoutError: locator.click: Timeout 2500ms exceeded.\nCall log:\n\u001b[2m  - waiting for locator('button:has-text(\"Workspace Write\")').first()\u001b[22m\n\u001b[2m    - locator resolved to <button type=\"button\" class=\"WPyIlq_trigger\" aria-label=\"Access mode, current: Workspace Write\">…</button>\u001b[22m\n\u001b[2m  - attempting click action\u001b[22m\n\u001b[2m    2 × waiting for element to be visible, enabled and stable\u001b[22m\n\u001b[2m      - element is visible, enabled and stable\u001b[22m\n\u001b[2m      - scrolling into view if needed\u001b[22m\n\u001b[2m      - done scrolling\u001b[22m\n\u001b[2m      - <div class=\"szVqxa_editorActions\">…</div> from <div role=\"presentation\" class=\"_root_17i0t_6\">…</div> subtree intercepts pointer events\u001b[22m\n\u001b[2m    - retrying click action\u001b[22m\n\u001b[2m    - waiting 20ms\u001b[22m\n\u001b[2m    - waiting for element to be visible, enabled and stable\u001b[22m\n\u001b[2m    - element is visible, enabled and stable\u001b[22m\n\u001b[2m    - scrolling into view if needed\u001b[22m\n\u001b[2m    - done scrolling\u001b[22m\n\u001b[2m    - <div class=\"szVqxa_editorActions\">…</div> from <div role=\"presentation\" class=\"_root_17i0t_6\">…</div> subtree intercepts pointer events\u001b[22m\n\u001b[2m  2 × retrying click action\u001b[22m\n\u001b[2m      - waiting 100ms\u001b[22m\n\u001b[2m      - waiting for element to be visible, enabled and stable\u001b[22m\n\u001b[2m      - element is visible, enabled and stable\u001b[22m\n\u001b[2m      - scrolling into view if needed\u001b[22m\n\u001b[2m      - done scrolling\u001b[22m\n\u001b[2m      - <div aria-hidden=\"true\" class=\"_mask_17i0t_18\"></div> from <div role=\"presentation\" class=\"_root_17i0t_6\">…</div> subtree intercepts pointer events\u001b[22m\n\u001b[2m  2 × retrying click action\u001b[22m\n\u001b[2m      - waiting 500ms\u001b[22m\n\u001b[2m      - waiting for element to be visible, enabled and stable\u001b[22m\n\u001b[2m      - element is visible, enabled and stable\u001b[22m\n\u001b[2m      - scrolling into view if needed\u001b[22m\n\u001b[2m      - done scrolling\u001b[22m\n\u001b[2m      - <div class=\"szVqxa_editorActions\">…</div> from <div role=\"presentation\" class=\"_root_17i0t_6\">…</div> subtree intercepts pointer events\u001b[22m\n\u001b[2m  2 × retrying click action\u001b[22m\n\u001b[2m      - waiting 500ms\u001b[22m\n\u001b[2m      - waiting for element to be visible, enabled and stable\u001b[22m\n\u001b[2m      - element is visible, enabled and stable\u001b[22m\n\u001b[2m      - scrolling into view if needed\u001b[22m\n\u001b[2m      - done scrolling\u001b[22m\n\u001b[2m      - <div aria-hidden=\"true\" class=\"_mask_17i0t_18\"></div> from <div role=\"presentation\" class=\"_root_17i0t_6\">…</div> subtree intercepts pointer events\u001b[22m\n\u001b[2m  - retrying click action\u001b[22m\n\u001b[2m    - waiting 500ms\u001b[22m\n"
+      }
+    },
+    {
+      "id": "desktop-1280x800/light/08-model-picker",
+      "verdict": "identical",
+      "differences": []
+    },
+    {
+      "id": "desktop-1280x800/light/09-model-dismiss",
+      "verdict": "identical",
+      "differences": []
+    },
+    {
+      "id": "desktop-1280x800/light/10-plugins-page",
+      "verdict": "identical",
+      "differences": []
+    },
+    {
+      "id": "desktop-1280x800/light/11-sidebar-new-session",
+      "verdict": "identical",
+      "differences": []
+    },
+    {
+      "id": "desktop-1280x800/light/12-settings-open",
+      "verdict": "action-error",
+      "differences": [
+        "actionError"
+      ],
+      "note": {
+        "reference": "TimeoutError: locator.click: Timeout 2500ms exceeded.\nCall log:\n\u001b[2m  - waiting for locator('button:has-text(\"Plugins\"), a:has-text(\"Plugins\")').first()\u001b[22m\n\u001b[2m    - locator resolved to <button type=\"button\" aria-label=\"Plugins\" class=\"I4uGiW_panelRow\">…</button>\u001b[22m\n\u001b[2m  - attempting click action\u001b[22m\n\u001b[2m    2 × waiting for element to be visible, enabled and stable\u001b[22m\n\u001b[2m      - element is visible, enabled and stable\u001b[22m\n\u001b[2m      - scrolling into view if needed\u001b[22m\n\u001b[2m      - done scrolling\u001b[22m\n\u001b[2m      - <div aria-hidden=\"true\" class=\"_mask_17i0t_18\"></div> from <div role=\"presentation\" class=\"_root_17i0t_6\">…</div> subtree intercepts pointer events\u001b[22m\n\u001b[2m    - retrying click action\u001b[22m\n\u001b[2m    - waiting 20ms\u001b[22m\n\u001b[2m    2 × waiting for element to be visible, enabled and stable\u001b[22m\n\u001b[2m      - element is visible, enabled and stable\u001b[22m\n\u001b[2m      - scrolling into view if needed\u001b[22m\n\u001b[2m      - done scrolling\u001b[22m\n\u001b[2m      - <div aria-hidden=\"true\" class=\"_mask_17i0t_18\"></div> from <div role=\"presentation\" class=\"_root_17i0t_6\">…</div> subtree intercepts pointer events\u001b[22m\n\u001b[2m    - retrying click action\u001b[22m\n\u001b[2m      - waiting 100ms\u001b[22m\n\u001b[2m    5 × waiting for element to be visible, enabled and stable\u001b[22m\n\u001b[2m      - element is visible, enabled and stable\u001b[22m\n\u001b[2m      - scrolling into view if needed\u001b[22m\n\u001b[2m      - done scrolling\u001b[22m\n\u001b[2m      - <div aria-hidden=\"true\" class=\"_mask_17i0t_18\"></div> from <div role=\"presentation\" class=\"_root_17i0t_6\">…</div> subtree intercepts pointer events\u001b[22m\n\u001b[2m    - retrying click action\u001b[22m\n\u001b[2m      - waiting 500ms\u001b[22m\n",
+        "port": "TimeoutError: locator.click: Timeout 2500ms exceeded.\nCall log:\n\u001b[2m  - waiting for locator('button:has-text(\"Plugins\"), a:has-text(\"Plugins\")').first()\u001b[22m\n\u001b[2m    - locator resolved to <button type=\"button\" aria-label=\"Plugins\" class=\"I4uGiW_panelRow\">…</button>\u001b[22m\n\u001b[2m  - attempting click action\u001b[22m\n\u001b[2m    2 × waiting for element to be visible, enabled and stable\u001b[22m\n\u001b[2m      - element is visible, enabled and stable\u001b[22m\n\u001b[2m      - scrolling into view if needed\u001b[22m\n\u001b[2m      - done scrolling\u001b[22m\n\u001b[2m      - <div aria-hidden=\"true\" class=\"_mask_17i0t_18\"></div> from <div role=\"presentation\" class=\"_root_17i0t_6\">…</div> subtree intercepts pointer events\u001b[22m\n\u001b[2m    - retrying click action\u001b[22m\n\u001b[2m    - waiting 20ms\u001b[22m\n\u001b[2m    2 × waiting for element to be visible, enabled and stable\u001b[22m\n\u001b[2m      - element is visible, enabled and stable\u001b[22m\n\u001b[2m      - scrolling into view if needed\u001b[22m\n\u001b[2m      - done scrolling\u001b[22m\n\u001b[2m      - <div aria-hidden=\"true\" class=\"_mask_17i0t_18\"></div> from <div role=\"presentation\" class=\"_root_17i0t_6\">…</div> subtree intercepts pointer events\u001b[22m\n\u001b[2m    - retrying click action\u001b[22m\n\u001b[2m      - waiting 100ms\u001b[22m\n\u001b[2m    5 × waiting for element to be visible, enabled and stable\u001b[22m\n\u001b[2m      - element is visible, enabled and stable\u001b[22m\n\u001b[2m      - scrolling into view if needed\u001b[22m\n\u001b[2m      - done scrolling\u001b[22m\n\u001b[2m      - <div aria-hidden=\"true\" class=\"_mask_17i0t_18\"></div> from <div role=\"presentation\" class=\"_root_17i0t_6\">…</div> subtree intercepts pointer events\u001b[22m\n\u001b[2m    - retrying click action\u001b[22m\n\u001b[2m      - waiting 500ms\u001b[22m\n"
+      }
+    },
+    {
+      "id": "desktop-1280x800/light/13-settings-dismiss",
+      "verdict": "identical",
+      "differences": []
+    },
+    {
+      "id": "desktop-1280x800/light/14-sidebar-toggle",
+      "verdict": "action-error",
+      "differences": [
+        "actionError"
+      ],
+      "note": {
+        "reference": "TimeoutError: locator.click: Timeout 2500ms exceeded.\nCall log:\n\u001b[2m  - waiting for locator('button:has-text(\"New Session\")').first()\u001b[22m\n\u001b[2m    - locator resolved to <button type=\"button\" aria-label=\"New session\" class=\"I4uGiW_newSession\" aria-keyshortcuts=\"Control+Alt+N\">…</button>\u001b[22m\n\u001b[2m  - attempting click action\u001b[22m\n\u001b[2m    2 × waiting for element to be visible, enabled and stable\u001b[22m\n\u001b[2m      - element is visible, enabled and stable\u001b[22m\n\u001b[2m      - scrolling into view if needed\u001b[22m\n\u001b[2m      - done scrolling\u001b[22m\n\u001b[2m      - <div aria-hidden=\"true\" class=\"_mask_17i0t_18\"></div> from <div role=\"presentation\" class=\"_root_17i0t_6\">…</div> subtree intercepts pointer events\u001b[22m\n\u001b[2m    - retrying click action\u001b[22m\n\u001b[2m    - waiting 20ms\u001b[22m\n\u001b[2m    2 × waiting for element to be visible, enabled and stable\u001b[22m\n\u001b[2m      - element is visible, enabled and stable\u001b[22m\n\u001b[2m      - scrolling into view if needed\u001b[22m\n\u001b[2m      - done scrolling\u001b[22m\n\u001b[2m      - <div aria-hidden=\"true\" class=\"_mask_17i0t_18\"></div> from <div role=\"presentation\" class=\"_root_17i0t_6\">…</div> subtree intercepts pointer events\u001b[22m\n\u001b[2m    - retrying click action\u001b[22m\n\u001b[2m      - waiting 100ms\u001b[22m\n\u001b[2m    5 × waiting for element to be visible, enabled and stable\u001b[22m\n\u001b[2m      - element is visible, enabled and stable\u001b[22m\n\u001b[2m      - scrolling into view if needed\u001b[22m\n\u001b[2m      - done scrolling\u001b[22m\n\u001b[2m      - <div aria-hidden=\"true\" class=\"_mask_17i0t_18\"></div> from <div role=\"presentation\" class=\"_root_17i0t_6\">…</div> subtree intercepts pointer events\u001b[22m\n\u001b[2m    - retrying click action\u001b[22m\n\u001b[2m      - waiting 500ms\u001b[22m\n",
+        "port": "TimeoutError: locator.click: Timeout 2500ms exceeded.\nCall log:\n\u001b[2m  - waiting for locator('button:has-text(\"New Session\")').first()\u001b[22m\n\u001b[2m    - locator resolved to <button type=\"button\" aria-label=\"New session\" class=\"I4uGiW_newSession\" aria-keyshortcuts=\"Control+Alt+N\">…</button>\u001b[22m\n\u001b[2m  - attempting click action\u001b[22m\n\u001b[2m    2 × waiting for element to be visible, enabled and stable\u001b[22m\n\u001b[2m      - element is visible, enabled and stable\u001b[22m\n\u001b[2m      - scrolling into view if needed\u001b[22m\n\u001b[2m      - done scrolling\u001b[22m\n\u001b[2m      - <div aria-hidden=\"true\" class=\"_mask_17i0t_18\"></div> from <div role=\"presentation\" class=\"_root_17i0t_6\">…</div> subtree intercepts pointer events\u001b[22m\n\u001b[2m    - retrying click action\u001b[22m\n\u001b[2m    - waiting 20ms\u001b[22m\n\u001b[2m    2 × waiting for element to be visible, enabled and stable\u001b[22m\n\u001b[2m      - element is visible, enabled and stable\u001b[22m\n\u001b[2m      - scrolling into view if needed\u001b[22m\n\u001b[2m      - done scrolling\u001b[22m\n\u001b[2m      - <div aria-hidden=\"true\" class=\"_mask_17i0t_18\"></div> from <div role=\"presentation\" class=\"_root_17i0t_6\">…</div> subtree intercepts pointer events\u001b[22m\n\u001b[2m    - retrying click action\u001b[22m\n\u001b[2m      - waiting 100ms\u001b[22m\n\u001b[2m    5 × waiting for element to be visible, enabled and stable\u001b[22m\n\u001b[2m      - element is visible, enabled and stable\u001b[22m\n\u001b[2m      - scrolling into view if needed\u001b[22m\n\u001b[2m      - done scrolling\u001b[22m\n\u001b[2m      - <div aria-hidden=\"true\" class=\"_mask_17i0t_18\"></div> from <div role=\"presentation\" class=\"_root_17i0t_6\">…</div> subtree intercepts pointer events\u001b[22m\n\u001b[2m    - retrying click action\u001b[22m\n\u001b[2m      - waiting 500ms\u001b[22m\n"
+      }
+    },
+    {
+      "id": "desktop-1280x800/light/15-sidebar-restore",
+      "verdict": "identical",
+      "differences": []
+    },
+    {
+      "id": "desktop-1280x800/light/16-command-palette",
+      "verdict": "action-error",
+      "differences": [
+        "actionError"
+      ],
+      "note": {
+        "reference": "TimeoutError: locator.click: Timeout 2500ms exceeded.\nCall log:\n\u001b[2m  - waiting for locator('button:has-text(\"Settings\"), a:has-text(\"Settings\")').first()\u001b[22m\n\u001b[2m    - locator resolved to <button type=\"button\" aria-label=\"Settings\" aria-expanded=\"false\" class=\"l-HorG_trigger\" aria-haspopup=\"dialog\" aria-keyshortcuts=\"Control+,\">…</button>\u001b[22m\n\u001b[2m  - attempting click action\u001b[22m\n\u001b[2m    2 × waiting for element to be visible, enabled and stable\u001b[22m\n\u001b[2m      - element is visible, enabled and stable\u001b[22m\n\u001b[2m      - scrolling into view if needed\u001b[22m\n\u001b[2m      - done scrolling\u001b[22m\n\u001b[2m      - <div aria-hidden=\"true\" class=\"_mask_17i0t_18\"></div> from <div role=\"presentation\" class=\"_root_17i0t_6\">…</div> subtree intercepts pointer events\u001b[22m\n\u001b[2m    - retrying click action\u001b[22m\n\u001b[2m    - waiting 20ms\u001b[22m\n\u001b[2m    2 × waiting for element to be visible, enabled and stable\u001b[22m\n\u001b[2m      - element is visible, enabled and stable\u001b[22m\n\u001b[2m      - scrolling into view if needed\u001b[22m\n\u001b[2m      - done scrolling\u001b[22m\n\u001b[2m      - <div aria-hidden=\"true\" class=\"_mask_17i0t_18\"></div> from <div role=\"presentation\" class=\"_root_17i0t_6\">…</div> subtree intercepts pointer events\u001b[22m\n\u001b[2m    - retrying click action\u001b[22m\n\u001b[2m      - waiting 100ms\u001b[22m\n\u001b[2m    5 × waiting for element to be visible, enabled and stable\u001b[22m\n\u001b[2m      - element is visible, enabled and stable\u001b[22m\n\u001b[2m      - scrolling into view if needed\u001b[22m\n\u001b[2m      - done scrolling\u001b[22m\n\u001b[2m      - <div aria-hidden=\"true\" class=\"_mask_17i0t_18\"></div> from <div role=\"presentation\" class=\"_root_17i0t_6\">…</div> subtree intercepts pointer events\u001b[22m\n\u001b[2m    - retrying click action\u001b[22m\n\u001b[2m      - waiting 500ms\u001b[22m\n",
+        "port": "TimeoutError: locator.click: Timeout 2500ms exceeded.\nCall log:\n\u001b[2m  - waiting for locator('button:has-text(\"Settings\"), a:has-text(\"Settings\")').first()\u001b[22m\n\u001b[2m    - locator resolved to <button type=\"button\" aria-label=\"Settings\" aria-expanded=\"false\" class=\"l-HorG_trigger\" aria-haspopup=\"dialog\" aria-keyshortcuts=\"Control+,\">…</button>\u001b[22m\n\u001b[2m  - attempting click action\u001b[22m\n\u001b[2m    2 × waiting for element to be visible, enabled and stable\u001b[22m\n\u001b[2m      - element is visible, enabled and stable\u001b[22m\n\u001b[2m      - scrolling into view if needed\u001b[22m\n\u001b[2m      - done scrolling\u001b[22m\n\u001b[2m      - <div aria-hidden=\"true\" class=\"_mask_17i0t_18\"></div> from <div role=\"presentation\" class=\"_root_17i0t_6\">…</div> subtree intercepts pointer events\u001b[22m\n\u001b[2m    - retrying click action\u001b[22m\n\u001b[2m    - waiting 20ms\u001b[22m\n\u001b[2m    2 × waiting for element to be visible, enabled and stable\u001b[22m\n\u001b[2m      - element is visible, enabled and stable\u001b[22m\n\u001b[2m      - scrolling into view if needed\u001b[22m\n\u001b[2m      - done scrolling\u001b[22m\n\u001b[2m      - <div aria-hidden=\"true\" class=\"_mask_17i0t_18\"></div> from <div role=\"presentation\" class=\"_root_17i0t_6\">…</div> subtree intercepts pointer events\u001b[22m\n\u001b[2m    - retrying click action\u001b[22m\n\u001b[2m      - waiting 100ms\u001b[22m\n\u001b[2m    5 × waiting for element to be visible, enabled and stable\u001b[22m\n\u001b[2m      - element is visible, enabled and stable\u001b[22m\n\u001b[2m      - scrolling into view if needed\u001b[22m\n\u001b[2m      - done scrolling\u001b[22m\n\u001b[2m      - <div aria-hidden=\"true\" class=\"_mask_17i0t_18\"></div> from <div role=\"presentation\" class=\"_root_17i0t_6\">…</div> subtree intercepts pointer events\u001b[22m\n\u001b[2m    - retrying click action\u001b[22m\n\u001b[2m      - waiting 500ms\u001b[22m\n"
+      }
+    },
+    {
+      "id": "desktop-1280x800/light/17-palette-dismiss",
+      "verdict": "identical",
+      "differences": []
+    },
+    {
+      "id": "desktop-1280x800/light/18-shortcut-hint",
+      "verdict": "identical",
+      "differences": []
+    },
+    {
+      "id": "desktop-1280x800/dark/00-boot",
+      "verdict": "identical",
+      "differences": []
+    },
+    {
+      "id": "desktop-1280x800/dark/01-onboarding-notice",
+      "verdict": "identical",
+      "differences": []
+    },
+    {
+      "id": "desktop-1280x800/dark/02-notice-dismissed",
+      "verdict": "action-error",
+      "differences": [
+        "actionError"
+      ],
+      "note": {
+        "reference": "TimeoutError: locator.click: Timeout 2500ms exceeded.\nCall log:\n\u001b[2m  - waiting for locator('button:has-text(\"Continue\")').first()\u001b[22m\n\u001b[2m    - locator resolved to <button disabled type=\"button\" class=\"szVqxa_primaryButton\">Save and continue</button>\u001b[22m\n\u001b[2m  - attempting click action\u001b[22m\n\u001b[2m    2 × waiting for element to be visible, enabled and stable\u001b[22m\n\u001b[2m      - element is not enabled\u001b[22m\n\u001b[2m    - retrying click action\u001b[22m\n\u001b[2m    - waiting 20ms\u001b[22m\n\u001b[2m    2 × waiting for element to be visible, enabled and stable\u001b[22m\n\u001b[2m      - element is not enabled\u001b[22m\n\u001b[2m    - retrying click action\u001b[22m\n\u001b[2m      - waiting 100ms\u001b[22m\n\u001b[2m    5 × waiting for element to be visible, enabled and stable\u001b[22m\n\u001b[2m      - element is not enabled\u001b[22m\n\u001b[2m    - retrying click action\u001b[22m\n\u001b[2m      - waiting 500ms\u001b[22m\n",
+        "port": "TimeoutError: locator.click: Timeout 2500ms exceeded.\nCall log:\n\u001b[2m  - waiting for locator('button:has-text(\"Continue\")').first()\u001b[22m\n\u001b[2m    - locator resolved to <button disabled type=\"button\" class=\"szVqxa_primaryButton\">Save and continue</button>\u001b[22m\n\u001b[2m  - attempting click action\u001b[22m\n\u001b[2m    2 × waiting for element to be visible, enabled and stable\u001b[22m\n\u001b[2m      - element is not enabled\u001b[22m\n\u001b[2m    - retrying click action\u001b[22m\n\u001b[2m    - waiting 20ms\u001b[22m\n\u001b[2m    2 × waiting for element to be visible, enabled and stable\u001b[22m\n\u001b[2m      - element is not enabled\u001b[22m\n\u001b[2m    - retrying click action\u001b[22m\n\u001b[2m      - waiting 100ms\u001b[22m\n\u001b[2m    5 × waiting for element to be visible, enabled and stable\u001b[22m\n\u001b[2m      - element is not enabled\u001b[22m\n\u001b[2m    - retrying click action\u001b[22m\n\u001b[2m      - waiting 500ms\u001b[22m\n"
+      }
+    },
+    {
+      "id": "desktop-1280x800/dark/03-empty-session",
+      "verdict": "identical",
+      "differences": []
+    },
+    {
+      "id": "desktop-1280x800/dark/04-focus-composer",
+      "verdict": "identical",
+      "differences": []
+    },
+    {
+      "id": "desktop-1280x800/dark/05-composer-typed",
+      "verdict": "identical",
+      "differences": []
+    },
+    {
+      "id": "desktop-1280x800/dark/06-mode-menu",
+      "verdict": "identical",
+      "differences": []
+    },
+    {
+      "id": "desktop-1280x800/dark/07-mode-dismiss",
+      "verdict": "action-error",
+      "differences": [
+        "actionError"
+      ],
+      "note": {
+        "reference": "TimeoutError: locator.click: Timeout 2500ms exceeded.\nCall log:\n\u001b[2m  - waiting for locator('button:has-text(\"Workspace Write\")').first()\u001b[22m\n\u001b[2m    - locator resolved to <button type=\"button\" class=\"WPyIlq_trigger\" aria-label=\"Access mode, current: Workspace Write\">…</button>\u001b[22m\n\u001b[2m  - attempting click action\u001b[22m\n\u001b[2m    2 × waiting for element to be visible, enabled and stable\u001b[22m\n\u001b[2m      - element is visible, enabled and stable\u001b[22m\n\u001b[2m      - scrolling into view if needed\u001b[22m\n\u001b[2m      - done scrolling\u001b[22m\n\u001b[2m      - <div class=\"szVqxa_editorActions\">…</div> from <div role=\"presentation\" class=\"_root_17i0t_6\">…</div> subtree intercepts pointer events\u001b[22m\n\u001b[2m    - retrying click action\u001b[22m\n\u001b[2m    - waiting 20ms\u001b[22m\n\u001b[2m    - waiting for element to be visible, enabled and stable\u001b[22m\n\u001b[2m    - element is visible, enabled and stable\u001b[22m\n\u001b[2m    - scrolling into view if needed\u001b[22m\n\u001b[2m    - done scrolling\u001b[22m\n\u001b[2m    - <div class=\"szVqxa_editorActions\">…</div> from <div role=\"presentation\" class=\"_root_17i0t_6\">…</div> subtree intercepts pointer events\u001b[22m\n\u001b[2m  2 × retrying click action\u001b[22m\n\u001b[2m      - waiting 100ms\u001b[22m\n\u001b[2m      - waiting for element to be visible, enabled and stable\u001b[22m\n\u001b[2m      - element is visible, enabled and stable\u001b[22m\n\u001b[2m      - scrolling into view if needed\u001b[22m\n\u001b[2m      - done scrolling\u001b[22m\n\u001b[2m      - <div aria-hidden=\"true\" class=\"_mask_17i0t_18\"></div> from <div role=\"presentation\" class=\"_root_17i0t_6\">…</div> subtree intercepts pointer events\u001b[22m\n\u001b[2m  2 × retrying click action\u001b[22m\n\u001b[2m      - waiting 500ms\u001b[22m\n\u001b[2m      - waiting for element to be visible, enabled and stable\u001b[22m\n\u001b[2m      - element is visible, enabled and stable\u001b[22m\n\u001b[2m      - scrolling into view if needed\u001b[22m\n\u001b[2m      - done scrolling\u001b[22m\n\u001b[2m      - <div class=\"szVqxa_editorActions\">…</div> from <div role=\"presentation\" class=\"_root_17i0t_6\">…</div> subtree intercepts pointer events\u001b[22m\n\u001b[2m  2 × retrying click action\u001b[22m\n\u001b[2m      - waiting 500ms\u001b[22m\n\u001b[2m      - waiting for element to be visible, enabled and stable\u001b[22m\n\u001b[2m      - element is visible, enabled and stable\u001b[22m\n\u001b[2m      - scrolling into view if needed\u001b[22m\n\u001b[2m      - done scrolling\u001b[22m\n\u001b[2m      - <div aria-hidden=\"true\" class=\"_mask_17i0t_18\"></div> from <div role=\"presentation\" class=\"_root_17i0t_6\">…</div> subtree intercepts pointer events\u001b[22m\n\u001b[2m  - retrying click action\u001b[22m\n\u001b[2m    - waiting 500ms\u001b[22m\n",
+        "port": "TimeoutError: locator.click: Timeout 2500ms exceeded.\nCall log:\n\u001b[2m  - waiting for locator('button:has-text(\"Workspace Write\")').first()\u001b[22m\n\u001b[2m    - locator resolved to <button type=\"button\" class=\"WPyIlq_trigger\" aria-label=\"Access mode, current: Workspace Write\">…</button>\u001b[22m\n\u001b[2m  - attempting click action\u001b[22m\n\u001b[2m    2 × waiting for element to be visible, enabled and stable\u001b[22m\n\u001b[2m      - element is visible, enabled and stable\u001b[22m\n\u001b[2m      - scrolling into view if needed\u001b[22m\n\u001b[2m      - done scrolling\u001b[22m\n\u001b[2m      - <div class=\"szVqxa_editorActions\">…</div> from <div role=\"presentation\" class=\"_root_17i0t_6\">…</div> subtree intercepts pointer events\u001b[22m\n\u001b[2m    - retrying click action\u001b[22m\n\u001b[2m    - waiting 20ms\u001b[22m\n\u001b[2m    - waiting for element to be visible, enabled and stable\u001b[22m\n\u001b[2m    - element is visible, enabled and stable\u001b[22m\n\u001b[2m    - scrolling into view if needed\u001b[22m\n\u001b[2m    - done scrolling\u001b[22m\n\u001b[2m    - <div class=\"szVqxa_editorActions\">…</div> from <div role=\"presentation\" class=\"_root_17i0t_6\">…</div> subtree intercepts pointer events\u001b[22m\n\u001b[2m  2 × retrying click action\u001b[22m\n\u001b[2m      - waiting 100ms\u001b[22m\n\u001b[2m      - waiting for element to be visible, enabled and stable\u001b[22m\n\u001b[2m      - element is visible, enabled and stable\u001b[22m\n\u001b[2m      - scrolling into view if needed\u001b[22m\n\u001b[2m      - done scrolling\u001b[22m\n\u001b[2m      - <div aria-hidden=\"true\" class=\"_mask_17i0t_18\"></div> from <div role=\"presentation\" class=\"_root_17i0t_6\">…</div> subtree intercepts pointer events\u001b[22m\n\u001b[2m  2 × retrying click action\u001b[22m\n\u001b[2m      - waiting 500ms\u001b[22m\n\u001b[2m      - waiting for element to be visible, enabled and stable\u001b[22m\n\u001b[2m      - element is visible, enabled and stable\u001b[22m\n\u001b[2m      - scrolling into view if needed\u001b[22m\n\u001b[2m      - done scrolling\u001b[22m\n\u001b[2m      - <div class=\"szVqxa_editorActions\">…</div> from <div role=\"presentation\" class=\"_root_17i0t_6\">…</div> subtree intercepts pointer events\u001b[22m\n\u001b[2m  2 × retrying click action\u001b[22m\n\u001b[2m      - waiting 500ms\u001b[22m\n\u001b[2m      - waiting for element to be visible, enabled and stable\u001b[22m\n\u001b[2m      - element is visible, enabled and stable\u001b[22m\n\u001b[2m      - scrolling into view if needed\u001b[22m\n\u001b[2m      - done scrolling\u001b[22m\n\u001b[2m      - <div aria-hidden=\"true\" class=\"_mask_17i0t_18\"></div> from <div role=\"presentation\" class=\"_root_17i0t_6\">…</div> subtree intercepts pointer events\u001b[22m\n\u001b[2m  - retrying click action\u001b[22m\n\u001b[2m    - waiting 500ms\u001b[22m\n"
+      }
+    },
+    {
+      "id": "desktop-1280x800/dark/08-model-picker",
+      "verdict": "identical",
+      "differences": []
+    },
+    {
+      "id": "desktop-1280x800/dark/09-model-dismiss",
+      "verdict": "identical",
+      "differences": []
+    },
+    {
+      "id": "desktop-1280x800/dark/10-plugins-page",
+      "verdict": "identical",
+      "differences": []
+    },
+    {
+      "id": "desktop-1280x800/dark/11-sidebar-new-session",
+      "verdict": "identical",
+      "differences": []
+    },
+    {
+      "id": "desktop-1280x800/dark/12-settings-open",
+      "verdict": "action-error",
+      "differences": [
+        "actionError"
+      ],
+      "note": {
+        "reference": "TimeoutError: locator.click: Timeout 2500ms exceeded.\nCall log:\n\u001b[2m  - waiting for locator('button:has-text(\"Plugins\"), a:has-text(\"Plugins\")').first()\u001b[22m\n\u001b[2m    - locator resolved to <button type=\"button\" aria-label=\"Plugins\" class=\"I4uGiW_panelRow\">…</button>\u001b[22m\n\u001b[2m  - attempting click action\u001b[22m\n\u001b[2m    2 × waiting for element to be visible, enabled and stable\u001b[22m\n\u001b[2m      - element is visible, enabled and stable\u001b[22m\n\u001b[2m      - scrolling into view if needed\u001b[22m\n\u001b[2m      - done scrolling\u001b[22m\n\u001b[2m      - <div aria-hidden=\"true\" class=\"_mask_17i0t_18\"></div> from <div role=\"presentation\" class=\"_root_17i0t_6\">…</div> subtree intercepts pointer events\u001b[22m\n\u001b[2m    - retrying click action\u001b[22m\n\u001b[2m    - waiting 20ms\u001b[22m\n\u001b[2m    2 × waiting for element to be visible, enabled and stable\u001b[22m\n\u001b[2m      - element is visible, enabled and stable\u001b[22m\n\u001b[2m      - scrolling into view if needed\u001b[22m\n\u001b[2m      - done scrolling\u001b[22m\n\u001b[2m      - <div aria-hidden=\"true\" class=\"_mask_17i0t_18\"></div> from <div role=\"presentation\" class=\"_root_17i0t_6\">…</div> subtree intercepts pointer events\u001b[22m\n\u001b[2m    - retrying click action\u001b[22m\n\u001b[2m      - waiting 100ms\u001b[22m\n\u001b[2m    5 × waiting for element to be visible, enabled and stable\u001b[22m\n\u001b[2m      - element is visible, enabled and stable\u001b[22m\n\u001b[2m      - scrolling into view if needed\u001b[22m\n\u001b[2m      - done scrolling\u001b[22m\n\u001b[2m      - <div aria-hidden=\"true\" class=\"_mask_17i0t_18\"></div> from <div role=\"presentation\" class=\"_root_17i0t_6\">…</div> subtree intercepts pointer events\u001b[22m\n\u001b[2m    - retrying click action\u001b[22m\n\u001b[2m      - waiting 500ms\u001b[22m\n",
+        "port": "TimeoutError: locator.click: Timeout 2500ms exceeded.\nCall log:\n\u001b[2m  - waiting for locator('button:has-text(\"Plugins\"), a:has-text(\"Plugins\")').first()\u001b[22m\n\u001b[2m    - locator resolved to <button type=\"button\" aria-label=\"Plugins\" class=\"I4uGiW_panelRow\">…</button>\u001b[22m\n\u001b[2m  - attempting click action\u001b[22m\n\u001b[2m    2 × waiting for element to be visible, enabled and stable\u001b[22m\n\u001b[2m      - element is visible, enabled and stable\u001b[22m\n\u001b[2m      - scrolling into view if needed\u001b[22m\n\u001b[2m      - done scrolling\u001b[22m\n\u001b[2m      - <div aria-hidden=\"true\" class=\"_mask_17i0t_18\"></div> from <div role=\"presentation\" class=\"_root_17i0t_6\">…</div> subtree intercepts pointer events\u001b[22m\n\u001b[2m    - retrying click action\u001b[22m\n\u001b[2m    - waiting 20ms\u001b[22m\n\u001b[2m    2 × waiting for element to be visible, enabled and stable\u001b[22m\n\u001b[2m      - element is visible, enabled and stable\u001b[22m\n\u001b[2m      - scrolling into view if needed\u001b[22m\n\u001b[2m      - done scrolling\u001b[22m\n\u001b[2m      - <div aria-hidden=\"true\" class=\"_mask_17i0t_18\"></div> from <div role=\"presentation\" class=\"_root_17i0t_6\">…</div> subtree intercepts pointer events\u001b[22m\n\u001b[2m    - retrying click action\u001b[22m\n\u001b[2m      - waiting 100ms\u001b[22m\n\u001b[2m    5 × waiting for element to be visible, enabled and stable\u001b[22m\n\u001b[2m      - element is visible, enabled and stable\u001b[22m\n\u001b[2m      - scrolling into view if needed\u001b[22m\n\u001b[2m      - done scrolling\u001b[22m\n\u001b[2m      - <div aria-hidden=\"true\" class=\"_mask_17i0t_18\"></div> from <div role=\"presentation\" class=\"_root_17i0t_6\">…</div> subtree intercepts pointer events\u001b[22m\n\u001b[2m    - retrying click action\u001b[22m\n\u001b[2m      - waiting 500ms\u001b[22m\n"
+      }
+    },
+    {
+      "id": "desktop-1280x800/dark/13-settings-dismiss",
+      "verdict": "identical",
+      "differences": []
+    },
+    {
+      "id": "desktop-1280x800/dark/14-sidebar-toggle",
+      "verdict": "action-error",
+      "differences": [
+        "actionError"
+      ],
+      "note": {
+        "reference": "TimeoutError: locator.click: Timeout 2500ms exceeded.\nCall log:\n\u001b[2m  - waiting for locator('button:has-text(\"New Session\")').first()\u001b[22m\n\u001b[2m    - locator resolved to <button type=\"button\" aria-label=\"New session\" class=\"I4uGiW_newSession\" aria-keyshortcuts=\"Control+Alt+N\">…</button>\u001b[22m\n\u001b[2m  - attempting click action\u001b[22m\n\u001b[2m    2 × waiting for element to be visible, enabled and stable\u001b[22m\n\u001b[2m      - element is visible, enabled and stable\u001b[22m\n\u001b[2m      - scrolling into view if needed\u001b[22m\n\u001b[2m      - done scrolling\u001b[22m\n\u001b[2m      - <div aria-hidden=\"true\" class=\"_mask_17i0t_18\"></div> from <div role=\"presentation\" class=\"_root_17i0t_6\">…</div> subtree intercepts pointer events\u001b[22m\n\u001b[2m    - retrying click action\u001b[22m\n\u001b[2m    - waiting 20ms\u001b[22m\n\u001b[2m    2 × waiting for element to be visible, enabled and stable\u001b[22m\n\u001b[2m      - element is visible, enabled and stable\u001b[22m\n\u001b[2m      - scrolling into view if needed\u001b[22m\n\u001b[2m      - done scrolling\u001b[22m\n\u001b[2m      - <div aria-hidden=\"true\" class=\"_mask_17i0t_18\"></div> from <div role=\"presentation\" class=\"_root_17i0t_6\">…</div> subtree intercepts pointer events\u001b[22m\n\u001b[2m    - retrying click action\u001b[22m\n\u001b[2m      - waiting 100ms\u001b[22m\n\u001b[2m    5 × waiting for element to be visible, enabled and stable\u001b[22m\n\u001b[2m      - element is visible, enabled and stable\u001b[22m\n\u001b[2m      - scrolling into view if needed\u001b[22m\n\u001b[2m      - done scrolling\u001b[22m\n\u001b[2m      - <div aria-hidden=\"true\" class=\"_mask_17i0t_18\"></div> from <div role=\"presentation\" class=\"_root_17i0t_6\">…</div> subtree intercepts pointer events\u001b[22m\n\u001b[2m    - retrying click action\u001b[22m\n\u001b[2m      - waiting 500ms\u001b[22m\n",
+        "port": "TimeoutError: locator.click: Timeout 2500ms exceeded.\nCall log:\n\u001b[2m  - waiting for locator('button:has-text(\"New Session\")').first()\u001b[22m\n\u001b[2m    - locator resolved to <button type=\"button\" aria-label=\"New session\" class=\"I4uGiW_newSession\" aria-keyshortcuts=\"Control+Alt+N\">…</button>\u001b[22m\n\u001b[2m  - attempting click action\u001b[22m\n\u001b[2m    2 × waiting for element to be visible, enabled and stable\u001b[22m\n\u001b[2m      - element is visible, enabled and stable\u001b[22m\n\u001b[2m      - scrolling into view if needed\u001b[22m\n\u001b[2m      - done scrolling\u001b[22m\n\u001b[2m      - <div aria-hidden=\"true\" class=\"_mask_17i0t_18\"></div> from <div role=\"presentation\" class=\"_root_17i0t_6\">…</div> subtree intercepts pointer events\u001b[22m\n\u001b[2m    - retrying click action\u001b[22m\n\u001b[2m    - waiting 20ms\u001b[22m\n\u001b[2m    2 × waiting for element to be visible, enabled and stable\u001b[22m\n\u001b[2m      - element is visible, enabled and stable\u001b[22m\n\u001b[2m      - scrolling into view if needed\u001b[22m\n\u001b[2m      - done scrolling\u001b[22m\n\u001b[2m      - <div aria-hidden=\"true\" class=\"_mask_17i0t_18\"></div> from <div role=\"presentation\" class=\"_root_17i0t_6\">…</div> subtree intercepts pointer events\u001b[22m\n\u001b[2m    - retrying click action\u001b[22m\n\u001b[2m      - waiting 100ms\u001b[22m\n\u001b[2m    5 × waiting for element to be visible, enabled and stable\u001b[22m\n\u001b[2m      - element is visible, enabled and stable\u001b[22m\n\u001b[2m      - scrolling into view if needed\u001b[22m\n\u001b[2m      - done scrolling\u001b[22m\n\u001b[2m      - <div aria-hidden=\"true\" class=\"_mask_17i0t_18\"></div> from <div role=\"presentation\" class=\"_root_17i0t_6\">…</div> subtree intercepts pointer events\u001b[22m\n\u001b[2m    - retrying click action\u001b[22m\n\u001b[2m      - waiting 500ms\u001b[22m\n"
+      }
+    },
+    {
+      "id": "desktop-1280x800/dark/15-sidebar-restore",
+      "verdict": "identical",
+      "differences": []
+    },
+    {
+      "id": "desktop-1280x800/dark/16-command-palette",
+      "verdict": "action-error",
+      "differences": [
+        "actionError"
+      ],
+      "note": {
+        "reference": "TimeoutError: locator.click: Timeout 2500ms exceeded.\nCall log:\n\u001b[2m  - waiting for locator('button:has-text(\"Settings\"), a:has-text(\"Settings\")').first()\u001b[22m\n\u001b[2m    - locator resolved to <button type=\"button\" aria-label=\"Settings\" aria-expanded=\"false\" class=\"l-HorG_trigger\" aria-haspopup=\"dialog\" aria-keyshortcuts=\"Control+,\">…</button>\u001b[22m\n\u001b[2m  - attempting click action\u001b[22m\n\u001b[2m    2 × waiting for element to be visible, enabled and stable\u001b[22m\n\u001b[2m      - element is visible, enabled and stable\u001b[22m\n\u001b[2m      - scrolling into view if needed\u001b[22m\n\u001b[2m      - done scrolling\u001b[22m\n\u001b[2m      - <div aria-hidden=\"true\" class=\"_mask_17i0t_18\"></div> from <div role=\"presentation\" class=\"_root_17i0t_6\">…</div> subtree intercepts pointer events\u001b[22m\n\u001b[2m    - retrying click action\u001b[22m\n\u001b[2m    - waiting 20ms\u001b[22m\n\u001b[2m    2 × waiting for element to be visible, enabled and stable\u001b[22m\n\u001b[2m      - element is visible, enabled and stable\u001b[22m\n\u001b[2m      - scrolling into view if needed\u001b[22m\n\u001b[2m      - done scrolling\u001b[22m\n\u001b[2m      - <div aria-hidden=\"true\" class=\"_mask_17i0t_18\"></div> from <div role=\"presentation\" class=\"_root_17i0t_6\">…</div> subtree intercepts pointer events\u001b[22m\n\u001b[2m    - retrying click action\u001b[22m\n\u001b[2m      - waiting 100ms\u001b[22m\n\u001b[2m    4 × waiting for element to be visible, enabled and stable\u001b[22m\n\u001b[2m      - element is visible, enabled and stable\u001b[22m\n\u001b[2m      - scrolling into view if needed\u001b[22m\n\u001b[2m      - done scrolling\u001b[22m\n\u001b[2m      - <div aria-hidden=\"true\" class=\"_mask_17i0t_18\"></div> from <div role=\"presentation\" class=\"_root_17i0t_6\">…</div> subtree intercepts pointer events\u001b[22m\n\u001b[2m    - retrying click action\u001b[22m\n\u001b[2m      - waiting 500ms\u001b[22m\n",
+        "port": "TimeoutError: locator.click: Timeout 2500ms exceeded.\nCall log:\n\u001b[2m  - waiting for locator('button:has-text(\"Settings\"), a:has-text(\"Settings\")').first()\u001b[22m\n\u001b[2m    - locator resolved to <button type=\"button\" aria-label=\"Settings\" aria-expanded=\"false\" class=\"l-HorG_trigger\" aria-haspopup=\"dialog\" aria-keyshortcuts=\"Control+,\">…</button>\u001b[22m\n\u001b[2m  - attempting click action\u001b[22m\n\u001b[2m    2 × waiting for element to be visible, enabled and stable\u001b[22m\n\u001b[2m      - element is visible, enabled and stable\u001b[22m\n\u001b[2m      - scrolling into view if needed\u001b[22m\n\u001b[2m      - done scrolling\u001b[22m\n\u001b[2m      - <div aria-hidden=\"true\" class=\"_mask_17i0t_18\"></div> from <div role=\"presentation\" class=\"_root_17i0t_6\">…</div> subtree intercepts pointer events\u001b[22m\n\u001b[2m    - retrying click action\u001b[22m\n\u001b[2m    - waiting 20ms\u001b[22m\n\u001b[2m    2 × waiting for element to be visible, enabled and stable\u001b[22m\n\u001b[2m      - element is visible, enabled and stable\u001b[22m\n\u001b[2m      - scrolling into view if needed\u001b[22m\n\u001b[2m      - done scrolling\u001b[22m\n\u001b[2m      - <div aria-hidden=\"true\" class=\"_mask_17i0t_18\"></div> from <div role=\"presentation\" class=\"_root_17i0t_6\">…</div> subtree intercepts pointer events\u001b[22m\n\u001b[2m    - retrying click action\u001b[22m\n\u001b[2m      - waiting 100ms\u001b[22m\n\u001b[2m    4 × waiting for element to be visible, enabled and stable\u001b[22m\n\u001b[2m      - element is visible, enabled and stable\u001b[22m\n\u001b[2m      - scrolling into view if needed\u001b[22m\n\u001b[2m      - done scrolling\u001b[22m\n\u001b[2m      - <div aria-hidden=\"true\" class=\"_mask_17i0t_18\"></div> from <div role=\"presentation\" class=\"_root_17i0t_6\">…</div> subtree intercepts pointer events\u001b[22m\n\u001b[2m    - retrying click action\u001b[22m\n\u001b[2m      - waiting 500ms\u001b[22m\n"
+      }
+    },
+    {
+      "id": "desktop-1280x800/dark/17-palette-dismiss",
+      "verdict": "identical",
+      "differences": []
+    },
+    {
+      "id": "desktop-1280x800/dark/18-shortcut-hint",
+      "verdict": "identical",
+      "differences": []
+    },
+    {
+      "id": "desktop-1600x1000/light/00-boot",
+      "verdict": "identical",
+      "differences": []
+    },
+    {
+      "id": "desktop-1600x1000/light/01-onboarding-notice",
+      "verdict": "identical",
+      "differences": []
+    },
+    {
+      "id": "desktop-1600x1000/light/02-notice-dismissed",
+      "verdict": "action-error",
+      "differences": [
+        "actionError"
+      ],
+      "note": {
+        "reference": "TimeoutError: locator.click: Timeout 2500ms exceeded.\nCall log:\n\u001b[2m  - waiting for locator('button:has-text(\"Continue\")').first()\u001b[22m\n\u001b[2m    - locator resolved to <button disabled type=\"button\" class=\"szVqxa_primaryButton\">Save and continue</button>\u001b[22m\n\u001b[2m  - attempting click action\u001b[22m\n\u001b[2m    2 × waiting for element to be visible, enabled and stable\u001b[22m\n\u001b[2m      - element is not enabled\u001b[22m\n\u001b[2m    - retrying click action\u001b[22m\n\u001b[2m    - waiting 20ms\u001b[22m\n\u001b[2m    2 × waiting for element to be visible, enabled and stable\u001b[22m\n\u001b[2m      - element is not enabled\u001b[22m\n\u001b[2m    - retrying click action\u001b[22m\n\u001b[2m      - waiting 100ms\u001b[22m\n\u001b[2m    5 × waiting for element to be visible, enabled and stable\u001b[22m\n\u001b[2m      - element is not enabled\u001b[22m\n\u001b[2m    - retrying click action\u001b[22m\n\u001b[2m      - waiting 500ms\u001b[22m\n",
+        "port": "TimeoutError: locator.click: Timeout 2500ms exceeded.\nCall log:\n\u001b[2m  - waiting for locator('button:has-text(\"Continue\")').first()\u001b[22m\n\u001b[2m    - locator resolved to <button disabled type=\"button\" class=\"szVqxa_primaryButton\">Save and continue</button>\u001b[22m\n\u001b[2m  - attempting click action\u001b[22m\n\u001b[2m    2 × waiting for element to be visible, enabled and stable\u001b[22m\n\u001b[2m      - element is not enabled\u001b[22m\n\u001b[2m    - retrying click action\u001b[22m\n\u001b[2m    - waiting 20ms\u001b[22m\n\u001b[2m    2 × waiting for element to be visible, enabled and stable\u001b[22m\n\u001b[2m      - element is not enabled\u001b[22m\n\u001b[2m    - retrying click action\u001b[22m\n\u001b[2m      - waiting 100ms\u001b[22m\n\u001b[2m    5 × waiting for element to be visible, enabled and stable\u001b[22m\n\u001b[2m      - element is not enabled\u001b[22m\n\u001b[2m    - retrying click action\u001b[22m\n\u001b[2m      - waiting 500ms\u001b[22m\n"
+      }
+    },
+    {
+      "id": "desktop-1600x1000/light/03-empty-session",
+      "verdict": "identical",
+      "differences": []
+    },
+    {
+      "id": "desktop-1600x1000/light/04-focus-composer",
+      "verdict": "identical",
+      "differences": []
+    },
+    {
+      "id": "desktop-1600x1000/light/05-composer-typed",
+      "verdict": "identical",
+      "differences": []
+    },
+    {
+      "id": "desktop-1600x1000/light/06-mode-menu",
+      "verdict": "identical",
+      "differences": []
+    },
+    {
+      "id": "desktop-1600x1000/light/07-mode-dismiss",
+      "verdict": "action-error",
+      "differences": [
+        "actionError"
+      ],
+      "note": {
+        "reference": "TimeoutError: locator.click: Timeout 2500ms exceeded.\nCall log:\n\u001b[2m  - waiting for locator('button:has-text(\"Workspace Write\")').first()\u001b[22m\n\u001b[2m    - locator resolved to <button type=\"button\" class=\"WPyIlq_trigger\" aria-label=\"Access mode, current: Workspace Write\">…</button>\u001b[22m\n\u001b[2m  - attempting click action\u001b[22m\n\u001b[2m    2 × waiting for element to be visible, enabled and stable\u001b[22m\n\u001b[2m      - element is visible, enabled and stable\u001b[22m\n\u001b[2m      - scrolling into view if needed\u001b[22m\n\u001b[2m      - done scrolling\u001b[22m\n\u001b[2m      - <div class=\"szVqxa_editorActions\">…</div> from <div role=\"presentation\" class=\"_root_17i0t_6\">…</div> subtree intercepts pointer events\u001b[22m\n\u001b[2m    - retrying click action\u001b[22m\n\u001b[2m    - waiting 20ms\u001b[22m\n\u001b[2m    - waiting for element to be visible, enabled and stable\u001b[22m\n\u001b[2m    - element is visible, enabled and stable\u001b[22m\n\u001b[2m    - scrolling into view if needed\u001b[22m\n\u001b[2m    - done scrolling\u001b[22m\n\u001b[2m    - <div class=\"szVqxa_editorActions\">…</div> from <div role=\"presentation\" class=\"_root_17i0t_6\">…</div> subtree intercepts pointer events\u001b[22m\n\u001b[2m  2 × retrying click action\u001b[22m\n\u001b[2m      - waiting 100ms\u001b[22m\n\u001b[2m      - waiting for element to be visible, enabled and stable\u001b[22m\n\u001b[2m      - element is visible, enabled and stable\u001b[22m\n\u001b[2m      - scrolling into view if needed\u001b[22m\n\u001b[2m      - done scrolling\u001b[22m\n\u001b[2m      - <div aria-hidden=\"true\" class=\"_mask_17i0t_18\"></div> from <div role=\"presentation\" class=\"_root_17i0t_6\">…</div> subtree intercepts pointer events\u001b[22m\n\u001b[2m  2 × retrying click action\u001b[22m\n\u001b[2m      - waiting 500ms\u001b[22m\n\u001b[2m      - waiting for element to be visible, enabled and stable\u001b[22m\n\u001b[2m      - element is visible, enabled and stable\u001b[22m\n\u001b[2m      - scrolling into view if needed\u001b[22m\n\u001b[2m      - done scrolling\u001b[22m\n\u001b[2m      - <div class=\"szVqxa_editorActions\">…</div> from <div role=\"presentation\" class=\"_root_17i0t_6\">…</div> subtree intercepts pointer events\u001b[22m\n\u001b[2m  2 × retrying click action\u001b[22m\n\u001b[2m      - waiting 500ms\u001b[22m\n\u001b[2m      - waiting for element to be visible, enabled and stable\u001b[22m\n\u001b[2m      - element is visible, enabled and stable\u001b[22m\n\u001b[2m      - scrolling into view if needed\u001b[22m\n\u001b[2m      - done scrolling\u001b[22m\n\u001b[2m      - <div aria-hidden=\"true\" class=\"_mask_17i0t_18\"></div> from <div role=\"presentation\" class=\"_root_17i0t_6\">…</div> subtree intercepts pointer events\u001b[22m\n\u001b[2m  - retrying click action\u001b[22m\n\u001b[2m    - waiting 500ms\u001b[22m\n",
+        "port": "TimeoutError: locator.click: Timeout 2500ms exceeded.\nCall log:\n\u001b[2m  - waiting for locator('button:has-text(\"Workspace Write\")').first()\u001b[22m\n\u001b[2m    - locator resolved to <button type=\"button\" class=\"WPyIlq_trigger\" aria-label=\"Access mode, current: Workspace Write\">…</button>\u001b[22m\n\u001b[2m  - attempting click action\u001b[22m\n\u001b[2m    2 × waiting for element to be visible, enabled and stable\u001b[22m\n\u001b[2m      - element is visible, enabled and stable\u001b[22m\n\u001b[2m      - scrolling into view if needed\u001b[22m\n\u001b[2m      - done scrolling\u001b[22m\n\u001b[2m      - <div class=\"szVqxa_editorActions\">…</div> from <div role=\"presentation\" class=\"_root_17i0t_6\">…</div> subtree intercepts pointer events\u001b[22m\n\u001b[2m    - retrying click action\u001b[22m\n\u001b[2m    - waiting 20ms\u001b[22m\n\u001b[2m    - waiting for element to be visible, enabled and stable\u001b[22m\n\u001b[2m    - element is visible, enabled and stable\u001b[22m\n\u001b[2m    - scrolling into view if needed\u001b[22m\n\u001b[2m    - done scrolling\u001b[22m\n\u001b[2m    - <div class=\"szVqxa_editorActions\">…</div> from <div role=\"presentation\" class=\"_root_17i0t_6\">…</div> subtree intercepts pointer events\u001b[22m\n\u001b[2m  2 × retrying click action\u001b[22m\n\u001b[2m      - waiting 100ms\u001b[22m\n\u001b[2m      - waiting for element to be visible, enabled and stable\u001b[22m\n\u001b[2m      - element is visible, enabled and stable\u001b[22m\n\u001b[2m      - scrolling into view if needed\u001b[22m\n\u001b[2m      - done scrolling\u001b[22m\n\u001b[2m      - <div aria-hidden=\"true\" class=\"_mask_17i0t_18\"></div> from <div role=\"presentation\" class=\"_root_17i0t_6\">…</div> subtree intercepts pointer events\u001b[22m\n\u001b[2m  2 × retrying click action\u001b[22m\n\u001b[2m      - waiting 500ms\u001b[22m\n\u001b[2m      - waiting for element to be visible, enabled and stable\u001b[22m\n\u001b[2m      - element is visible, enabled and stable\u001b[22m\n\u001b[2m      - scrolling into view if needed\u001b[22m\n\u001b[2m      - done scrolling\u001b[22m\n\u001b[2m      - <div class=\"szVqxa_editorActions\">…</div> from <div role=\"presentation\" class=\"_root_17i0t_6\">…</div> subtree intercepts pointer events\u001b[22m\n\u001b[2m  2 × retrying click action\u001b[22m\n\u001b[2m      - waiting 500ms\u001b[22m\n\u001b[2m      - waiting for element to be visible, enabled and stable\u001b[22m\n\u001b[2m      - element is visible, enabled and stable\u001b[22m\n\u001b[2m      - scrolling into view if needed\u001b[22m\n\u001b[2m      - done scrolling\u001b[22m\n\u001b[2m      - <div aria-hidden=\"true\" class=\"_mask_17i0t_18\"></div> from <div role=\"presentation\" class=\"_root_17i0t_6\">…</div> subtree intercepts pointer events\u001b[22m\n\u001b[2m  - retrying click action\u001b[22m\n\u001b[2m    - waiting 500ms\u001b[22m\n"
+      }
+    },
+    {
+      "id": "desktop-1600x1000/light/08-model-picker",
+      "verdict": "identical",
+      "differences": []
+    },
+    {
+      "id": "desktop-1600x1000/light/09-model-dismiss",
+      "verdict": "identical",
+      "differences": []
+    },
+    {
+      "id": "desktop-1600x1000/light/10-plugins-page",
+      "verdict": "identical",
+      "differences": []
+    },
+    {
+      "id": "desktop-1600x1000/light/11-sidebar-new-session",
+      "verdict": "identical",
+      "differences": []
+    },
+    {
+      "id": "desktop-1600x1000/light/12-settings-open",
+      "verdict": "action-error",
+      "differences": [
+        "actionError"
+      ],
+      "note": {
+        "reference": "TimeoutError: locator.click: Timeout 2500ms exceeded.\nCall log:\n\u001b[2m  - waiting for locator('button:has-text(\"Plugins\"), a:has-text(\"Plugins\")').first()\u001b[22m\n\u001b[2m    - locator resolved to <button type=\"button\" aria-label=\"Plugins\" class=\"I4uGiW_panelRow\">…</button>\u001b[22m\n\u001b[2m  - attempting click action\u001b[22m\n\u001b[2m    2 × waiting for element to be visible, enabled and stable\u001b[22m\n\u001b[2m      - element is visible, enabled and stable\u001b[22m\n\u001b[2m      - scrolling into view if needed\u001b[22m\n\u001b[2m      - done scrolling\u001b[22m\n\u001b[2m      - <div aria-hidden=\"true\" class=\"_mask_17i0t_18\"></div> from <div role=\"presentation\" class=\"_root_17i0t_6\">…</div> subtree intercepts pointer events\u001b[22m\n\u001b[2m    - retrying click action\u001b[22m\n\u001b[2m    - waiting 20ms\u001b[22m\n\u001b[2m    2 × waiting for element to be visible, enabled and stable\u001b[22m\n\u001b[2m      - element is visible, enabled and stable\u001b[22m\n\u001b[2m      - scrolling into view if needed\u001b[22m\n\u001b[2m      - done scrolling\u001b[22m\n\u001b[2m      - <div aria-hidden=\"true\" class=\"_mask_17i0t_18\"></div> from <div role=\"presentation\" class=\"_root_17i0t_6\">…</div> subtree intercepts pointer events\u001b[22m\n\u001b[2m    - retrying click action\u001b[22m\n\u001b[2m      - waiting 100ms\u001b[22m\n\u001b[2m    5 × waiting for element to be visible, enabled and stable\u001b[22m\n\u001b[2m      - element is visible, enabled and stable\u001b[22m\n\u001b[2m      - scrolling into view if needed\u001b[22m\n\u001b[2m      - done scrolling\u001b[22m\n\u001b[2m      - <div aria-hidden=\"true\" class=\"_mask_17i0t_18\"></div> from <div role=\"presentation\" class=\"_root_17i0t_6\">…</div> subtree intercepts pointer events\u001b[22m\n\u001b[2m    - retrying click action\u001b[22m\n\u001b[2m      - waiting 500ms\u001b[22m\n",
+        "port": "TimeoutError: locator.click: Timeout 2500ms exceeded.\nCall log:\n\u001b[2m  - waiting for locator('button:has-text(\"Plugins\"), a:has-text(\"Plugins\")').first()\u001b[22m\n\u001b[2m    - locator resolved to <button type=\"button\" aria-label=\"Plugins\" class=\"I4uGiW_panelRow\">…</button>\u001b[22m\n\u001b[2m  - attempting click action\u001b[22m\n\u001b[2m    2 × waiting for element to be visible, enabled and stable\u001b[22m\n\u001b[2m      - element is visible, enabled and stable\u001b[22m\n\u001b[2m      - scrolling into view if needed\u001b[22m\n\u001b[2m      - done scrolling\u001b[22m\n\u001b[2m      - <div aria-hidden=\"true\" class=\"_mask_17i0t_18\"></div> from <div role=\"presentation\" class=\"_root_17i0t_6\">…</div> subtree intercepts pointer events\u001b[22m\n\u001b[2m    - retrying click action\u001b[22m\n\u001b[2m    - waiting 20ms\u001b[22m\n\u001b[2m    2 × waiting for element to be visible, enabled and stable\u001b[22m\n\u001b[2m      - element is visible, enabled and stable\u001b[22m\n\u001b[2m      - scrolling into view if needed\u001b[22m\n\u001b[2m      - done scrolling\u001b[22m\n\u001b[2m      - <div aria-hidden=\"true\" class=\"_mask_17i0t_18\"></div> from <div role=\"presentation\" class=\"_root_17i0t_6\">…</div> subtree intercepts pointer events\u001b[22m\n\u001b[2m    - retrying click action\u001b[22m\n\u001b[2m      - waiting 100ms\u001b[22m\n\u001b[2m    5 × waiting for element to be visible, enabled and stable\u001b[22m\n\u001b[2m      - element is visible, enabled and stable\u001b[22m\n\u001b[2m      - scrolling into view if needed\u001b[22m\n\u001b[2m      - done scrolling\u001b[22m\n\u001b[2m      - <div aria-hidden=\"true\" class=\"_mask_17i0t_18\"></div> from <div role=\"presentation\" class=\"_root_17i0t_6\">…</div> subtree intercepts pointer events\u001b[22m\n\u001b[2m    - retrying click action\u001b[22m\n\u001b[2m      - waiting 500ms\u001b[22m\n"
+      }
+    },
+    {
+      "id": "desktop-1600x1000/light/13-settings-dismiss",
+      "verdict": "identical",
+      "differences": []
+    },
+    {
+      "id": "desktop-1600x1000/light/14-sidebar-toggle",
+      "verdict": "action-error",
+      "differences": [
+        "actionError"
+      ],
+      "note": {
+        "reference": "TimeoutError: locator.click: Timeout 2500ms exceeded.\nCall log:\n\u001b[2m  - waiting for locator('button:has-text(\"New Session\")').first()\u001b[22m\n\u001b[2m    - locator resolved to <button type=\"button\" aria-label=\"New session\" class=\"I4uGiW_newSession\" aria-keyshortcuts=\"Control+Alt+N\">…</button>\u001b[22m\n\u001b[2m  - attempting click action\u001b[22m\n\u001b[2m    2 × waiting for element to be visible, enabled and stable\u001b[22m\n\u001b[2m      - element is visible, enabled and stable\u001b[22m\n\u001b[2m      - scrolling into view if needed\u001b[22m\n\u001b[2m      - done scrolling\u001b[22m\n\u001b[2m      - <div aria-hidden=\"true\" class=\"_mask_17i0t_18\"></div> from <div role=\"presentation\" class=\"_root_17i0t_6\">…</div> subtree intercepts pointer events\u001b[22m\n\u001b[2m    - retrying click action\u001b[22m\n\u001b[2m    - waiting 20ms\u001b[22m\n\u001b[2m    2 × waiting for element to be visible, enabled and stable\u001b[22m\n\u001b[2m      - element is visible, enabled and stable\u001b[22m\n\u001b[2m      - scrolling into view if needed\u001b[22m\n\u001b[2m      - done scrolling\u001b[22m\n\u001b[2m      - <div aria-hidden=\"true\" class=\"_mask_17i0t_18\"></div> from <div role=\"presentation\" class=\"_root_17i0t_6\">…</div> subtree intercepts pointer events\u001b[22m\n\u001b[2m    - retrying click action\u001b[22m\n\u001b[2m      - waiting 100ms\u001b[22m\n\u001b[2m    5 × waiting for element to be visible, enabled and stable\u001b[22m\n\u001b[2m      - element is visible, enabled and stable\u001b[22m\n\u001b[2m      - scrolling into view if needed\u001b[22m\n\u001b[2m      - done scrolling\u001b[22m\n\u001b[2m      - <div aria-hidden=\"true\" class=\"_mask_17i0t_18\"></div> from <div role=\"presentation\" class=\"_root_17i0t_6\">…</div> subtree intercepts pointer events\u001b[22m\n\u001b[2m    - retrying click action\u001b[22m\n\u001b[2m      - waiting 500ms\u001b[22m\n",
+        "port": "TimeoutError: locator.click: Timeout 2500ms exceeded.\nCall log:\n\u001b[2m  - waiting for locator('button:has-text(\"New Session\")').first()\u001b[22m\n\u001b[2m    - locator resolved to <button type=\"button\" aria-label=\"New session\" class=\"I4uGiW_newSession\" aria-keyshortcuts=\"Control+Alt+N\">…</button>\u001b[22m\n\u001b[2m  - attempting click action\u001b[22m\n\u001b[2m    2 × waiting for element to be visible, enabled and stable\u001b[22m\n\u001b[2m      - element is visible, enabled and stable\u001b[22m\n\u001b[2m      - scrolling into view if needed\u001b[22m\n\u001b[2m      - done scrolling\u001b[22m\n\u001b[2m      - <div aria-hidden=\"true\" class=\"_mask_17i0t_18\"></div> from <div role=\"presentation\" class=\"_root_17i0t_6\">…</div> subtree intercepts pointer events\u001b[22m\n\u001b[2m    - retrying click action\u001b[22m\n\u001b[2m    - waiting 20ms\u001b[22m\n\u001b[2m    2 × waiting for element to be visible, enabled and stable\u001b[22m\n\u001b[2m      - element is visible, enabled and stable\u001b[22m\n\u001b[2m      - scrolling into view if needed\u001b[22m\n\u001b[2m      - done scrolling\u001b[22m\n\u001b[2m      - <div aria-hidden=\"true\" class=\"_mask_17i0t_18\"></div> from <div role=\"presentation\" class=\"_root_17i0t_6\">…</div> subtree intercepts pointer events\u001b[22m\n\u001b[2m    - retrying click action\u001b[22m\n\u001b[2m      - waiting 100ms\u001b[22m\n\u001b[2m    5 × waiting for element to be visible, enabled and stable\u001b[22m\n\u001b[2m      - element is visible, enabled and stable\u001b[22m\n\u001b[2m      - scrolling into view if needed\u001b[22m\n\u001b[2m      - done scrolling\u001b[22m\n\u001b[2m      - <div aria-hidden=\"true\" class=\"_mask_17i0t_18\"></div> from <div role=\"presentation\" class=\"_root_17i0t_6\">…</div> subtree intercepts pointer events\u001b[22m\n\u001b[2m    - retrying click action\u001b[22m\n\u001b[2m      - waiting 500ms\u001b[22m\n"
+      }
+    },
+    {
+      "id": "desktop-1600x1000/light/15-sidebar-restore",
+      "verdict": "identical",
+      "differences": []
+    },
+    {
+      "id": "desktop-1600x1000/light/16-command-palette",
+      "verdict": "action-error",
+      "differences": [
+        "actionError"
+      ],
+      "note": {
+        "reference": "TimeoutError: locator.click: Timeout 2500ms exceeded.\nCall log:\n\u001b[2m  - waiting for locator('button:has-text(\"Settings\"), a:has-text(\"Settings\")').first()\u001b[22m\n\u001b[2m    - locator resolved to <button type=\"button\" aria-label=\"Settings\" aria-expanded=\"false\" class=\"l-HorG_trigger\" aria-haspopup=\"dialog\" aria-keyshortcuts=\"Control+,\">…</button>\u001b[22m\n\u001b[2m  - attempting click action\u001b[22m\n\u001b[2m    2 × waiting for element to be visible, enabled and stable\u001b[22m\n\u001b[2m      - element is visible, enabled and stable\u001b[22m\n\u001b[2m      - scrolling into view if needed\u001b[22m\n\u001b[2m      - done scrolling\u001b[22m\n\u001b[2m      - <div aria-hidden=\"true\" class=\"_mask_17i0t_18\"></div> from <div role=\"presentation\" class=\"_root_17i0t_6\">…</div> subtree intercepts pointer events\u001b[22m\n\u001b[2m    - retrying click action\u001b[22m\n\u001b[2m    - waiting 20ms\u001b[22m\n\u001b[2m    2 × waiting for element to be visible, enabled and stable\u001b[22m\n\u001b[2m      - element is visible, enabled and stable\u001b[22m\n\u001b[2m      - scrolling into view if needed\u001b[22m\n\u001b[2m      - done scrolling\u001b[22m\n\u001b[2m      - <div aria-hidden=\"true\" class=\"_mask_17i0t_18\"></div> from <div role=\"presentation\" class=\"_root_17i0t_6\">…</div> subtree intercepts pointer events\u001b[22m\n\u001b[2m    - retrying click action\u001b[22m\n\u001b[2m      - waiting 100ms\u001b[22m\n\u001b[2m    5 × waiting for element to be visible, enabled and stable\u001b[22m\n\u001b[2m      - element is visible, enabled and stable\u001b[22m\n\u001b[2m      - scrolling into view if needed\u001b[22m\n\u001b[2m      - done scrolling\u001b[22m\n\u001b[2m      - <div aria-hidden=\"true\" class=\"_mask_17i0t_18\"></div> from <div role=\"presentation\" class=\"_root_17i0t_6\">…</div> subtree intercepts pointer events\u001b[22m\n\u001b[2m    - retrying click action\u001b[22m\n\u001b[2m      - waiting 500ms\u001b[22m\n",
+        "port": "TimeoutError: locator.click: Timeout 2500ms exceeded.\nCall log:\n\u001b[2m  - waiting for locator('button:has-text(\"Settings\"), a:has-text(\"Settings\")').first()\u001b[22m\n\u001b[2m    - locator resolved to <button type=\"button\" aria-label=\"Settings\" aria-expanded=\"false\" class=\"l-HorG_trigger\" aria-haspopup=\"dialog\" aria-keyshortcuts=\"Control+,\">…</button>\u001b[22m\n\u001b[2m  - attempting click action\u001b[22m\n\u001b[2m    2 × waiting for element to be visible, enabled and stable\u001b[22m\n\u001b[2m      - element is visible, enabled and stable\u001b[22m\n\u001b[2m      - scrolling into view if needed\u001b[22m\n\u001b[2m      - done scrolling\u001b[22m\n\u001b[2m      - <div aria-hidden=\"true\" class=\"_mask_17i0t_18\"></div> from <div role=\"presentation\" class=\"_root_17i0t_6\">…</div> subtree intercepts pointer events\u001b[22m\n\u001b[2m    - retrying click action\u001b[22m\n\u001b[2m    - waiting 20ms\u001b[22m\n\u001b[2m    2 × waiting for element to be visible, enabled and stable\u001b[22m\n\u001b[2m      - element is visible, enabled and stable\u001b[22m\n\u001b[2m      - scrolling into view if needed\u001b[22m\n\u001b[2m      - done scrolling\u001b[22m\n\u001b[2m      - <div aria-hidden=\"true\" class=\"_mask_17i0t_18\"></div> from <div role=\"presentation\" class=\"_root_17i0t_6\">…</div> subtree intercepts pointer events\u001b[22m\n\u001b[2m    - retrying click action\u001b[22m\n\u001b[2m      - waiting 100ms\u001b[22m\n\u001b[2m    5 × waiting for element to be visible, enabled and stable\u001b[22m\n\u001b[2m      - element is visible, enabled and stable\u001b[22m\n\u001b[2m      - scrolling into view if needed\u001b[22m\n\u001b[2m      - done scrolling\u001b[22m\n\u001b[2m      - <div aria-hidden=\"true\" class=\"_mask_17i0t_18\"></div> from <div role=\"presentation\" class=\"_root_17i0t_6\">…</div> subtree intercepts pointer events\u001b[22m\n\u001b[2m    - retrying click action\u001b[22m\n\u001b[2m      - waiting 500ms\u001b[22m\n"
+      }
+    },
+    {
+      "id": "desktop-1600x1000/light/17-palette-dismiss",
+      "verdict": "identical",
+      "differences": []
+    },
+    {
+      "id": "desktop-1600x1000/light/18-shortcut-hint",
+      "verdict": "identical",
+      "differences": []
+    },
+    {
+      "id": "desktop-1600x1000/dark/00-boot",
+      "verdict": "identical",
+      "differences": []
+    },
+    {
+      "id": "desktop-1600x1000/dark/01-onboarding-notice",
+      "verdict": "identical",
+      "differences": []
+    },
+    {
+      "id": "desktop-1600x1000/dark/02-notice-dismissed",
+      "verdict": "action-error",
+      "differences": [
+        "actionError"
+      ],
+      "note": {
+        "reference": "TimeoutError: locator.click: Timeout 2500ms exceeded.\nCall log:\n\u001b[2m  - waiting for locator('button:has-text(\"Continue\")').first()\u001b[22m\n\u001b[2m    - locator resolved to <button disabled type=\"button\" class=\"szVqxa_primaryButton\">Save and continue</button>\u001b[22m\n\u001b[2m  - attempting click action\u001b[22m\n\u001b[2m    2 × waiting for element to be visible, enabled and stable\u001b[22m\n\u001b[2m      - element is not enabled\u001b[22m\n\u001b[2m    - retrying click action\u001b[22m\n\u001b[2m    - waiting 20ms\u001b[22m\n\u001b[2m    2 × waiting for element to be visible, enabled and stable\u001b[22m\n\u001b[2m      - element is not enabled\u001b[22m\n\u001b[2m    - retrying click action\u001b[22m\n\u001b[2m      - waiting 100ms\u001b[22m\n\u001b[2m    5 × waiting for element to be visible, enabled and stable\u001b[22m\n\u001b[2m      - element is not enabled\u001b[22m\n\u001b[2m    - retrying click action\u001b[22m\n\u001b[2m      - waiting 500ms\u001b[22m\n",
+        "port": "TimeoutError: locator.click: Timeout 2500ms exceeded.\nCall log:\n\u001b[2m  - waiting for locator('button:has-text(\"Continue\")').first()\u001b[22m\n\u001b[2m    - locator resolved to <button disabled type=\"button\" class=\"szVqxa_primaryButton\">Save and continue</button>\u001b[22m\n\u001b[2m  - attempting click action\u001b[22m\n\u001b[2m    2 × waiting for element to be visible, enabled and stable\u001b[22m\n\u001b[2m      - element is not enabled\u001b[22m\n\u001b[2m    - retrying click action\u001b[22m\n\u001b[2m    - waiting 20ms\u001b[22m\n\u001b[2m    2 × waiting for element to be visible, enabled and stable\u001b[22m\n\u001b[2m      - element is not enabled\u001b[22m\n\u001b[2m    - retrying click action\u001b[22m\n\u001b[2m      - waiting 100ms\u001b[22m\n\u001b[2m    5 × waiting for element to be visible, enabled and stable\u001b[22m\n\u001b[2m      - element is not enabled\u001b[22m\n\u001b[2m    - retrying click action\u001b[22m\n\u001b[2m      - waiting 500ms\u001b[22m\n"
+      }
+    },
+    {
+      "id": "desktop-1600x1000/dark/03-empty-session",
+      "verdict": "identical",
+      "differences": []
+    },
+    {
+      "id": "desktop-1600x1000/dark/04-focus-composer",
+      "verdict": "identical",
+      "differences": []
+    },
+    {
+      "id": "desktop-1600x1000/dark/05-composer-typed",
+      "verdict": "identical",
+      "differences": []
+    },
+    {
+      "id": "desktop-1600x1000/dark/06-mode-menu",
+      "verdict": "identical",
+      "differences": []
+    },
+    {
+      "id": "desktop-1600x1000/dark/07-mode-dismiss",
+      "verdict": "action-error",
+      "differences": [
+        "actionError"
+      ],
+      "note": {
+        "reference": "TimeoutError: locator.click: Timeout 2500ms exceeded.\nCall log:\n\u001b[2m  - waiting for locator('button:has-text(\"Workspace Write\")').first()\u001b[22m\n\u001b[2m    - locator resolved to <button type=\"button\" class=\"WPyIlq_trigger\" aria-label=\"Access mode, current: Workspace Write\">…</button>\u001b[22m\n\u001b[2m  - attempting click action\u001b[22m\n\u001b[2m    2 × waiting for element to be visible, enabled and stable\u001b[22m\n\u001b[2m      - element is visible, enabled and stable\u001b[22m\n\u001b[2m      - scrolling into view if needed\u001b[22m\n\u001b[2m      - done scrolling\u001b[22m\n\u001b[2m      - <div class=\"szVqxa_editorActions\">…</div> from <div role=\"presentation\" class=\"_root_17i0t_6\">…</div> subtree intercepts pointer events\u001b[22m\n\u001b[2m    - retrying click action\u001b[22m\n\u001b[2m    - waiting 20ms\u001b[22m\n\u001b[2m    - waiting for element to be visible, enabled and stable\u001b[22m\n\u001b[2m    - element is visible, enabled and stable\u001b[22m\n\u001b[2m    - scrolling into view if needed\u001b[22m\n\u001b[2m    - done scrolling\u001b[22m\n\u001b[2m    - <div class=\"szVqxa_editorActions\">…</div> from <div role=\"presentation\" class=\"_root_17i0t_6\">…</div> subtree intercepts pointer events\u001b[22m\n\u001b[2m  2 × retrying click action\u001b[22m\n\u001b[2m      - waiting 100ms\u001b[22m\n\u001b[2m      - waiting for element to be visible, enabled and stable\u001b[22m\n\u001b[2m      - element is visible, enabled and stable\u001b[22m\n\u001b[2m      - scrolling into view if needed\u001b[22m\n\u001b[2m      - done scrolling\u001b[22m\n\u001b[2m      - <div aria-hidden=\"true\" class=\"_mask_17i0t_18\"></div> from <div role=\"presentation\" class=\"_root_17i0t_6\">…</div> subtree intercepts pointer events\u001b[22m\n\u001b[2m  2 × retrying click action\u001b[22m\n\u001b[2m      - waiting 500ms\u001b[22m\n\u001b[2m      - waiting for element to be visible, enabled and stable\u001b[22m\n\u001b[2m      - element is visible, enabled and stable\u001b[22m\n\u001b[2m      - scrolling into view if needed\u001b[22m\n\u001b[2m      - done scrolling\u001b[22m\n\u001b[2m      - <div class=\"szVqxa_editorActions\">…</div> from <div role=\"presentation\" class=\"_root_17i0t_6\">…</div> subtree intercepts pointer events\u001b[22m\n\u001b[2m  2 × retrying click action\u001b[22m\n\u001b[2m      - waiting 500ms\u001b[22m\n\u001b[2m      - waiting for element to be visible, enabled and stable\u001b[22m\n\u001b[2m      - element is visible, enabled and stable\u001b[22m\n\u001b[2m      - scrolling into view if needed\u001b[22m\n\u001b[2m      - done scrolling\u001b[22m\n\u001b[2m      - <div aria-hidden=\"true\" class=\"_mask_17i0t_18\"></div> from <div role=\"presentation\" class=\"_root_17i0t_6\">…</div> subtree intercepts pointer events\u001b[22m\n\u001b[2m  - retrying click action\u001b[22m\n\u001b[2m    - waiting 500ms\u001b[22m\n",
+        "port": "TimeoutError: locator.click: Timeout 2500ms exceeded.\nCall log:\n\u001b[2m  - waiting for locator('button:has-text(\"Workspace Write\")').first()\u001b[22m\n\u001b[2m    - locator resolved to <button type=\"button\" class=\"WPyIlq_trigger\" aria-label=\"Access mode, current: Workspace Write\">…</button>\u001b[22m\n\u001b[2m  - attempting click action\u001b[22m\n\u001b[2m    2 × waiting for element to be visible, enabled and stable\u001b[22m\n\u001b[2m      - element is visible, enabled and stable\u001b[22m\n\u001b[2m      - scrolling into view if needed\u001b[22m\n\u001b[2m      - done scrolling\u001b[22m\n\u001b[2m      - <div class=\"szVqxa_editorActions\">…</div> from <div role=\"presentation\" class=\"_root_17i0t_6\">…</div> subtree intercepts pointer events\u001b[22m\n\u001b[2m    - retrying click action\u001b[22m\n\u001b[2m    - waiting 20ms\u001b[22m\n\u001b[2m    - waiting for element to be visible, enabled and stable\u001b[22m\n\u001b[2m    - element is visible, enabled and stable\u001b[22m\n\u001b[2m    - scrolling into view if needed\u001b[22m\n\u001b[2m    - done scrolling\u001b[22m\n\u001b[2m    - <div class=\"szVqxa_editorActions\">…</div> from <div role=\"presentation\" class=\"_root_17i0t_6\">…</div> subtree intercepts pointer events\u001b[22m\n\u001b[2m  2 × retrying click action\u001b[22m\n\u001b[2m      - waiting 100ms\u001b[22m\n\u001b[2m      - waiting for element to be visible, enabled and stable\u001b[22m\n\u001b[2m      - element is visible, enabled and stable\u001b[22m\n\u001b[2m      - scrolling into view if needed\u001b[22m\n\u001b[2m      - done scrolling\u001b[22m\n\u001b[2m      - <div aria-hidden=\"true\" class=\"_mask_17i0t_18\"></div> from <div role=\"presentation\" class=\"_root_17i0t_6\">…</div> subtree intercepts pointer events\u001b[22m\n\u001b[2m  2 × retrying click action\u001b[22m\n\u001b[2m      - waiting 500ms\u001b[22m\n\u001b[2m      - waiting for element to be visible, enabled and stable\u001b[22m\n\u001b[2m      - element is visible, enabled and stable\u001b[22m\n\u001b[2m      - scrolling into view if needed\u001b[22m\n\u001b[2m      - done scrolling\u001b[22m\n\u001b[2m      - <div class=\"szVqxa_editorActions\">…</div> from <div role=\"presentation\" class=\"_root_17i0t_6\">…</div> subtree intercepts pointer events\u001b[22m\n\u001b[2m  2 × retrying click action\u001b[22m\n\u001b[2m      - waiting 500ms\u001b[22m\n\u001b[2m      - waiting for element to be visible, enabled and stable\u001b[22m\n\u001b[2m      - element is visible, enabled and stable\u001b[22m\n\u001b[2m      - scrolling into view if needed\u001b[22m\n\u001b[2m      - done scrolling\u001b[22m\n\u001b[2m      - <div aria-hidden=\"true\" class=\"_mask_17i0t_18\"></div> from <div role=\"presentation\" class=\"_root_17i0t_6\">…</div> subtree intercepts pointer events\u001b[22m\n\u001b[2m  - retrying click action\u001b[22m\n\u001b[2m    - waiting 500ms\u001b[22m\n"
+      }
+    },
+    {
+      "id": "desktop-1600x1000/dark/08-model-picker",
+      "verdict": "identical",
+      "differences": []
+    },
+    {
+      "id": "desktop-1600x1000/dark/09-model-dismiss",
+      "verdict": "identical",
+      "differences": []
+    },
+    {
+      "id": "desktop-1600x1000/dark/10-plugins-page",
+      "verdict": "identical",
+      "differences": []
+    },
+    {
+      "id": "desktop-1600x1000/dark/11-sidebar-new-session",
+      "verdict": "identical",
+      "differences": []
+    },
+    {
+      "id": "desktop-1600x1000/dark/12-settings-open",
+      "verdict": "action-error",
+      "differences": [
+        "actionError"
+      ],
+      "note": {
+        "reference": "TimeoutError: locator.click: Timeout 2500ms exceeded.\nCall log:\n\u001b[2m  - waiting for locator('button:has-text(\"Plugins\"), a:has-text(\"Plugins\")').first()\u001b[22m\n\u001b[2m    - locator resolved to <button type=\"button\" aria-label=\"Plugins\" class=\"I4uGiW_panelRow\">…</button>\u001b[22m\n\u001b[2m  - attempting click action\u001b[22m\n\u001b[2m    2 × waiting for element to be visible, enabled and stable\u001b[22m\n\u001b[2m      - element is visible, enabled and stable\u001b[22m\n\u001b[2m      - scrolling into view if needed\u001b[22m\n\u001b[2m      - done scrolling\u001b[22m\n\u001b[2m      - <div aria-hidden=\"true\" class=\"_mask_17i0t_18\"></div> from <div role=\"presentation\" class=\"_root_17i0t_6\">…</div> subtree intercepts pointer events\u001b[22m\n\u001b[2m    - retrying click action\u001b[22m\n\u001b[2m    - waiting 20ms\u001b[22m\n\u001b[2m    2 × waiting for element to be visible, enabled and stable\u001b[22m\n\u001b[2m      - element is visible, enabled and stable\u001b[22m\n\u001b[2m      - scrolling into view if needed\u001b[22m\n\u001b[2m      - done scrolling\u001b[22m\n\u001b[2m      - <div aria-hidden=\"true\" class=\"_mask_17i0t_18\"></div> from <div role=\"presentation\" class=\"_root_17i0t_6\">…</div> subtree intercepts pointer events\u001b[22m\n\u001b[2m    - retrying click action\u001b[22m\n\u001b[2m      - waiting 100ms\u001b[22m\n\u001b[2m    5 × waiting for element to be visible, enabled and stable\u001b[22m\n\u001b[2m      - element is visible, enabled and stable\u001b[22m\n\u001b[2m      - scrolling into view if needed\u001b[22m\n\u001b[2m      - done scrolling\u001b[22m\n\u001b[2m      - <div aria-hidden=\"true\" class=\"_mask_17i0t_18\"></div> from <div role=\"presentation\" class=\"_root_17i0t_6\">…</div> subtree intercepts pointer events\u001b[22m\n\u001b[2m    - retrying click action\u001b[22m\n\u001b[2m      - waiting 500ms\u001b[22m\n",
+        "port": "TimeoutError: locator.click: Timeout 2500ms exceeded.\nCall log:\n\u001b[2m  - waiting for locator('button:has-text(\"Plugins\"), a:has-text(\"Plugins\")').first()\u001b[22m\n\u001b[2m    - locator resolved to <button type=\"button\" aria-label=\"Plugins\" class=\"I4uGiW_panelRow\">…</button>\u001b[22m\n\u001b[2m  - attempting click action\u001b[22m\n\u001b[2m    2 × waiting for element to be visible, enabled and stable\u001b[22m\n\u001b[2m      - element is visible, enabled and stable\u001b[22m\n\u001b[2m      - scrolling into view if needed\u001b[22m\n\u001b[2m      - done scrolling\u001b[22m\n\u001b[2m      - <div aria-hidden=\"true\" class=\"_mask_17i0t_18\"></div> from <div role=\"presentation\" class=\"_root_17i0t_6\">…</div> subtree intercepts pointer events\u001b[22m\n\u001b[2m    - retrying click action\u001b[22m\n\u001b[2m    - waiting 20ms\u001b[22m\n\u001b[2m    2 × waiting for element to be visible, enabled and stable\u001b[22m\n\u001b[2m      - element is visible, enabled and stable\u001b[22m\n\u001b[2m      - scrolling into view if needed\u001b[22m\n\u001b[2m      - done scrolling\u001b[22m\n\u001b[2m      - <div aria-hidden=\"true\" class=\"_mask_17i0t_18\"></div> from <div role=\"presentation\" class=\"_root_17i0t_6\">…</div> subtree intercepts pointer events\u001b[22m\n\u001b[2m    - retrying click action\u001b[22m\n\u001b[2m      - waiting 100ms\u001b[22m\n\u001b[2m    5 × waiting for element to be visible, enabled and stable\u001b[22m\n\u001b[2m      - element is visible, enabled and stable\u001b[22m\n\u001b[2m      - scrolling into view if needed\u001b[22m\n\u001b[2m      - done scrolling\u001b[22m\n\u001b[2m      - <div aria-hidden=\"true\" class=\"_mask_17i0t_18\"></div> from <div role=\"presentation\" class=\"_root_17i0t_6\">…</div> subtree intercepts pointer events\u001b[22m\n\u001b[2m    - retrying click action\u001b[22m\n\u001b[2m      - waiting 500ms\u001b[22m\n"
+      }
+    },
+    {
+      "id": "desktop-1600x1000/dark/13-settings-dismiss",
+      "verdict": "identical",
+      "differences": []
+    },
+    {
+      "id": "desktop-1600x1000/dark/14-sidebar-toggle",
+      "verdict": "action-error",
+      "differences": [
+        "actionError"
+      ],
+      "note": {
+        "reference": "TimeoutError: locator.click: Timeout 2500ms exceeded.\nCall log:\n\u001b[2m  - waiting for locator('button:has-text(\"New Session\")').first()\u001b[22m\n\u001b[2m    - locator resolved to <button type=\"button\" aria-label=\"New session\" class=\"I4uGiW_newSession\" aria-keyshortcuts=\"Control+Alt+N\">…</button>\u001b[22m\n\u001b[2m  - attempting click action\u001b[22m\n\u001b[2m    2 × waiting for element to be visible, enabled and stable\u001b[22m\n\u001b[2m      - element is visible, enabled and stable\u001b[22m\n\u001b[2m      - scrolling into view if needed\u001b[22m\n\u001b[2m      - done scrolling\u001b[22m\n\u001b[2m      - <div aria-hidden=\"true\" class=\"_mask_17i0t_18\"></div> from <div role=\"presentation\" class=\"_root_17i0t_6\">…</div> subtree intercepts pointer events\u001b[22m\n\u001b[2m    - retrying click action\u001b[22m\n\u001b[2m    - waiting 20ms\u001b[22m\n\u001b[2m    2 × waiting for element to be visible, enabled and stable\u001b[22m\n\u001b[2m      - element is visible, enabled and stable\u001b[22m\n\u001b[2m      - scrolling into view if needed\u001b[22m\n\u001b[2m      - done scrolling\u001b[22m\n\u001b[2m      - <div aria-hidden=\"true\" class=\"_mask_17i0t_18\"></div> from <div role=\"presentation\" class=\"_root_17i0t_6\">…</div> subtree intercepts pointer events\u001b[22m\n\u001b[2m    - retrying click action\u001b[22m\n\u001b[2m      - waiting 100ms\u001b[22m\n\u001b[2m    5 × waiting for element to be visible, enabled and stable\u001b[22m\n\u001b[2m      - element is visible, enabled and stable\u001b[22m\n\u001b[2m      - scrolling into view if needed\u001b[22m\n\u001b[2m      - done scrolling\u001b[22m\n\u001b[2m      - <div aria-hidden=\"true\" class=\"_mask_17i0t_18\"></div> from <div role=\"presentation\" class=\"_root_17i0t_6\">…</div> subtree intercepts pointer events\u001b[22m\n\u001b[2m    - retrying click action\u001b[22m\n\u001b[2m      - waiting 500ms\u001b[22m\n",
+        "port": "TimeoutError: locator.click: Timeout 2500ms exceeded.\nCall log:\n\u001b[2m  - waiting for locator('button:has-text(\"New Session\")').first()\u001b[22m\n\u001b[2m    - locator resolved to <button type=\"button\" aria-label=\"New session\" class=\"I4uGiW_newSession\" aria-keyshortcuts=\"Control+Alt+N\">…</button>\u001b[22m\n\u001b[2m  - attempting click action\u001b[22m\n\u001b[2m    2 × waiting for element to be visible, enabled and stable\u001b[22m\n\u001b[2m      - element is visible, enabled and stable\u001b[22m\n\u001b[2m      - scrolling into view if needed\u001b[22m\n\u001b[2m      - done scrolling\u001b[22m\n\u001b[2m      - <div aria-hidden=\"true\" class=\"_mask_17i0t_18\"></div> from <div role=\"presentation\" class=\"_root_17i0t_6\">…</div> subtree intercepts pointer events\u001b[22m\n\u001b[2m    - retrying click action\u001b[22m\n\u001b[2m    - waiting 20ms\u001b[22m\n\u001b[2m    2 × waiting for element to be visible, enabled and stable\u001b[22m\n\u001b[2m      - element is visible, enabled and stable\u001b[22m\n\u001b[2m      - scrolling into view if needed\u001b[22m\n\u001b[2m      - done scrolling\u001b[22m\n\u001b[2m      - <div aria-hidden=\"true\" class=\"_mask_17i0t_18\"></div> from <div role=\"presentation\" class=\"_root_17i0t_6\">…</div> subtree intercepts pointer events\u001b[22m\n\u001b[2m    - retrying click action\u001b[22m\n\u001b[2m      - waiting 100ms\u001b[22m\n\u001b[2m    5 × waiting for element to be visible, enabled and stable\u001b[22m\n\u001b[2m      - element is visible, enabled and stable\u001b[22m\n\u001b[2m      - scrolling into view if needed\u001b[22m\n\u001b[2m      - done scrolling\u001b[22m\n\u001b[2m      - <div aria-hidden=\"true\" class=\"_mask_17i0t_18\"></div> from <div role=\"presentation\" class=\"_root_17i0t_6\">…</div> subtree intercepts pointer events\u001b[22m\n\u001b[2m    - retrying click action\u001b[22m\n\u001b[2m      - waiting 500ms\u001b[22m\n"
+      }
+    },
+    {
+      "id": "desktop-1600x1000/dark/15-sidebar-restore",
+      "verdict": "identical",
+      "differences": []
+    },
+    {
+      "id": "desktop-1600x1000/dark/16-command-palette",
+      "verdict": "action-error",
+      "differences": [
+        "actionError"
+      ],
+      "note": {
+        "reference": "TimeoutError: locator.click: Timeout 2500ms exceeded.\nCall log:\n\u001b[2m  - waiting for locator('button:has-text(\"Settings\"), a:has-text(\"Settings\")').first()\u001b[22m\n\u001b[2m    - locator resolved to <button type=\"button\" aria-label=\"Settings\" aria-expanded=\"false\" class=\"l-HorG_trigger\" aria-haspopup=\"dialog\" aria-keyshortcuts=\"Control+,\">…</button>\u001b[22m\n\u001b[2m  - attempting click action\u001b[22m\n\u001b[2m    2 × waiting for element to be visible, enabled and stable\u001b[22m\n\u001b[2m      - element is visible, enabled and stable\u001b[22m\n\u001b[2m      - scrolling into view if needed\u001b[22m\n\u001b[2m      - done scrolling\u001b[22m\n\u001b[2m      - <div aria-hidden=\"true\" class=\"_mask_17i0t_18\"></div> from <div role=\"presentation\" class=\"_root_17i0t_6\">…</div> subtree intercepts pointer events\u001b[22m\n\u001b[2m    - retrying click action\u001b[22m\n\u001b[2m    - waiting 20ms\u001b[22m\n\u001b[2m    2 × waiting for element to be visible, enabled and stable\u001b[22m\n\u001b[2m      - element is visible, enabled and stable\u001b[22m\n\u001b[2m      - scrolling into view if needed\u001b[22m\n\u001b[2m      - done scrolling\u001b[22m\n\u001b[2m      - <div aria-hidden=\"true\" class=\"_mask_17i0t_18\"></div> from <div role=\"presentation\" class=\"_root_17i0t_6\">…</div> subtree intercepts pointer events\u001b[22m\n\u001b[2m    - retrying click action\u001b[22m\n\u001b[2m      - waiting 100ms\u001b[22m\n\u001b[2m    5 × waiting for element to be visible, enabled and stable\u001b[22m\n\u001b[2m      - element is visible, enabled and stable\u001b[22m\n\u001b[2m      - scrolling into view if needed\u001b[22m\n\u001b[2m      - done scrolling\u001b[22m\n\u001b[2m      - <div aria-hidden=\"true\" class=\"_mask_17i0t_18\"></div> from <div role=\"presentation\" class=\"_root_17i0t_6\">…</div> subtree intercepts pointer events\u001b[22m\n\u001b[2m    - retrying click action\u001b[22m\n\u001b[2m      - waiting 500ms\u001b[22m\n",
+        "port": "TimeoutError: locator.click: Timeout 2500ms exceeded.\nCall log:\n\u001b[2m  - waiting for locator('button:has-text(\"Settings\"), a:has-text(\"Settings\")').first()\u001b[22m\n\u001b[2m    - locator resolved to <button type=\"button\" aria-label=\"Settings\" aria-expanded=\"false\" class=\"l-HorG_trigger\" aria-haspopup=\"dialog\" aria-keyshortcuts=\"Control+,\">…</button>\u001b[22m\n\u001b[2m  - attempting click action\u001b[22m\n\u001b[2m    2 × waiting for element to be visible, enabled and stable\u001b[22m\n\u001b[2m      - element is visible, enabled and stable\u001b[22m\n\u001b[2m      - scrolling into view if needed\u001b[22m\n\u001b[2m      - done scrolling\u001b[22m\n\u001b[2m      - <div aria-hidden=\"true\" class=\"_mask_17i0t_18\"></div> from <div role=\"presentation\" class=\"_root_17i0t_6\">…</div> subtree intercepts pointer events\u001b[22m\n\u001b[2m    - retrying click action\u001b[22m\n\u001b[2m    - waiting 20ms\u001b[22m\n\u001b[2m    2 × waiting for element to be visible, enabled and stable\u001b[22m\n\u001b[2m      - element is visible, enabled and stable\u001b[22m\n\u001b[2m      - scrolling into view if needed\u001b[22m\n\u001b[2m      - done scrolling\u001b[22m\n\u001b[2m      - <div aria-hidden=\"true\" class=\"_mask_17i0t_18\"></div> from <div role=\"presentation\" class=\"_root_17i0t_6\">…</div> subtree intercepts pointer events\u001b[22m\n\u001b[2m    - retrying click action\u001b[22m\n\u001b[2m      - waiting 100ms\u001b[22m\n\u001b[2m    5 × waiting for element to be visible, enabled and stable\u001b[22m\n\u001b[2m      - element is visible, enabled and stable\u001b[22m\n\u001b[2m      - scrolling into view if needed\u001b[22m\n\u001b[2m      - done scrolling\u001b[22m\n\u001b[2m      - <div aria-hidden=\"true\" class=\"_mask_17i0t_18\"></div> from <div role=\"presentation\" class=\"_root_17i0t_6\">…</div> subtree intercepts pointer events\u001b[22m\n\u001b[2m    - retrying click action\u001b[22m\n\u001b[2m      - waiting 500ms\u001b[22m\n"
+      }
+    },
+    {
+      "id": "desktop-1600x1000/dark/17-palette-dismiss",
+      "verdict": "identical",
+      "differences": []
+    },
+    {
+      "id": "desktop-1600x1000/dark/18-shortcut-hint",
+      "verdict": "identical",
+      "differences": []
+    }
+  ]
+}

@@ -1,0 +1,15 @@
+# Desktop omits account-only actions from the More menu. The Settings shell
+# remains available through the port-owned settings.launcher contribution.
+#
+# NOTE: a patch both overrides existing rows and ADDS new ones, so the row below
+# is required. Declaring `dsh.client` in package.json is NOT sufficient: the Host
+# only offers a client bundle for a package that is an active plugin row in the
+# profile composition. Without the row, the Host never serves
+# `/plugins/??@dsh-port/dsh-client-ui-updates/client.js` (it answers 404), the
+# client never loads the plugin, and no settings section appears.
+- id: ui-settings-account
+  name: '@deepseek-ai/dsh-client-ui-settings-account'
+  disabled: true
+
+- id: dsh-port-ui-updates
+  name: '@dsh-port/dsh-client-ui-updates'

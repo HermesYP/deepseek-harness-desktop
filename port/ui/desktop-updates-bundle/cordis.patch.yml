@@ -1,0 +1,23 @@
+# Port-owned desktop bundle layer.
+#
+# Why this package exists separately from `@dsh-port/dsh-client-ui-updates`:
+# a browser row is only served when the Host can resolve the row's package, and
+# it resolves it through "the nearest ancestor manifest declaring the name"
+# (`packages/client/modules/src/index.ts`, `resolveMeta`). A package cannot
+# declare itself, so the row must live in a BUNDLE whose manifest declares the
+# plugin as a dependency. That is also the shape
+# `packages/client/AGENTS.md` requires: a `dsh.client` row in a bundle layer
+# plus a manifest dependency that owns the row's bare name.
+#
+# The disable row keeps working from the same layer. It removes the
+# web-oriented account plugin, which owns the sidebar account menu holding
+# "Contact us" and "Sign in" when signed out. `settings.launcher` is
+# re-provided by the port plugin so the More menu keeps Settings, and that is
+# also the surface carrying the Updates section.
+
+- id: ui-settings-account
+  name: '@deepseek-ai/dsh-client-ui-settings-account'
+  disabled: true
+
+- id: dsh-port-ui-updates
+  name: '@dsh-port/dsh-client-ui-updates'

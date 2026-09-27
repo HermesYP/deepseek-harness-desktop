@@ -1,0 +1,1 @@
+[{"type":"set","id":"a.one","binding":{"code":"KeyB","modifiers":["primary"]}},{"type":"set","id":"a.one","binding":null},{"type":"reset","id":"a.one"},{"type":"reset-all"}]

@@ -1,0 +1,27 @@
+# Reference checkout: a read-only upstream clone pinned for comparison.
+# It is never part of this repository.
+_upstream/
+
+# Build outputs and generated trees
+port/src-tauri/target/
+port/ui/dist/
+port/ui/node_modules/
+port/runtime-payload/
+port/.scratch/
+
+# Installers and compiled binaries
+*.exe
+*.msi
+*.dll
+*.pdb
+*.node
+
+# Logs and transient captures
+*.log
+
+# Stray scratch harness home created during development: contains a credential
+# store and real session data. Never commit it.
+.ref-home/
+
+# Nested package metadata anywhere in the tree
+**/node_modules/

@@ -1,0 +1,1 @@
+{"schemaVersion":2,"profiles":{"desktop:windows":{"a.one":null,"page.close":{"code":"KeyW","secondCode":"KeyR","modifiers":["primary"]}},"web:macos":{}}}

@@ -1,0 +1,32 @@
+[package]
+name = "dsh-gateway"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+description = "Authenticated loopback HTTP + WebSocket application gateway for the DeepSeek Harness desktop port."
+
+[dependencies]
+dsh-core = { path = "../dsh-core" }
+axum = { workspace = true }
+base64 = { workspace = true }
+bytes = "1"
+chrono = { workspace = true }
+futures-util = { workspace = true }
+http-body-util = "0.1"
+getrandom = { workspace = true }
+hmac = { workspace = true }
+mime_guess = { workspace = true }
+reqwest = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+sha2 = { workspace = true }
+subtle = { workspace = true }
+tokio = { workspace = true }
+tokio-tungstenite = { workspace = true }
+tracing = { workspace = true }
+url = { workspace = true }
+
+[dev-dependencies]
+tempfile = "3"

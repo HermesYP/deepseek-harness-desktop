@@ -1,0 +1,11 @@
+{
+  "name": "@dsh-port/ui",
+  "private": true,
+  "type": "module",
+  "description": "Preserved upstream web-client shell + typed desktop bridge for the Rust-core port (TypeScript/React is a documented non-Rust exception)",
+  "scripts": {
+    "build": "node node_modules/vite/bin/vite.js build --config shell/vite.config.ts",
+    "test": "node node_modules/vitest/vitest.mjs run desktop-bridge/tests/",
+    "test:types": "node node_modules/typescript/bin/tsc --noEmit -p desktop-bridge/tsconfig.json && node node_modules/typescript/bin/tsc --noEmit -p client-updates/tsconfig.json"
+  }
+}

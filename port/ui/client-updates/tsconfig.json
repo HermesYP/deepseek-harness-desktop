@@ -1,0 +1,18 @@
+{
+  "extends": "../../../_upstream/tsconfig.base.client.json",
+  "compilerOptions": {
+    "rootDir": "..",
+    "outDir": "lib/types",
+    "noEmit": true,
+    "paths": {
+      "@deepseek-ai/cordis": ["../../../_upstream/vendor/cordis/lib/types/index.d.ts"],
+      "@deepseek-ai/dsh-client-store": ["../../../_upstream/packages/client/store/lib/types/index.d.ts"],
+      "@deepseek-ai/dsh-client-ui-slots": ["../../../_upstream/packages/client/ui-slots/lib/types/index.d.ts"],
+      "@deepseek-ai/dsh-client-ui-primitives": ["../../../_upstream/packages/client/ui-primitives/lib/types/index.d.ts"],
+      "@deepseek-ai/dsh-client-ui-settings/client": ["../../../_upstream/packages/client/ui-settings/lib/types/client/index.d.ts"],
+      "@deepseek-ai/dsh-client-locale/client": ["../../../_upstream/packages/client/locale/lib/types/client/index.d.ts"],
+      "@deepseek-ai/dsh-client-ui-renderer/client": ["../../../_upstream/packages/client/ui-renderer/lib/types/client/index.d.ts"]
+    }
+  },
+  "include": ["src", "../desktop-bridge/index.ts", "../desktop-bridge/protocol.ts"]
+}

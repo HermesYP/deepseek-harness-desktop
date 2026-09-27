@@ -1,0 +1,18 @@
+# Rust build configuration for the desktop port.
+#
+# Primary target: Windows x64 (verified in ../docs/decisions/0001-desktop-architecture.md).
+# The workspace is portable to macOS and Linux; those targets are not parity-verified.
+
+[build]
+# Target is chosen by the caller so the same workspace builds on all three hosts.
+jobs = 8
+
+[target.x86_64-pc-windows-msvc]
+# Windows subsystem for the packaged app is set by the Tauri bundler; dev builds
+# keep a console so diagnostic logs remain visible during development.
+rustflags = []
+
+# Reproducible path remapping: build logs and panic messages must not leak the
+# developer's home directory into shipped artifacts or crash reports.
+[env]
+# (set by the build scripts; see port/scripts/build.ps1)

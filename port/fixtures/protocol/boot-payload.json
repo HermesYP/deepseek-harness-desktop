@@ -1,0 +1,1 @@
+{"injections":[{"kind":"global","name":"__DSH_BOOT__","value":{"rev":"r1","entries":[],"batches":[]}}],"streamBaseUrl":"http://127.0.0.1:3080","authenticatedUrl":"http://127.0.0.1:3080/?token=fixture-only"}

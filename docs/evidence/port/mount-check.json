@@ -1,0 +1,36 @@
+{
+  "cdp": "http://127.0.0.1:9222",
+  "url": "http://127.0.0.1:51195/",
+  "mounted": true,
+  "state": {
+    "title": "DSH Local Build",
+    "lang": "en",
+    "platformMarker": "win32",
+    "windowsTitlebar": "",
+    "themeSource": "system",
+    "rootChildren": 1,
+    "pluginStyles": 137,
+    "hasBootGlobal": true,
+    "hasModuleLoader": true,
+    "hasDesktopBoot": true,
+    "hasDesktopMarker": true,
+    "hasHostPaths": false,
+    "hasNewSession": true,
+    "hasComposerHint": true,
+    "hasSettingsText": false,
+    "hasSettingsControl": false,
+    "sidebarLabels": [
+      "DSH Local Build0.1.7-rc.2-477b4f4-dirty",
+      "New SessionCtrl+N",
+      "Plugins",
+      "More",
+      "Default workspace",
+      "Standard mode",
+      "Workspace Write",
+      "DeepSeek-V41-FlashHigh"
+    ],
+    "bootText": null,
+    "textSample": "DSH Local Build\n0.1.7-rc.2-477b4f4-dirty\nNew Session\nCtrl\n+\nN\nPlugins\nWorkspaces\nDefault workspace\nNew Session\nMore\nInto the Unknown\nPreview\nDefault workspace\nStandard mode\nDescribe what you want to build, / commands, @ files or sessions\nWorkspace Write\nDeepSeek-V41-Flash\nHigh"
+  },
+  "consoleErrors": []
+}

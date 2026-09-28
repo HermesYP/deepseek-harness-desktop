@@ -164,6 +164,19 @@ function Build-Ui {
   Write-Host "    official profile: version $env:DSH_CLIENT_VERSION, commit $env:DSH_CLIENT_COMMIT_HASH" -ForegroundColor DarkGray
 
   Invoke-Checked 'pnpm' @('run', 'build') $UiDir
+
+  # Regenerate the port-owned client plugin from its own source. The compiled
+  # files are tracked, so a clean checkout already has them - but the advertised
+  # all-stage build must not depend on tracked build output, or a source edit to
+  # the plugin would only ever be built by hand (live-review finding 2, build
+  # gap). `bundle.mjs` runs the pinned upstream tsdown and then verifies the
+  # emitted `__ModuleLoader__` wrapper against the authentic shape.
+  $pluginDir = Join-Path $UiDir 'client-updates'
+  $pluginBundler = Join-Path $pluginDir 'bundle.mjs'
+  if (-not (Test-Path $pluginBundler)) {
+    throw "Port client plugin bundler is missing: $pluginBundler"
+  }
+  Invoke-Checked 'node' @('bundle.mjs') $pluginDir
 }
 
 function Build-Core {
@@ -354,33 +367,69 @@ console.log(`Selected package closure: ${set.packages.length} packages`)
     'node_modules\@deepseek-ai\dsh-web-app\package.json')
   $missing = @($anchors | Where-Object { -not (Test-Path (Join-Path $dsh $_)) })
 
-  # Ship the port-owned client plugins (finding F-43). Upstream's package set is a
-  # dependency closure rooted at @deepseek-ai/dsh and desktop-host, so a
-  # port-owned package is NOT in it by construction and has to be added
-  # explicitly here. Each plugin carries its own `dsh.bundle.patch`, which is how
-  # port policy reaches the desktop profile -- for example disabling the
-  # web-oriented account plugin -- WITHOUT writing into the user's own
-  # profiles/desktop/cordis.patch.yml.
+  # Ship the port-owned packages. Upstream's package set is a dependency closure
+  # rooted at @deepseek-ai/dsh and desktop-host, so a port-owned package is NOT in
+  # it by construction and has to be added explicitly here.
+  #
+  # BOTH entries are required, and they are not interchangeable:
+  #   * the BUNDLE is what `DESKTOP_PROFILE_BUNDLES` selects, so the desktop
+  #     profile resolves it; its patch inserts the Updates row and disables the
+  #     web-oriented account plugin.
+  #   * the CLIENT PLUGIN is the browser row that bundle inserts. The bundle's
+  #     manifest declares it as a dependency, which is how the Host resolves the
+  #     row's bare name (`packages/client/modules/src/index.ts`, `resolveMeta`).
+  # Shipping only the plugin left every fresh profile selecting an unresolved
+  # bundle (live-review finding 2). Each entry therefore carries its own file
+  # list: a bundle has no compiled `lib`.
+  #
   # Copied BEFORE the integrity checks so reparse points, path depth and the file
-  # count all cover what actually ships, and so a missing plugin fails the stage
+  # count all cover what actually ships, and so a missing file fails the stage
   # loudly instead of silently producing an installer without it.
-  $portPlugins = @(
-    @{ Source = (Join-Path $UiDir 'client-updates'); Name = '@dsh-port\dsh-client-ui-updates' }
+  $portPackages = @(
+    @{ Source = (Join-Path $UiDir 'desktop-updates-bundle'); Name = '@dsh-port\dsh-desktop-updates-bundle';
+      Files = @('package.json', 'cordis.patch.yml') },
+    @{ Source = (Join-Path $UiDir 'client-updates'); Name = '@dsh-port\dsh-client-ui-updates';
+      Files = @('package.json', 'cordis.patch.yml', 'lib\index.js', 'lib\client.js', 'lib\client.js.map') }
   )
-  foreach ($plugin in $portPlugins) {
-    $pluginTarget = Join-Path $dsh (Join-Path 'node_modules' $plugin.Name)
-    New-Item -ItemType Directory -Force -Path $pluginTarget | Out-Null
-    foreach ($file in @('package.json', 'cordis.patch.yml', 'lib\index.js', 'lib\client.js', 'lib\client.js.map')) {
-      $from = Join-Path $plugin.Source $file
+  foreach ($package in $portPackages) {
+    $packageTarget = Join-Path $dsh (Join-Path 'node_modules' $package.Name)
+    New-Item -ItemType Directory -Force -Path $packageTarget | Out-Null
+    foreach ($file in $package.Files) {
+      $from = Join-Path $package.Source $file
       if (-not (Test-Path $from)) {
-        throw "Port plugin file missing: $from. Build it first with: & `"$PSScriptRoot\build.ps1`" -Stage ui"
+        throw "Port package file missing: $from"
       }
-      $to = Join-Path $pluginTarget $file
+      $to = Join-Path $packageTarget $file
       New-Item -ItemType Directory -Force -Path (Split-Path $to -Parent) | Out-Null
       Copy-Item $from $to -Force
     }
-    Write-Host "    port plugin -> $pluginTarget" -ForegroundColor DarkGray
+    Write-Host "    port package -> $packageTarget" -ForegroundColor DarkGray
   }
+
+  # Every bundle the desktop profile selects must RESOLVE from the payload, or a
+  # fresh profile quietly composes without that layer. Read the list from the same
+  # constant the profile initializer uses rather than restating it here, so this
+  # check cannot drift from the thing it guards.
+  $profileSource = Join-Path $TauriDir 'crates\dsh-core\src\profile.rs'
+  $selected = @()
+  if (Test-Path $profileSource) {
+    $profileText = Get-Content $profileSource -Raw
+    $block = [regex]::Match($profileText, 'DESKTOP_PROFILE_BUNDLES:\s*&\[&str\]\s*=\s*&\[(?<body>[^\]]*)\]')
+    if ($block.Success) {
+      $selected = @([regex]::Matches($block.Groups['body'].Value, '"([^"]+)"') | ForEach-Object { $_.Groups[1].Value })
+    }
+  }
+  if ($selected.Count -eq 0) {
+    throw "Could not read DESKTOP_PROFILE_BUNDLES from $profileSource; refusing to stage a payload whose selected bundles were never validated."
+  }
+  $unresolved = @($selected | Where-Object {
+      $relative = 'node_modules\' + ($_ -replace '/', '\') + '\package.json'
+      -not (Test-Path (Join-Path $dsh $relative))
+    })
+  if ($unresolved.Count) {
+    throw "Runtime payload cannot resolve these desktop profile bundles: $($unresolved -join ', '). A fresh profile would compose without them."
+  }
+  Write-Host "    profile bundles resolve: $($selected -join ', ')" -ForegroundColor DarkGray
 
   $reparse = @(Get-ChildItem (Join-Path $dsh 'node_modules') -Recurse -Force -ErrorAction Stop |
     Where-Object { $_.Attributes -band [IO.FileAttributes]::ReparsePoint })

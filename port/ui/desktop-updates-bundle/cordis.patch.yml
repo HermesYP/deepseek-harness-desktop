@@ -1,23 +1,35 @@
 # Port-owned desktop bundle layer.
 #
-# Why this package exists separately from `@dsh-port/dsh-client-ui-updates`:
-# a browser row is only served when the Host can resolve the row's package, and
-# it resolves it through "the nearest ancestor manifest declaring the name"
-# (`packages/client/modules/src/index.ts`, `resolveMeta`). A package cannot
-# declare itself, so the row must live in a BUNDLE whose manifest declares the
-# plugin as a dependency. That is also the shape
-# `packages/client/AGENTS.md` requires: a `dsh.client` row in a bundle layer
-# plus a manifest dependency that owns the row's bare name.
+# This file is a list of loader patch OPERATIONS, and the two forms are not
+# interchangeable:
 #
-# The disable row keeps working from the same layer. It removes the
-# web-oriented account plugin, which owns the sidebar account menu holding
-# "Contact us" and "Sign in" when signed out. `settings.launcher` is
-# re-provided by the port plugin so the More menu keeps Settings, and that is
-# also the surface carrying the Updates section.
+#   - id: <existing-row-id>      OVERRIDES an existing row (config, disabled, ...)
+#   - insert: [ ... ]            ADDS new rows to the composition
+#
+# A top-level `- id:` row does NOT create an entry. Using it for a brand-new
+# plugin makes the loader warn `patch: entry "dsh-port-ui-updates" not found`
+# and skip the row, so the Host never puts the plugin into the browser boot
+# manifest and Settings has no Updates section. That was the actual cause of
+# finding F-47 - the earlier "computed runtime resolution" hypothesis in
+# docs/verification-report.md was wrong and has been corrected there.
+#
+# Why the plugin arrives through a bundle at all: a browser row is served only
+# when the Host can resolve the row's package, and it resolves it through "the
+# nearest ancestor manifest declaring the name"
+# (`packages/client/modules/src/index.ts`, `resolveMeta`). A package cannot
+# declare itself, so the row must live in a bundle whose manifest declares the
+# plugin as a dependency - the shape `packages/client/AGENTS.md` requires.
 
+# Override: remove the web-oriented account plugin, which owns the sidebar
+# account menu holding "Contact us" and "Sign in" when signed out. This row
+# DOES exist in the composed dsh-web-app layer, so an id override is correct
+# here. The port plugin re-provides `settings.launcher` so the More menu keeps
+# Settings, which is also the surface carrying the Updates section.
 - id: ui-settings-account
   name: '@deepseek-ai/dsh-client-ui-settings-account'
   disabled: true
 
-- id: dsh-port-ui-updates
-  name: '@dsh-port/dsh-client-ui-updates'
+# Insert: add the port-owned Updates plugin as a NEW row.
+- insert:
+    - id: dsh-port-ui-updates
+      name: '@dsh-port/dsh-client-ui-updates'

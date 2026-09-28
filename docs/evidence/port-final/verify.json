@@ -15,40 +15,40 @@
     },
     {
       "name": "surface: text presence before opening anything",
-      "hasSettings": true,
+      "hasSettings": false,
       "hasContactUs": false,
       "hasSignIn": false,
       "hasUpdates": false
     },
     {
       "name": "surface: after clicking More",
-      "hasSettings": true,
+      "hasSettings": false,
       "hasContactUs": false,
       "hasSignIn": false
     },
     {
       "name": "settings: contents",
       "hasUpdatesSection": false,
-      "hasGeneral": true,
-      "hasAppearance": true,
-      "hasDark": true,
-      "hasLight": true,
+      "hasGeneral": false,
+      "hasAppearance": false,
+      "hasDark": false,
+      "hasLight": false,
       "hasContactUs": false,
       "hasSignIn": false,
-      "sample": "New Session\nCtrl\n+\nN\nPlugins\nWorkspaces\nDefault workspace\nNew Session\nSettings\nInto the Unknown\nPreview\nDefault workspace\nStandard mode\nDescribe what you want to build, / commands, @ files or sessions\nWorkspace Write\nDeepSeek-V41-Flash\nHigh\nSettings\nGeneral\nModels\nBuilt-in plugins\nAgent presets\nOpen configuration file\nClose\nPermission\nChoose the default permission mode for new sessions\nWorkspace Write\nLanguage\nEnglish\nAppearance\nLight\nDark\nSystem\nFont size\nOnly affects conversation content\n14\npx"
+      "sample": "New Session\nCtrl\n+\nN\nPlugins\nWorkspaces\nDefault workspace\nNew Session\nMore\nInto the Unknown\nPreview\nDefault workspace\nStandard mode\nDescribe what you want to build, / commands, @ files or sessions\nWorkspace Write\nDeepSeek-V41-Flash\nHigh"
     },
     {
       "name": "caption: after switching to Dark at runtime",
       "present": true,
-      "fillVar": "rgba(27, 27, 28, 1)",
-      "symbolVar": "rgba(249, 250, 251, 1)",
-      "stripBackground": "rgb(27, 27, 28)",
-      "buttonColor": "rgb(249, 250, 251)",
+      "fillVar": "rgba(249, 250, 251, 1)",
+      "symbolVar": "rgba(15, 17, 21, 1)",
+      "stripBackground": "rgb(249, 250, 251)",
+      "buttonColor": "rgb(15, 17, 21)",
       "buttonCount": 3,
       "grips": 8,
-      "docTheme": "dark",
+      "docTheme": "system",
       "bodyBg": "rgb(249, 250, 251)",
-      "contrast": 16.47
+      "contrast": 18.08
     },
     {
       "name": "caption: after switching back to Light at runtime",
@@ -59,7 +59,7 @@
       "buttonColor": "rgb(15, 17, 21)",
       "buttonCount": 3,
       "grips": 8,
-      "docTheme": "light",
+      "docTheme": "system",
       "bodyBg": "rgb(249, 250, 251)",
       "contrast": 18.08
     },
@@ -69,49 +69,49 @@
       "buttonsRendered": 3,
       "resizeGrips": 8,
       "themeActuallyChanged": false,
-      "captionTrackedTheme": true,
+      "captionTrackedTheme": false,
       "legibleInDark": true,
       "legibleInLight": true,
       "updatesSectionInSettings": false,
       "contactUsRemoved": true,
       "signInRemoved": true,
-      "settingsSurvived": true,
+      "settingsSurvived": false,
       "consoleErrors": 0
     }
   ],
   "morePopover": {
-    "hasSettings": true,
+    "hasSettings": false,
     "hasContactUs": false,
     "hasSignIn": false,
     "hasUpdates": false
   },
   "afterMoreClick": {
-    "hasSettings": true,
+    "hasSettings": false,
     "hasContactUs": false,
     "hasSignIn": false
   },
   "settings": {
     "hasUpdatesSection": false,
-    "hasGeneral": true,
-    "hasAppearance": true,
-    "hasDark": true,
-    "hasLight": true,
+    "hasGeneral": false,
+    "hasAppearance": false,
+    "hasDark": false,
+    "hasLight": false,
     "hasContactUs": false,
     "hasSignIn": false,
-    "sample": "New Session\nCtrl\n+\nN\nPlugins\nWorkspaces\nDefault workspace\nNew Session\nSettings\nInto the Unknown\nPreview\nDefault workspace\nStandard mode\nDescribe what you want to build, / commands, @ files or sessions\nWorkspace Write\nDeepSeek-V41-Flash\nHigh\nSettings\nGeneral\nModels\nBuilt-in plugins\nAgent presets\nOpen configuration file\nClose\nPermission\nChoose the default permission mode for new sessions\nWorkspace Write\nLanguage\nEnglish\nAppearance\nLight\nDark\nSystem\nFont size\nOnly affects conversation content\n14\npx"
+    "sample": "New Session\nCtrl\n+\nN\nPlugins\nWorkspaces\nDefault workspace\nNew Session\nMore\nInto the Unknown\nPreview\nDefault workspace\nStandard mode\nDescribe what you want to build, / commands, @ files or sessions\nWorkspace Write\nDeepSeek-V41-Flash\nHigh"
   },
   "verdict": {
     "captionPresent": true,
     "buttonsRendered": 3,
     "resizeGrips": 8,
     "themeActuallyChanged": false,
-    "captionTrackedTheme": true,
+    "captionTrackedTheme": false,
     "legibleInDark": true,
     "legibleInLight": true,
     "updatesSectionInSettings": false,
     "contactUsRemoved": true,
     "signInRemoved": true,
-    "settingsSurvived": true,
+    "settingsSurvived": false,
     "consoleErrors": 0
   }
 }

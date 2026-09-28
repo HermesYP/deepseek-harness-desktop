@@ -58,7 +58,7 @@ fn configured_feed(
     }
 }
 
-#[derive(serde::Deserialize)]
+#[derive(serde::Deserialize, Debug)]
 struct UpdateManifest {
     version: String,
     url: String,
@@ -115,11 +115,19 @@ pub async fn check(app: &tauri::AppHandle) -> Result<DesktopUpdatePresentation, 
     publish(app, &current(app).await);
     let response = client.get(&feed_url).send().await;
     let manifest = match response {
-        Ok(response) if response.status().is_success() => response.json::<UpdateManifest>().await,
-        Ok(response) => Err(response.error_for_status().unwrap_err()),
-        Err(error) => Err(error),
+        Ok(response) => parse_feed_response(response).await,
+        Err(error) => Err(format!("update feed request failed: {error}")),
     };
     match manifest {
+        Ok(manifest) if parse_semver(&manifest.version).is_none() => {
+            let presentation = fail(
+                app,
+                DesktopUpdateOperation::Check,
+                "invalid update feed response: version is not valid SemVer",
+            )
+            .await;
+            Ok(presentation)
+        }
         Ok(manifest) if greater_version(&manifest.version, env!("CARGO_PKG_VERSION")) => {
             with_state(app, |update| {
                 update.state.phase = DesktopUpdatePhase::Available;
@@ -417,27 +425,257 @@ async fn install(app: &tauri::AppHandle) -> Result<(), DshError> {
     crate::quit_flow::confirm_exit(app, dsh_core::protocol::QuitReason::Update).await;
 }
 
-/// SemVer "strictly greater" comparison for update acceptance (upstream:
-/// "Clients only accept a greater version").
-pub fn greater_version(candidate: &str, current: &str) -> bool {
-    fn parts(value: &str) -> Vec<u64> {
-        value
-            .split(['.', '-'])
-            .map(|part| part.parse::<u64>().unwrap_or(0))
-            .collect()
+/// Parse the update feed response without assuming any status class is an error.
+/// Redirects are deliberately not followed: feed redirects are a classified check
+/// failure, avoiding an implicit trust-boundary change for manifest and artifact URLs.
+async fn parse_feed_response(response: reqwest::Response) -> Result<UpdateManifest, String> {
+    let status = response.status();
+    match status.as_u16() {
+        200..=299 => response
+            .json::<UpdateManifest>()
+            .await
+            .map_err(|error| format!("invalid update feed response: {error}")),
+        300..=399 => Err(format!("update feed redirect is not followed ({status})")),
+        400..=499 => Err(format!("update feed rejected the request ({status})")),
+        500..=599 => Err(format!("update feed server failure ({status})")),
+        _ => Err(format!("unexpected update feed status ({status})")),
     }
-    parts(candidate) > parts(current)
+}
+
+#[derive(Debug, PartialEq, Eq)]
+enum PreReleaseId<'a> {
+    Numeric(&'a str),
+    Text(&'a str),
+}
+
+#[derive(Debug)]
+struct SemVer<'a> {
+    major: &'a str,
+    minor: &'a str,
+    patch: &'a str,
+    prerelease: Option<Vec<PreReleaseId<'a>>>,
+}
+
+fn valid_numeric(value: &str) -> bool {
+    !value.is_empty()
+        && value.bytes().all(|byte| byte.is_ascii_digit())
+        && (value == "0" || !value.starts_with('0'))
+}
+
+fn valid_identifier(value: &str) -> bool {
+    !value.is_empty()
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-')
+}
+
+fn parse_semver(value: &str) -> Option<SemVer<'_>> {
+    let (without_build, build) = match value.split_once('+') {
+        Some((version, metadata)) if !metadata.contains('+') => (version, Some(metadata)),
+        Some(_) => return None,
+        None => (value, None),
+    };
+    if let Some(metadata) = build {
+        if !metadata.split('.').all(valid_identifier) {
+            return None;
+        }
+    }
+    let (core, prerelease_text) = match without_build.split_once('-') {
+        Some((core, prerelease)) => (core, Some(prerelease)),
+        None => (without_build, None),
+    };
+    let mut core_parts = core.split('.');
+    let major = core_parts.next()?;
+    let minor = core_parts.next()?;
+    let patch = core_parts.next()?;
+    if core_parts.next().is_some()
+        || !valid_numeric(major)
+        || !valid_numeric(minor)
+        || !valid_numeric(patch)
+    {
+        return None;
+    }
+    let prerelease = match prerelease_text {
+        Some(value) => {
+            let identifiers = value
+                .split('.')
+                .map(|id| {
+                    if !valid_identifier(id) {
+                        return None;
+                    }
+                    if id.bytes().all(|byte| byte.is_ascii_digit()) {
+                        if id.len() > 1 && id.starts_with('0') {
+                            return None;
+                        }
+                        Some(PreReleaseId::Numeric(id))
+                    } else {
+                        Some(PreReleaseId::Text(id))
+                    }
+                })
+                .collect::<Option<Vec<_>>>()?;
+            Some(identifiers)
+        }
+        None => None,
+    };
+    Some(SemVer {
+        major,
+        minor,
+        patch,
+        prerelease,
+    })
+}
+
+fn compare_numeric(left: &str, right: &str) -> std::cmp::Ordering {
+    left.len().cmp(&right.len()).then_with(|| left.cmp(right))
+}
+
+fn compare_semver(left: &SemVer<'_>, right: &SemVer<'_>) -> std::cmp::Ordering {
+    use std::cmp::Ordering;
+
+    for ordering in [
+        compare_numeric(left.major, right.major),
+        compare_numeric(left.minor, right.minor),
+        compare_numeric(left.patch, right.patch),
+    ] {
+        if ordering != Ordering::Equal {
+            return ordering;
+        }
+    }
+    match (&left.prerelease, &right.prerelease) {
+        (None, None) => Ordering::Equal,
+        (None, Some(_)) => Ordering::Greater,
+        (Some(_), None) => Ordering::Less,
+        (Some(left), Some(right)) => {
+            for (left_id, right_id) in left.iter().zip(right) {
+                let ordering = match (left_id, right_id) {
+                    (PreReleaseId::Numeric(a), PreReleaseId::Numeric(b)) => compare_numeric(a, b),
+                    (PreReleaseId::Numeric(_), PreReleaseId::Text(_)) => Ordering::Less,
+                    (PreReleaseId::Text(_), PreReleaseId::Numeric(_)) => Ordering::Greater,
+                    (PreReleaseId::Text(a), PreReleaseId::Text(b)) => a.cmp(b),
+                };
+                if ordering != Ordering::Equal {
+                    return ordering;
+                }
+            }
+            left.len().cmp(&right.len())
+        }
+    }
+}
+
+/// SemVer 2.0.0 precedence comparison. Invalid versions are never accepted.
+pub fn greater_version(candidate: &str, current: &str) -> bool {
+    match (parse_semver(candidate), parse_semver(current)) {
+        (Some(candidate), Some(current)) => compare_semver(&candidate, &current).is_gt(),
+        _ => false,
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use dsh_core::protocol::SettingValue;
 
-    use super::{channel_feed_key, configured_feed, no_feed_message};
+    use super::{
+        channel_feed_key, configured_feed, greater_version, no_feed_message, parse_feed_response,
+    };
     use crate::state::{UPDATE_FEED_BETA_KEY, UPDATE_FEED_KEY};
 
     fn text(value: &str) -> SettingValue {
         SettingValue::String(value.to_string())
+    }
+
+    #[test]
+    fn semver_comparison_uses_semver_precedence_and_rejects_invalid_input() {
+        let cases = [
+            ("0.1.7", "0.1.7-rc.2", true),
+            ("0.1.7-rc.2", "0.1.7", false),
+            ("1.0.0", "2.0.0-rc.1", false),
+            ("1.0.0-alpha.2", "1.0.0-alpha.10", false),
+            ("1.0.0-alpha.10", "1.0.0-alpha.2", true),
+            ("1.0.0-alpha", "1.0.0-beta", false),
+            ("1.0.0-beta", "1.0.0-alpha", true),
+            ("1.0.0+build.2", "1.0.0+build.1", false),
+            ("1.0.0+build.1", "1.0.0+build.2", false),
+            ("1.0.1", "1.0.0+meta", true),
+            ("1.0", "1.0.0", false),
+            ("01.0.0", "1.0.0", false),
+            ("1.0.0-01", "1.0.0-alpha", false),
+            ("1.0.0+", "1.0.0", false),
+        ];
+        for (candidate, current, expected) in cases {
+            let actual = greater_version(candidate, current);
+            println!("greater_version({candidate:?}, {current:?}) = {actual}");
+            assert_eq!(actual, expected, "{candidate} vs {current}");
+        }
+    }
+
+    async fn local_response(status: &str) -> reqwest::Response {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind local fixture");
+        let address = listener.local_addr().expect("local fixture address");
+        let status = status.to_string();
+        tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.expect("accept local request");
+            // Drain the request before answering. Closing a socket that still has
+            // unread data queued makes Windows answer with RST rather than a
+            // graceful FIN, and the client then reports WSAECONNABORTED (10053)
+            // instead of reading the response that was just written.
+            let mut request = Vec::new();
+            let mut chunk = [0u8; 512];
+            loop {
+                match stream.read(&mut chunk).await {
+                    Ok(0) => break,
+                    Ok(read) => {
+                        request.extend_from_slice(&chunk[..read]);
+                        if request.windows(4).any(|window| window == b"\r\n\r\n") {
+                            break;
+                        }
+                    }
+                    Err(_) => break,
+                }
+            }
+            let response =
+                format!("HTTP/1.1 {status}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n");
+            stream
+                .write_all(response.as_bytes())
+                .await
+                .expect("write fixture response");
+            let _ = stream.shutdown().await;
+        });
+        reqwest::Client::builder()
+            .redirect(reqwest::redirect::Policy::none())
+            .build()
+            .expect("build test client")
+            .get(format!("http://{address}/feed"))
+            .send()
+            .await
+            .expect("receive local fixture response")
+    }
+
+    #[tokio::test]
+    async fn feed_redirect_is_a_classified_failure_without_panicking() {
+        let response = local_response("303 See Other").await;
+        let error = parse_feed_response(response)
+            .await
+            .expect_err("redirect fails check");
+        println!("303 feed response: {error}");
+        assert!(error.contains("redirect is not followed (303 See Other)"));
+    }
+
+    #[tokio::test]
+    async fn feed_client_and_server_errors_are_classified() {
+        for (status, class) in [
+            ("404 Not Found", "rejected the request"),
+            ("503 Service Unavailable", "server failure"),
+        ] {
+            let response = local_response(status).await;
+            let error = parse_feed_response(response)
+                .await
+                .expect_err("error status fails check");
+            assert!(error.contains(class), "{error}");
+        }
     }
 
     #[test]

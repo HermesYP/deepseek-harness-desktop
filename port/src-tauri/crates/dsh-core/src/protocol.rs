@@ -666,7 +666,9 @@ pub enum ShortcutEdit {
         id: String,
         binding: Option<ShortcutBinding>,
     },
-    Reset { id: String },
+    Reset {
+        id: String,
+    },
     ResetAll,
 }
 
@@ -771,16 +773,38 @@ mod tests {
     #[test]
     fn index_injection_kind_names_match_upstream() {
         let rows = vec![
-            IndexInjection::Global { name: "x".into(), value: serde_json::json!(1) },
-            IndexInjection::Script { placement: IndexInjectionPlacement::Head, text: "t".into() },
-            IndexInjection::ScriptSrc { placement: IndexInjectionPlacement::Body, src: "s".into() },
+            IndexInjection::Global {
+                name: "x".into(),
+                value: serde_json::json!(1),
+            },
+            IndexInjection::Script {
+                placement: IndexInjectionPlacement::Head,
+                text: "t".into(),
+            },
+            IndexInjection::ScriptSrc {
+                placement: IndexInjectionPlacement::Body,
+                src: "s".into(),
+            },
             IndexInjection::ScriptPreload { src: "p".into() },
             IndexInjection::Style { text: "css".into() },
-            IndexInjection::Html { placement: IndexInjectionPlacement::Body, html: "<b>".into() },
+            IndexInjection::Html {
+                placement: IndexInjectionPlacement::Body,
+                html: "<b>".into(),
+            },
         ];
         let json = serde_json::to_string(&rows).expect("serialize");
-        for kind in ["global", "script", "script-src", "script-preload", "style", "html"] {
-            assert!(json.contains(&format!("\"kind\":\"{kind}\"")), "missing kind {kind}");
+        for kind in [
+            "global",
+            "script",
+            "script-src",
+            "script-preload",
+            "style",
+            "html",
+        ] {
+            assert!(
+                json.contains(&format!("\"kind\":\"{kind}\"")),
+                "missing kind {kind}"
+            );
         }
     }
 
@@ -809,9 +833,15 @@ mod tests {
             pnpm_version: "11.7.0".into(),
         };
         assert!(ok.validate(PROTOCOL_GENERATION));
-        let wrong_generation = DesktopRelease { host_protocol_version: 3, ..ok.clone() };
+        let wrong_generation = DesktopRelease {
+            host_protocol_version: 3,
+            ..ok.clone()
+        };
         assert!(!wrong_generation.validate(PROTOCOL_GENERATION));
-        let bad_version = DesktopRelease { version: "1.2".into(), ..ok.clone() };
+        let bad_version = DesktopRelease {
+            version: "1.2".into(),
+            ..ok.clone()
+        };
         assert!(!bad_version.validate(PROTOCOL_GENERATION));
     }
 }

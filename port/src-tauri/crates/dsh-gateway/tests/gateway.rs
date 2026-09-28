@@ -389,11 +389,50 @@ async fn proxied_bootstrap_waits_for_host_and_returns_javascript() {
 }
 
 #[tokio::test]
+async fn websocket_rejects_foreign_origin_before_host_cookie_forwarding() {
+    let (_dir, handle, client) = gateway().await;
+    let host_addr = fake_host().await;
+    handle
+        .set_host(&format!("http://{host_addr}/?token=fixture-only"))
+        .await
+        .expect("host bind");
+    let cookie = mint_cookie(&handle, &client).await;
+    let port = handle.local_addr().port();
+
+    let mut request =
+        tokio_tungstenite::tungstenite::client::IntoClientRequest::into_client_request(format!(
+            "ws://127.0.0.1:{port}/api/remote.mux"
+        ))
+        .expect("request");
+    request
+        .headers_mut()
+        .insert("cookie", cookie.parse().expect("cookie header"));
+    request.headers_mut().insert(
+        "origin",
+        "http://127.0.0.1:9999"
+            .parse()
+            .expect("foreign origin header"),
+    );
+
+    let refused = tokio_tungstenite::connect_async(request)
+        .await
+        .expect_err("foreign-origin upgrade must be refused");
+    match refused {
+        tokio_tungstenite::tungstenite::Error::Http(response) => {
+            eprintln!("foreign-origin response status: {}", response.status());
+            assert_eq!(response.status().as_u16(), 403);
+        }
+        other => panic!("expected HTTP refusal, got {other:?}"),
+    }
+}
+
+#[tokio::test]
 async fn websocket_frames_relay_both_directions() {
     let (_dir, handle, client) = gateway().await;
     let host_addr = fake_host().await;
     let cookie = mint_cookie(&handle, &client).await;
     let port = handle.local_addr().port();
+    let origin = handle.origin().to_string();
 
     let request = tokio_tungstenite::tungstenite::client::IntoClientRequest::into_client_request(
         format!("ws://127.0.0.1:{port}/api/remote.mux"),
@@ -403,6 +442,9 @@ async fn websocket_frames_relay_both_directions() {
     request
         .headers_mut()
         .insert("cookie", cookie.parse().expect("cookie header"));
+    request
+        .headers_mut()
+        .insert("origin", origin.parse().expect("gateway origin header"));
     let connecting = tokio::spawn(async move { tokio_tungstenite::connect_async(request).await });
     // Model the window's earliest request racing the Host's authenticated
     // token→cookie exchange. The authenticated handshake must remain pending.
@@ -411,12 +453,14 @@ async fn websocket_frames_relay_both_directions() {
         .set_host(&format!("http://{host_addr}/?token=fixture-only"))
         .await
         .expect("host bind");
-    let (mut stream, _response) =
+    let (mut stream, response) =
         tokio::time::timeout(std::time::Duration::from_secs(3), connecting)
             .await
             .expect("pending WebSocket should resume when Host is bound")
             .expect("connect task")
             .expect("ws connect");
+    eprintln!("gateway-origin response status: {}", response.status());
+    assert_eq!(response.status().as_u16(), 101, "gateway origin upgrades");
 
     // Text frames relay verbatim.
     stream

@@ -90,8 +90,7 @@ impl TreeContainment {
         }
         #[cfg(unix)]
         {
-            process_alive(self.pid)
-                || unsafe { libc::killpg(self.pgid, 0) } == 0
+            process_alive(self.pid) || unsafe { libc::killpg(self.pgid, 0) } == 0
         }
         #[cfg(not(any(windows, unix)))]
         {
@@ -177,7 +176,7 @@ pub fn process_alive(pid: u32) -> bool {
 #[cfg(windows)]
 unsafe fn create_kill_on_close_job() -> Result<usize, TreeError> {
     use windows_sys::Win32::System::JobObjects::{
-        CreateJobObjectW, SetInformationJobObject, JobObjectExtendedLimitInformation,
+        CreateJobObjectW, JobObjectExtendedLimitInformation, SetInformationJobObject,
         JOBOBJECT_EXTENDED_LIMIT_INFORMATION, JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
     };
     let job = CreateJobObjectW(std::ptr::null(), std::ptr::null());
@@ -193,7 +192,9 @@ unsafe fn create_kill_on_close_job() -> Result<usize, TreeError> {
         std::mem::size_of::<JOBOBJECT_EXTENDED_LIMIT_INFORMATION>() as u32,
     );
     if ok == 0 {
-        return Err(TreeError::Containment("SetInformationJobObject failed".into()));
+        return Err(TreeError::Containment(
+            "SetInformationJobObject failed".into(),
+        ));
     }
     Ok(job as usize)
 }
@@ -201,16 +202,22 @@ unsafe fn create_kill_on_close_job() -> Result<usize, TreeError> {
 #[cfg(windows)]
 unsafe fn assign_to_job(job: usize, pid: u32) -> Result<(), TreeError> {
     use windows_sys::Win32::Foundation::CloseHandle;
-    use windows_sys::Win32::System::Threading::{OpenProcess, PROCESS_SET_QUOTA, PROCESS_TERMINATE};
     use windows_sys::Win32::System::JobObjects::AssignProcessToJobObject;
+    use windows_sys::Win32::System::Threading::{
+        OpenProcess, PROCESS_SET_QUOTA, PROCESS_TERMINATE,
+    };
     let process = OpenProcess(PROCESS_SET_QUOTA | PROCESS_TERMINATE, 0, pid);
     if process.is_null() {
-        return Err(TreeError::Containment("OpenProcess failed for the host child".into()));
+        return Err(TreeError::Containment(
+            "OpenProcess failed for the host child".into(),
+        ));
     }
     let ok = AssignProcessToJobObject(job as _, process);
     CloseHandle(process);
     if ok == 0 {
-        return Err(TreeError::Containment("AssignProcessToJobObject failed".into()));
+        return Err(TreeError::Containment(
+            "AssignProcessToJobObject failed".into(),
+        ));
     }
     Ok(())
 }
@@ -235,7 +242,7 @@ unsafe fn terminate_process(pid: u32) {
 #[cfg(windows)]
 fn job_has_processes(job: usize) -> bool {
     use windows_sys::Win32::System::JobObjects::{
-        QueryInformationJobObject, JobObjectBasicAccountingInformation,
+        JobObjectBasicAccountingInformation, QueryInformationJobObject,
         JOBOBJECT_BASIC_ACCOUNTING_INFORMATION,
     };
     unsafe {
@@ -274,7 +281,8 @@ pub async fn stop_tree(
 ) -> Result<StopOutcome, TreeError> {
     let deadline = Instant::now();
     let mut wait_exit = std::pin::pin!(wait_exit);
-    let exited = tokio::time::timeout(graceful_deadline.min(GRACEFUL_STOP_TIMEOUT), &mut wait_exit).await;
+    let exited =
+        tokio::time::timeout(graceful_deadline.min(GRACEFUL_STOP_TIMEOUT), &mut wait_exit).await;
     let graceful = match exited {
         Ok(code) => return Ok(finish(true, code, &shutdown_acknowledged)),
         Err(_) => false,
@@ -317,9 +325,7 @@ pub fn stderr_tail() -> StderrTail {
 /// installation refuses after a forced kill, non-zero exit, or missing
 /// `shutdown-complete`, while still confirming the process exited.
 pub fn check_graceful(outcome: &StopOutcome) -> Result<(), ControlError> {
-    let clean = outcome.graceful
-        && outcome.exit_code == Some(0)
-        && outcome.shutdown_acknowledged;
+    let clean = outcome.graceful && outcome.exit_code == Some(0) && outcome.shutdown_acknowledged;
     if clean {
         Ok(())
     } else {
@@ -345,11 +351,26 @@ mod tests {
         };
         assert!(check_graceful(&clean).is_ok());
         for dirty in [
-            StopOutcome { graceful: false, exit_code: Some(0), shutdown_acknowledged: true },
-            StopOutcome { graceful: true, exit_code: Some(1), shutdown_acknowledged: true },
-            StopOutcome { graceful: true, exit_code: Some(0), shutdown_acknowledged: false },
+            StopOutcome {
+                graceful: false,
+                exit_code: Some(0),
+                shutdown_acknowledged: true,
+            },
+            StopOutcome {
+                graceful: true,
+                exit_code: Some(1),
+                shutdown_acknowledged: true,
+            },
+            StopOutcome {
+                graceful: true,
+                exit_code: Some(0),
+                shutdown_acknowledged: false,
+            },
         ] {
-            assert!(check_graceful(&dirty).is_err(), "unclean outcome must refuse installation: {dirty:?}");
+            assert!(
+                check_graceful(&dirty).is_err(),
+                "unclean outcome must refuse installation: {dirty:?}"
+            );
         }
     }
 }

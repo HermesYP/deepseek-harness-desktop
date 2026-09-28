@@ -49,8 +49,13 @@ pub fn acquire(paths: &DesktopPaths) -> Result<InstanceClaim, DshError> {
 
 /// Acquire against an explicit profile-lock path (the identity of the claim).
 pub fn acquire_for_lock_path(lock_path: &Path) -> Result<InstanceClaim, DshError> {
-    std::fs::create_dir_all(lock_path.parent().unwrap_or(Path::new(".")))
-        .map_err(|e| DshError::io("create profile directory", Some(lock_path.display().to_string()), &e))?;
+    std::fs::create_dir_all(lock_path.parent().unwrap_or(Path::new("."))).map_err(|e| {
+        DshError::io(
+            "create profile directory",
+            Some(lock_path.display().to_string()),
+            &e,
+        )
+    })?;
     platform_acquire(lock_path)
 }
 
@@ -101,7 +106,13 @@ fn platform_acquire(lock_path: &Path) -> Result<InstanceClaim, DshError> {
         .write(true)
         .truncate(false)
         .open(lock_path)
-        .map_err(|e| DshError::io("open instance lock", Some(lock_path.display().to_string()), &e))?;
+        .map_err(|e| {
+            DshError::io(
+                "open instance lock",
+                Some(lock_path.display().to_string()),
+                &e,
+            )
+        })?;
     match file.try_lock_exclusive() {
         Ok(()) => Ok(InstanceClaim::Acquired(SingleInstanceLock { _file: file })),
         Err(_) => Ok(InstanceClaim::AlreadyRunning),

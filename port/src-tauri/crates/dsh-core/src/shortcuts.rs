@@ -230,7 +230,10 @@ pub fn is_web_binding_allowed(binding: &NormalizedBinding, platform: ShortcutPla
     if binding.second_code.is_some() {
         return false;
     }
-    if matches!(platform, ShortcutPlatform::Windows | ShortcutPlatform::Macos) {
+    if matches!(
+        platform,
+        ShortcutPlatform::Windows | ShortcutPlatform::Macos
+    ) {
         if binding.modifiers.len() >= 3 {
             return true;
         }
@@ -257,8 +260,14 @@ pub fn is_web_binding_allowed(binding: &NormalizedBinding, platform: ShortcutPla
     }
     let candidates = [
         ("Slash", vec![ShortcutModifier::Primary]),
-        ("Comma", vec![ShortcutModifier::Primary, ShortcutModifier::Shift]),
-        ("Period", vec![ShortcutModifier::Primary, ShortcutModifier::Shift]),
+        (
+            "Comma",
+            vec![ShortcutModifier::Primary, ShortcutModifier::Shift],
+        ),
+        (
+            "Period",
+            vec![ShortcutModifier::Primary, ShortcutModifier::Shift],
+        ),
     ];
     candidates.iter().any(|(code, modifiers)| {
         let candidate = ShortcutBinding {
@@ -280,7 +289,10 @@ pub fn binding_issue(
     platform: ShortcutPlatform,
 ) -> Option<BindingIssue> {
     if runtime == ShortcutRuntime::Desktop
-        && matches!(platform, ShortcutPlatform::Windows | ShortcutPlatform::Macos)
+        && matches!(
+            platform,
+            ShortcutPlatform::Windows | ShortcutPlatform::Macos
+        )
     {
         return None;
     }
@@ -295,22 +307,29 @@ pub fn binding_issue(
     {
         return Some(BindingIssue::ModifierRequired);
     }
-    if matches!(platform, ShortcutPlatform::Windows | ShortcutPlatform::Macos)
-        && binding.modifiers.len() >= 3
+    if matches!(
+        platform,
+        ShortcutPlatform::Windows | ShortcutPlatform::Macos
+    ) && binding.modifiers.len() >= 3
     {
         return None;
     }
     if runtime == ShortcutRuntime::Web
-        && matches!(platform, ShortcutPlatform::Windows | ShortcutPlatform::Macos)
+        && matches!(
+            platform,
+            ShortcutPlatform::Windows | ShortcutPlatform::Macos
+        )
         && is_web_binding_allowed(binding, platform)
     {
         return None;
     }
-    let primary = binding.modifiers.contains(&if platform == ShortcutPlatform::Macos {
-        NormalizedModifier::Meta
-    } else {
-        NormalizedModifier::Control
-    });
+    let primary = binding
+        .modifiers
+        .contains(&if platform == ShortcutPlatform::Macos {
+            NormalizedModifier::Meta
+        } else {
+            NormalizedModifier::Control
+        });
     let plain_keys = [
         "Escape",
         "Tab",
@@ -383,7 +402,9 @@ pub fn overlapping_bindings(left: &NormalizedBinding, right: &NormalizedBinding)
     [Some(left.code.as_str()), left.second_code.as_deref()]
         .into_iter()
         .flatten()
-        .any(|code| Some(code) == Some(right.code.as_str()) || Some(code) == right.second_code.as_deref())
+        .any(|code| {
+            Some(code) == Some(right.code.as_str()) || Some(code) == right.second_code.as_deref()
+        })
 }
 
 fn modifier_str(modifier: &NormalizedModifier) -> &'static str {
@@ -482,12 +503,16 @@ pub fn accepted_bindings(rows: &[EffectiveShortcut]) -> Vec<ShortcutBindingRow> 
                 id: row.id.clone(),
                 code: binding.code.clone(),
                 second_code: binding.second_code.clone(),
-                modifiers: binding.modifiers.iter().map(|m| match m {
-                    NormalizedModifier::Control => ShortcutModifier::Control,
-                    NormalizedModifier::Alt => ShortcutModifier::Alt,
-                    NormalizedModifier::Shift => ShortcutModifier::Shift,
-                    NormalizedModifier::Meta => ShortcutModifier::Meta,
-                }).collect(),
+                modifiers: binding
+                    .modifiers
+                    .iter()
+                    .map(|m| match m {
+                        NormalizedModifier::Control => ShortcutModifier::Control,
+                        NormalizedModifier::Alt => ShortcutModifier::Alt,
+                        NormalizedModifier::Shift => ShortcutModifier::Shift,
+                        NormalizedModifier::Meta => ShortcutModifier::Meta,
+                    })
+                    .collect(),
             })
         })
         .collect()
@@ -502,18 +527,16 @@ pub fn edit_shortcut_document(
     platform: ShortcutPlatform,
 ) -> ShortcutDocument {
     let schema_version = if runtime == ShortcutRuntime::Desktop
-        && matches!(platform, ShortcutPlatform::Macos | ShortcutPlatform::Windows)
-    {
+        && matches!(
+            platform,
+            ShortcutPlatform::Macos | ShortcutPlatform::Windows
+        ) {
         2
     } else {
         document.schema_version
     };
     let profile = profile_key(runtime, platform);
-    let mut overrides = document
-        .profiles
-        .get(&profile)
-        .cloned()
-        .unwrap_or_default();
+    let mut overrides = document.profiles.get(&profile).cloned().unwrap_or_default();
     match edit {
         ShortcutEdit::Set { id, binding } => {
             overrides.insert(id.clone(), binding.clone());
@@ -552,9 +575,7 @@ pub fn parse_shortcut_document(raw: Option<&str>) -> Result<ShortcutDocument, Do
     };
     let value: serde_json::Value =
         serde_json::from_str(raw).map_err(|_| DocumentReadError::Invalid)?;
-    let object = value
-        .as_object()
-        .ok_or(DocumentReadError::Invalid)?;
+    let object = value.as_object().ok_or(DocumentReadError::Invalid)?;
     let schema_version = object
         .get("schemaVersion")
         .and_then(|v| v.as_u64())
@@ -569,7 +590,9 @@ pub fn parse_shortcut_document(raw: Option<&str>) -> Result<ShortcutDocument, Do
         return Err(DocumentReadError::Invalid);
     }
     let profiles_value = object.get("profiles").ok_or(DocumentReadError::Invalid)?;
-    let profiles_object = profiles_value.as_object().ok_or(DocumentReadError::Invalid)?;
+    let profiles_object = profiles_value
+        .as_object()
+        .ok_or(DocumentReadError::Invalid)?;
     let mut profiles: BTreeMap<String, BTreeMap<String, Option<ShortcutBinding>>> = BTreeMap::new();
     for (profile, overrides) in profiles_object {
         if !is_profile_key(profile) {
@@ -582,7 +605,12 @@ pub fn parse_shortcut_document(raw: Option<&str>) -> Result<ShortcutDocument, Do
                 return Err(DocumentReadError::Invalid);
             }
             let parsed = parse_binding_value(binding).map_err(|_| DocumentReadError::Invalid)?;
-            if schema_version == 1 && parsed.as_ref().and_then(|b| b.second_code.as_ref()).is_some() {
+            if schema_version == 1
+                && parsed
+                    .as_ref()
+                    .and_then(|b| b.second_code.as_ref())
+                    .is_some()
+            {
                 return Err(DocumentReadError::Invalid);
             }
             bindings.insert(id.clone(), parsed);
@@ -614,9 +642,7 @@ fn is_command_id(id: &str) -> bool {
         } else {
             first.is_ascii_alphanumeric()
         };
-        if !first_ok
-            || !chars.all(|c| c.is_ascii_alphanumeric() || c == '-')
-        {
+        if !first_ok || !chars.all(|c| c.is_ascii_alphanumeric() || c == '-') {
             return false;
         }
     }
@@ -632,8 +658,14 @@ pub fn parse_binding_value(value: &serde_json::Value) -> Result<Option<ShortcutB
     let object = value
         .as_object()
         .ok_or_else(|| DshError::invalid_argument("binding", "invalid shortcut binding"))?;
-    if object.keys().any(|key| !matches!(key.as_str(), "code" | "secondCode" | "modifiers")) {
-        return Err(DshError::invalid_argument("binding", "invalid shortcut binding"));
+    if object
+        .keys()
+        .any(|key| !matches!(key.as_str(), "code" | "secondCode" | "modifiers"))
+    {
+        return Err(DshError::invalid_argument(
+            "binding",
+            "invalid shortcut binding",
+        ));
     }
     let spec: ShortcutBinding = serde_json::from_value(value.clone())
         .map_err(|_| DshError::invalid_argument("binding", "invalid shortcut binding"))?;
@@ -646,20 +678,35 @@ pub fn parse_binding_value(value: &serde_json::Value) -> Result<Option<ShortcutB
 pub fn parse_shortcut_edit(value: &serde_json::Value) -> Result<ShortcutEdit, DshError> {
     let invalid = || DshError::invalid_argument("edit", "invalid shortcut edit");
     let object = value.as_object().ok_or_else(invalid)?;
-    let kind = object.get("type").and_then(|v| v.as_str()).ok_or_else(invalid)?;
+    let kind = object
+        .get("type")
+        .and_then(|v| v.as_str())
+        .ok_or_else(invalid)?;
     match kind {
         "reset-all" if object.len() == 1 => Ok(ShortcutEdit::ResetAll),
         "reset" if object.len() == 2 => {
-            let id = object.get("id").and_then(|v| v.as_str()).ok_or_else(invalid)?;
+            let id = object
+                .get("id")
+                .and_then(|v| v.as_str())
+                .ok_or_else(invalid)?;
             if !is_command_id(id) {
-                return Err(DshError::invalid_argument("edit.id", "invalid shortcut command"));
+                return Err(DshError::invalid_argument(
+                    "edit.id",
+                    "invalid shortcut command",
+                ));
             }
             Ok(ShortcutEdit::Reset { id: id.to_string() })
         }
         "set" if object.len() == 3 => {
-            let id = object.get("id").and_then(|v| v.as_str()).ok_or_else(invalid)?;
+            let id = object
+                .get("id")
+                .and_then(|v| v.as_str())
+                .ok_or_else(invalid)?;
             if !is_command_id(id) {
-                return Err(DshError::invalid_argument("edit.id", "invalid shortcut command"));
+                return Err(DshError::invalid_argument(
+                    "edit.id",
+                    "invalid shortcut command",
+                ));
             }
             let binding = parse_binding_value(object.get("binding").ok_or_else(invalid)?)?;
             Ok(ShortcutEdit::Set {
@@ -675,24 +722,41 @@ pub fn parse_shortcut_edit(value: &serde_json::Value) -> Result<ShortcutEdit, Ds
 /// (upstream `parseShortcutDefinitions`, `configuration.ts:212-244`): duplicate
 /// IDs, overlapping defaults, and unsupported or reserved combinations reject
 /// the whole catalog.
-pub fn parse_shortcut_definitions(value: &serde_json::Value) -> Result<Vec<ShortcutDefinition>, DshError> {
+pub fn parse_shortcut_definitions(
+    value: &serde_json::Value,
+) -> Result<Vec<ShortcutDefinition>, DshError> {
     let invalid = |reason: &str| DshError::invalid_argument("definitions", reason);
-    let array = value.as_array().ok_or_else(|| invalid("invalid shortcut catalog"))?;
+    let array = value
+        .as_array()
+        .ok_or_else(|| invalid("invalid shortcut catalog"))?;
     let mut ids = HashSet::new();
     let mut definitions = Vec::new();
     for entry in array {
-        let object = entry.as_object().ok_or_else(|| invalid("invalid shortcut definition"))?;
-        let id = object.get("id").and_then(|v| v.as_str()).ok_or_else(|| invalid("invalid shortcut definition"))?;
+        let object = entry
+            .as_object()
+            .ok_or_else(|| invalid("invalid shortcut definition"))?;
+        let id = object
+            .get("id")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| invalid("invalid shortcut definition"))?;
         if !is_command_id(id) || !ids.insert(id.to_string()) {
             return Err(invalid("invalid shortcut definition"));
         }
-        if object.keys().any(|key| !matches!(key.as_str(), "id" | "defaults" | "fixed")) {
+        if object
+            .keys()
+            .any(|key| !matches!(key.as_str(), "id" | "defaults" | "fixed"))
+        {
             return Err(invalid("invalid shortcut definition"));
         }
-        let defaults_value = object.get("defaults").and_then(|v| v.as_object()).ok_or_else(|| invalid("invalid shortcut definition"))?;
+        let defaults_value = object
+            .get("defaults")
+            .and_then(|v| v.as_object())
+            .ok_or_else(|| invalid("invalid shortcut definition"))?;
         let mut defaults = BTreeMap::new();
         if let Some(fixed_value) = object.get("fixed") {
-            let fixed_array = fixed_value.as_array().ok_or_else(|| invalid("invalid fixed shortcut definition"))?;
+            let fixed_array = fixed_value
+                .as_array()
+                .ok_or_else(|| invalid("invalid fixed shortcut definition"))?;
             if fixed_array.is_empty() || !defaults_value.is_empty() {
                 return Err(invalid("invalid fixed shortcut definition"));
             }
@@ -735,7 +799,9 @@ pub fn parse_shortcut_definitions(value: &serde_json::Value) -> Result<Vec<Short
                     continue;
                 };
                 let normalized = normalize_binding(binding, platform)?;
-                if bindings.iter().any(|other| overlapping_bindings(other, &normalized))
+                if bindings
+                    .iter()
+                    .any(|other| overlapping_bindings(other, &normalized))
                     || binding_issue(&normalized, runtime, platform).is_some()
                 {
                     return Err(invalid("conflicting or reserved shortcut default"));
@@ -775,7 +841,11 @@ impl ShortcutStorage for FileShortcutStorage {
         match std::fs::read_to_string(&self.path) {
             Ok(raw) => Ok(Some(raw)),
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
-            Err(e) => Err(DshError::io("read", Some(self.path.display().to_string()), &e)),
+            Err(e) => Err(DshError::io(
+                "read",
+                Some(self.path.display().to_string()),
+                &e,
+            )),
         }
     }
 
@@ -912,12 +982,8 @@ impl ShortcutPersistence {
                 return result(ShortcutSaveStatus::NotReady, &state);
             }
         }
-        let document = edit_shortcut_document(
-            &state.snapshot.document,
-            edit,
-            self.runtime,
-            self.platform,
-        );
+        let document =
+            edit_shortcut_document(&state.snapshot.document, edit, self.runtime, self.platform);
         let rows = effective_shortcuts(
             state.definitions.as_ref().expect("checked"),
             &document,
@@ -928,9 +994,9 @@ impl ShortcutPersistence {
             ShortcutEdit::Set { id, .. } | ShortcutEdit::Reset { id } => vec![id.as_str()],
             ShortcutEdit::ResetAll => rows.iter().map(|row| row.id.as_str()).collect(),
         };
-        let invalid = rows
-            .iter()
-            .find(|row| targets.contains(&row.id.as_str()) && (row.issue.is_some() || !row.conflicts.is_empty()));
+        let invalid = rows.iter().find(|row| {
+            targets.contains(&row.id.as_str()) && (row.issue.is_some() || !row.conflicts.is_empty())
+        });
         // An explicit edit must not silently disable another command's default binding.
         let displaced = match edit {
             ShortcutEdit::Set { id, .. } => rows.iter().find(|row| row.conflicts.contains(id)),
@@ -943,11 +1009,16 @@ impl ShortcutPersistence {
                 issue: invalid.and_then(|row| row.issue),
                 conflicts: Some(match invalid {
                     Some(row) if !row.conflicts.is_empty() => row.conflicts.clone(),
-                    _ => displaced.map(|row| vec![row.id.clone()]).unwrap_or_default(),
+                    _ => displaced
+                        .map(|row| vec![row.id.clone()])
+                        .unwrap_or_default(),
                 }),
             };
         }
-        let raw = format!("{}\n", serde_json::to_string_pretty(&document).expect("serialize"));
+        let raw = format!(
+            "{}\n",
+            serde_json::to_string_pretty(&document).expect("serialize")
+        );
         if let Err(_error) = self.storage.write(&raw) {
             // The adapter retains the previous complete document when a write fails.
             return result(ShortcutSaveStatus::WriteFailed, &state);
@@ -987,7 +1058,9 @@ impl ShortcutPersistence {
                 return state.snapshot.clone();
             }
         };
-        if state.raw.as_ref() == Some(&raw) && state.snapshot.error != Some(ShortcutConfigError::Read) {
+        if state.raw.as_ref() == Some(&raw)
+            && state.snapshot.error != Some(ShortcutConfigError::Read)
+        {
             return state.snapshot.clone();
         }
         state.raw = Some(raw.clone());
@@ -1050,7 +1123,14 @@ mod tests {
 
     #[test]
     fn normalize_expands_primary_and_orders_modifiers() {
-        let binding = spec("KeyB", &[ShortcutModifier::Shift, ShortcutModifier::Primary, ShortcutModifier::Alt]);
+        let binding = spec(
+            "KeyB",
+            &[
+                ShortcutModifier::Shift,
+                ShortcutModifier::Primary,
+                ShortcutModifier::Alt,
+            ],
+        );
         let normalized = normalize_binding(&binding, ShortcutPlatform::Windows).expect("normalize");
         assert_eq!(
             normalized.modifiers,
@@ -1063,7 +1143,11 @@ mod tests {
         let mac = normalize_binding(&binding, ShortcutPlatform::Macos).expect("normalize");
         assert_eq!(
             mac.modifiers,
-            vec![NormalizedModifier::Alt, NormalizedModifier::Shift, NormalizedModifier::Meta]
+            vec![
+                NormalizedModifier::Alt,
+                NormalizedModifier::Shift,
+                NormalizedModifier::Meta
+            ]
         );
     }
 
@@ -1083,12 +1167,19 @@ mod tests {
             modifiers: vec![],
         };
         let normalized = normalize_binding(&ok, ShortcutPlatform::Windows).expect("normalize");
-        assert_eq!(binding_key(&normalized), "control+KeyA+KeyB".replace("control+", ""));
+        assert_eq!(
+            binding_key(&normalized),
+            "control+KeyA+KeyB".replace("control+", "")
+        );
     }
 
     #[test]
     fn overlapping_rules_match_upstream() {
-        let single = normalize_binding(&spec("KeyA", &[ShortcutModifier::Control]), ShortcutPlatform::Windows).unwrap();
+        let single = normalize_binding(
+            &spec("KeyA", &[ShortcutModifier::Control]),
+            ShortcutPlatform::Windows,
+        )
+        .unwrap();
         let chord = normalize_binding(
             &ShortcutBinding {
                 code: "KeyB".into(),
@@ -1098,8 +1189,15 @@ mod tests {
             ShortcutPlatform::Windows,
         )
         .unwrap();
-        assert!(overlapping_bindings(&single, &chord), "a single key overlaps a chord containing it");
-        let other = normalize_binding(&spec("KeyC", &[ShortcutModifier::Control]), ShortcutPlatform::Windows).unwrap();
+        assert!(
+            overlapping_bindings(&single, &chord),
+            "a single key overlaps a chord containing it"
+        );
+        let other = normalize_binding(
+            &spec("KeyC", &[ShortcutModifier::Control]),
+            ShortcutPlatform::Windows,
+        )
+        .unwrap();
         assert!(!overlapping_bindings(&single, &other));
     }
 
@@ -1119,11 +1217,17 @@ mod tests {
         let definitions = vec![
             definition(
                 "a.one",
-                &[("desktop:windows", spec("KeyA", &[ShortcutModifier::Control]))],
+                &[(
+                    "desktop:windows",
+                    spec("KeyA", &[ShortcutModifier::Control]),
+                )],
             ),
             definition(
                 "b.two",
-                &[("desktop:windows", spec("KeyB", &[ShortcutModifier::Control]))],
+                &[(
+                    "desktop:windows",
+                    spec("KeyB", &[ShortcutModifier::Control]),
+                )],
             ),
         ];
         let mut document = ShortcutDocument {
@@ -1139,7 +1243,12 @@ mod tests {
         document
             .profiles
             .insert("desktop:windows".to_string(), overrides);
-        let rows = effective_shortcuts(&definitions, &document, ShortcutRuntime::Desktop, ShortcutPlatform::Windows);
+        let rows = effective_shortcuts(
+            &definitions,
+            &document,
+            ShortcutRuntime::Desktop,
+            ShortcutPlatform::Windows,
+        );
         assert_eq!(rows.len(), 2);
         let a = &rows[0];
         let b = &rows[1];
@@ -1155,7 +1264,10 @@ mod tests {
     fn explicit_unbind_yields_null_binding_without_issue() {
         let definitions = vec![definition(
             "a.one",
-            &[("desktop:windows", spec("KeyA", &[ShortcutModifier::Control]))],
+            &[(
+                "desktop:windows",
+                spec("KeyA", &[ShortcutModifier::Control]),
+            )],
         )];
         let mut overrides = BTreeMap::new();
         overrides.insert("a.one".to_string(), None);
@@ -1163,8 +1275,15 @@ mod tests {
             schema_version: 1,
             profiles: BTreeMap::new(),
         };
-        document.profiles.insert("desktop:windows".into(), overrides);
-        let rows = effective_shortcuts(&definitions, &document, ShortcutRuntime::Desktop, ShortcutPlatform::Windows);
+        document
+            .profiles
+            .insert("desktop:windows".into(), overrides);
+        let rows = effective_shortcuts(
+            &definitions,
+            &document,
+            ShortcutRuntime::Desktop,
+            ShortcutPlatform::Windows,
+        );
         assert!(rows[0].binding.is_none());
         assert!(rows[0].modified);
         assert!(rows[0].issue.is_none());
@@ -1215,7 +1334,10 @@ mod tests {
             ShortcutRuntime::Desktop,
             ShortcutPlatform::Windows,
             Box::new(move |snapshot| {
-                published.lock().expect("lock").push(snapshot.revision.clone());
+                published
+                    .lock()
+                    .expect("lock")
+                    .push(snapshot.revision.clone());
             }),
         )
     }
@@ -1223,7 +1345,10 @@ mod tests {
     fn catalog() -> Vec<ShortcutDefinition> {
         vec![definition(
             "a.one",
-            &[("desktop:windows", spec("KeyA", &[ShortcutModifier::Control]))],
+            &[(
+                "desktop:windows",
+                spec("KeyA", &[ShortcutModifier::Control]),
+            )],
         )]
     }
 
@@ -1248,7 +1373,10 @@ mod tests {
         assert!(!result.snapshot.using_defaults);
         // Persisted before publish: the file content is the serialized document.
         let raw = storage.0.lock().expect("lock").clone().expect("written");
-        assert!(raw.contains("\"schemaVersion\": 2"), "desktop windows edits migrate to schema 2: {raw}");
+        assert!(
+            raw.contains("\"schemaVersion\": 2"),
+            "desktop windows edits migrate to schema 2: {raw}"
+        );
         assert!(published.lock().expect("lock").len() >= 2);
     }
 
@@ -1297,14 +1425,21 @@ mod tests {
         assert_eq!(snapshot.status, ShortcutConfigStatus::Unreadable);
         assert_eq!(snapshot.error, Some(ShortcutConfigError::Read));
         let reset_all = parse_shortcut_edit(&serde_json::json!({ "type": "reset-all" })).unwrap();
-        assert_eq!(persistence.edit(&reset_all, &snapshot.revision).status, ShortcutSaveStatus::Unreadable);
+        assert_eq!(
+            persistence.edit(&reset_all, &snapshot.revision).status,
+            ShortcutSaveStatus::Unreadable
+        );
     }
 
     struct FailingReadStorage;
 
     impl ShortcutStorage for FailingReadStorage {
         fn read(&self) -> Result<Option<String>, DshError> {
-            Err(DshError::io("read", Some("keybindings.json".into()), &"denied"))
+            Err(DshError::io(
+                "read",
+                Some("keybindings.json".into()),
+                &"denied",
+            ))
         }
         fn write(&self, _raw: &str) -> Result<(), DshError> {
             Ok(())
@@ -1316,7 +1451,8 @@ mod tests {
         let published = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
         let raw = "{\"schemaVersion\":7,\"profiles\":{}}";
         let storage = Box::new(MemoryStorage(std::sync::Mutex::new(Some(raw.to_string()))));
-        let shared = std::sync::Arc::new(MemoryStorage(std::sync::Mutex::new(Some(raw.to_string()))));
+        let shared =
+            std::sync::Arc::new(MemoryStorage(std::sync::Mutex::new(Some(raw.to_string()))));
         let _ = shared;
         let persistence = persistence(storage, published);
         let snapshot = persistence.read_current();

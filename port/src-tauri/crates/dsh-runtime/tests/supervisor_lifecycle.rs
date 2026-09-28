@@ -12,8 +12,8 @@ use std::time::Duration;
 
 use dsh_core::protocol::RuntimeState;
 use dsh_runtime::control::{self, ControlEndpoint, HostEvent, ShellMessage, UpdateTasksAction};
-use dsh_runtime::supervisor::{SpawnPlan, Supervisor};
 use dsh_runtime::process_alive;
+use dsh_runtime::supervisor::{SpawnPlan, Supervisor};
 
 /// Re-exec entry: the fake Host (control-protocol twin of `runtime/adapter.mjs`).
 #[test]
@@ -62,6 +62,15 @@ fn run_fake_host() {
             token: std::env::var("DSH_DESKTOP_CONTROL_TOKEN").expect("token env"),
         };
         let mut channel = control::connect(&endpoint).await.expect("control connect");
+        if let Ok(path) = std::env::var("DSH_FAKE_HOST_RUN_COUNT") {
+            use std::io::Write;
+            let mut file = std::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(path)
+                .expect("run count");
+            writeln!(file, "{}", std::process::id()).expect("record host run");
+        }
         // Grandchild process that must not survive the tree teardown.
         let report = std::env::var("DSH_FAKE_HOST_REPORT").expect("report env");
         let mut grandchild = spawn_sleeper();
@@ -79,6 +88,22 @@ fn run_fake_host() {
             let code: i32 = code.parse().unwrap_or(1);
             tokio::time::sleep(Duration::from_millis(150)).await;
             std::process::exit(code);
+        }
+        if std::env::var("DSH_FAKE_HOST_FATAL_AFTER_READY").is_ok() {
+            channel
+                .send_event(&HostEvent::Fatal {
+                    message: "fixture fatal after ready".into(),
+                    diagnostic: Some("fixture diagnostic".into()),
+                })
+                .await
+                .expect("fatal event");
+            tokio::time::sleep(Duration::from_secs(60)).await;
+            return;
+        }
+        if std::env::var("DSH_FAKE_HOST_CONTROL_EOF").is_ok() {
+            drop(channel);
+            tokio::time::sleep(Duration::from_secs(60)).await;
+            return;
         }
         let ignore_shutdown = std::env::var("DSH_FAKE_HOST_IGNORE_SHUTDOWN").is_ok();
         let silent = std::env::var("DSH_FAKE_HOST_SILENT").is_ok();
@@ -124,7 +149,8 @@ fn run_fake_host() {
                         .await
                         .expect("shutdown-complete");
                     return;
-                }            }
+                }
+            }
         }
     });
 }
@@ -136,7 +162,12 @@ fn run_fake_host() {
 #[allow(clippy::zombie_processes)]
 fn spawn_sleeper() -> std::process::Child {
     std::process::Command::new(std::env::current_exe().expect("current exe"))
-        .args(["fake_host_sleeper", "--exact", "fake_host_sleeper", "--nocapture"])
+        .args([
+            "fake_host_sleeper",
+            "--exact",
+            "fake_host_sleeper",
+            "--nocapture",
+        ])
         .env("DSH_FAKE_SLEEP", "1")
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::null())
@@ -148,7 +179,10 @@ fn spawn_sleeper() -> std::process::Child {
 fn fake_host_plan(report: &std::path::Path, extra_env: &[(&str, &str)]) -> SpawnPlan {
     let mut env = std::collections::BTreeMap::new();
     env.insert("DSH_FAKE_HOST".to_string(), "1".to_string());
-    env.insert("DSH_FAKE_HOST_REPORT".to_string(), report.to_string_lossy().into_owned());
+    env.insert(
+        "DSH_FAKE_HOST_REPORT".to_string(),
+        report.to_string_lossy().into_owned(),
+    );
     for (key, value) in extra_env {
         env.insert((*key).to_string(), (*value).to_string());
     }
@@ -176,16 +210,28 @@ async fn startup_exit_before_connect_is_typed_prompt_and_reaped() {
     );
     let started = std::time::Instant::now();
     let error = supervisor.start().await.expect_err("early exit must fail");
-    assert!(started.elapsed() < Duration::from_secs(5), "must report exit before startup deadline");
+    assert!(
+        started.elapsed() < Duration::from_secs(5),
+        "must report exit before startup deadline"
+    );
     let dsh_core::error::DshError::Other { code, message } = error else {
         panic!("expected typed child-exit error, got {error:?}");
     };
     assert_eq!(code, "host_startup_child_exit");
     assert!(message.contains('7'), "exit code missing: {message}");
-    assert!(message.contains("fixture startup failure diagnostic"), "stderr tail missing: {message}");
-    let pid: u32 = std::fs::read_to_string(report).expect("host pid").parse().expect("pid");
+    assert!(
+        message.contains("fixture startup failure diagnostic"),
+        "stderr tail missing: {message}"
+    );
+    let pid: u32 = std::fs::read_to_string(report)
+        .expect("host pid")
+        .parse()
+        .expect("pid");
     assert!(!process_alive(pid), "failed startup child must be reaped");
-    supervisor.stop(false).await.expect("stop after startup failure");
+    supervisor
+        .stop(false)
+        .await
+        .expect("stop after startup failure");
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -196,7 +242,12 @@ async fn startup_connection_after_delay_still_reaches_ready() {
         fake_host_plan(&report, &[("DSH_FAKE_HOST_CONNECT_DELAY_MS", "250")]),
         None,
     );
-    assert!(supervisor.start().await.expect("late connect").url.contains("token="));
+    assert!(supervisor
+        .start()
+        .await
+        .expect("late connect")
+        .url
+        .contains("token="));
     supervisor.stop(false).await.expect("stop");
 }
 
@@ -213,11 +264,23 @@ async fn stop_immediately_after_start_reaps_unconnected_child() {
         tokio::spawn(async move { supervisor.start().await })
     };
     tokio::time::timeout(Duration::from_secs(5), async {
-        while !report.exists() { tokio::time::sleep(Duration::from_millis(10)).await; }
-    }).await.expect("child started");
-    supervisor.stop_with_graceful_deadline(Duration::from_millis(100), false).await.expect("immediate stop");
-    let _ = tokio::time::timeout(Duration::from_secs(2), starting).await.expect("start task exits");
-    let pid: u32 = std::fs::read_to_string(report).expect("host pid").parse().expect("pid");
+        while !report.exists() {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("child started");
+    supervisor
+        .stop_with_graceful_deadline(Duration::from_millis(100), false)
+        .await
+        .expect("immediate stop");
+    let _ = tokio::time::timeout(Duration::from_secs(2), starting)
+        .await
+        .expect("start task exits");
+    let pid: u32 = std::fs::read_to_string(report)
+        .expect("host pid")
+        .parse()
+        .expect("pid");
     assert!(!process_alive(pid), "stop must reap startup child");
 }
 
@@ -230,7 +293,10 @@ async fn supervisor_ready_inspection_and_clean_shutdown_leave_no_children() {
     let report = scratch.path().join("grandchild.pid");
     let supervisor = Supervisor::new(fake_host_plan(&report, &[]), None);
     let ready = supervisor.start().await.expect("start");
-    assert!(ready.url.contains("token="), "ready carries the host authenticated URL");
+    assert!(
+        ready.url.contains("token="),
+        "ready carries the host authenticated URL"
+    );
     assert_eq!(supervisor.status().state, RuntimeState::Ready);
 
     // Quit inspection reaches the host and fails closed only on timeout.
@@ -239,21 +305,36 @@ async fn supervisor_ready_inspection_and_clean_shutdown_leave_no_children() {
     assert!(inspection.scheduled_tasks);
 
     // Update-task control reaches the host (responses carry `active`).
-    assert!(!supervisor.update_tasks(UpdateTasksAction::Inspect).await.expect("inspect"));
-    assert!(supervisor.update_tasks(UpdateTasksAction::Lock).await.expect("lock"));
-    assert!(!supervisor.update_tasks(UpdateTasksAction::Unlock).await.expect("unlock"));
+    assert!(!supervisor
+        .update_tasks(UpdateTasksAction::Inspect)
+        .await
+        .expect("inspect"));
+    assert!(supervisor
+        .update_tasks(UpdateTasksAction::Lock)
+        .await
+        .expect("lock"));
+    assert!(!supervisor
+        .update_tasks(UpdateTasksAction::Unlock)
+        .await
+        .expect("unlock"));
 
     let grandchild: u32 = std::fs::read_to_string(&report)
         .expect("report")
         .trim()
         .parse()
         .expect("pid");
-    assert!(process_alive(grandchild), "grandchild runs while the host runs");
+    assert!(
+        process_alive(grandchild),
+        "grandchild runs while the host runs"
+    );
 
     supervisor.stop(true).await.expect("clean stop");
     assert_eq!(supervisor.status().state, RuntimeState::Stopped);
     // No surviving children: the tree teardown reaped the grandchild too.
-    assert!(!process_alive(grandchild), "grandchild must not survive a clean shutdown");
+    assert!(
+        !process_alive(grandchild),
+        "grandchild must not survive a clean shutdown"
+    );
 }
 
 /// The required orphan test: even when the Host ignores `shutdown` and leaves
@@ -279,7 +360,10 @@ async fn forced_stop_cannot_orphan_a_grandchild() {
     let refused = supervisor
         .stop_with_graceful_deadline(Duration::from_millis(300), true)
         .await;
-    assert!(refused.is_err(), "an unclean exit must refuse the update handoff");
+    assert!(
+        refused.is_err(),
+        "an unclean exit must refuse the update handoff"
+    );
     assert!(
         !process_alive(grandchild),
         "a forced stop must not orphan a grandchild"
@@ -299,14 +383,18 @@ async fn quit_inspection_fails_closed_on_the_two_second_deadline() {
     supervisor.start().await.expect("start");
     let started = std::time::Instant::now();
     let inspection = supervisor.quit_inspection().await;
-    assert!(inspection.active_tasks, "unknown work must fail closed to active tasks");
+    assert!(
+        inspection.active_tasks,
+        "unknown work must fail closed to active tasks"
+    );
     assert!(!inspection.scheduled_tasks);
     assert!(inspection.error.is_some());
     assert!(
         started.elapsed() < Duration::from_secs(6),
         "the two-second deadline must bound the wait"
     );
-    supervisor.stop_with_graceful_deadline(Duration::from_millis(300), false)
+    supervisor
+        .stop_with_graceful_deadline(Duration::from_millis(300), false)
         .await
         .expect("stop");
 }
@@ -315,7 +403,7 @@ async fn quit_inspection_fails_closed_on_the_two_second_deadline() {
 /// violations; the correlated-response plumbing drops late responses.
 #[tokio::test(flavor = "multi_thread")]
 async fn control_responses_are_correlated_by_request_id() {
-    use dsh_runtime::control::{ControlServer, connect};
+    use dsh_runtime::control::{connect, ControlServer};
     let endpoint = ControlEndpoint::generate();
     let server = ControlServer::bind(endpoint.clone()).await.expect("bind");
     let accept = tokio::spawn(async move { server.accept().await });
@@ -356,7 +444,13 @@ async fn control_responses_are_correlated_by_request_id() {
     );
     let response = result.expect("correlated");
     assert!(
-        matches!(response, HostEvent::QuitInspection { active_tasks: false, .. }),
+        matches!(
+            response,
+            HostEvent::QuitInspection {
+                active_tasks: false,
+                ..
+            }
+        ),
         "the real response resolves the waiter"
     );
 }
@@ -371,9 +465,13 @@ async fn control_responses_are_correlated_by_request_id() {
 async fn unrequested_host_exit_is_reported_as_failed() {
     let scratch = tempfile::tempdir().expect("tempdir");
     let report = scratch.path().join("grandchild.pid");
+    let failures = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let observed_failures = failures.clone();
     let supervisor = Supervisor::new(
         fake_host_plan(&report, &[("DSH_FAKE_HOST_EXIT_AFTER_READY", "3")]),
-        None,
+        Some(Box::new(move |_| {
+            observed_failures.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        })),
     );
     supervisor.start().await.expect("start");
     assert_eq!(supervisor.status().state, RuntimeState::Ready);
@@ -389,7 +487,15 @@ async fn unrequested_host_exit_is_reported_as_failed() {
                 message.contains('3'),
                 "the failure must name the host's exit code, got: {message}"
             );
-            assert!(status.url.is_none(), "a failed runtime must not advertise a URL");
+            assert!(
+                status.url.is_none(),
+                "a failed runtime must not advertise a URL"
+            );
+            assert_eq!(
+                failures.load(std::sync::atomic::Ordering::SeqCst),
+                1,
+                "unexpected exit invokes the failure callback exactly once"
+            );
             break;
         }
         assert!(
@@ -405,4 +511,110 @@ async fn unrequested_host_exit_is_reported_as_failed() {
         .stop_with_graceful_deadline(Duration::from_millis(300), false)
         .await
         .expect("stop after an unrequested exit");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn fatal_frame_after_ready_publishes_failed_and_calls_callback() {
+    let scratch = tempfile::tempdir().expect("tempdir");
+    let report = scratch.path().join("grandchild.pid");
+    let failures = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let observed = failures.clone();
+    let supervisor = Supervisor::new(
+        fake_host_plan(&report, &[("DSH_FAKE_HOST_FATAL_AFTER_READY", "1")]),
+        Some(Box::new(move |_| {
+            observed.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        })),
+    );
+    supervisor.start().await.expect("host reaches ready first");
+    tokio::time::timeout(Duration::from_secs(3), async {
+        while supervisor.status().state != RuntimeState::Failed {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("fatal event is terminal");
+    let status = supervisor.status();
+    assert_eq!(status.state, RuntimeState::Failed);
+    assert!(status.url.is_none());
+    assert!(status
+        .last_error
+        .as_deref()
+        .unwrap_or_default()
+        .contains("fixture fatal after ready"));
+    assert_eq!(failures.load(std::sync::atomic::Ordering::SeqCst), 1);
+    supervisor
+        .stop_with_graceful_deadline(Duration::from_millis(100), false)
+        .await
+        .expect("cleanup");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn control_channel_eof_publishes_failed_and_calls_callback() {
+    let scratch = tempfile::tempdir().expect("tempdir");
+    let report = scratch.path().join("grandchild.pid");
+    let failures = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let observed = failures.clone();
+    let supervisor = Supervisor::new(
+        fake_host_plan(&report, &[("DSH_FAKE_HOST_CONTROL_EOF", "1")]),
+        Some(Box::new(move |_| {
+            observed.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        })),
+    );
+    supervisor.start().await.expect("host reaches ready first");
+    tokio::time::timeout(Duration::from_secs(3), async {
+        while supervisor.status().state != RuntimeState::Failed {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("control EOF is terminal");
+    let status = supervisor.status();
+    assert_eq!(status.state, RuntimeState::Failed);
+    assert!(status.url.is_none());
+    assert!(status
+        .last_error
+        .as_deref()
+        .unwrap_or_default()
+        .contains("control channel closed"));
+    assert_eq!(failures.load(std::sync::atomic::Ordering::SeqCst), 1);
+    supervisor
+        .stop_with_graceful_deadline(Duration::from_millis(100), false)
+        .await
+        .expect("cleanup");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn concurrent_start_callers_join_the_same_host_run() {
+    let scratch = tempfile::tempdir().expect("tempdir");
+    let report = scratch.path().join("grandchild.pid");
+    let run_count = scratch.path().join("host-runs.txt");
+    let run_count_env = run_count.to_string_lossy().into_owned();
+    let supervisor = std::sync::Arc::new(Supervisor::new(
+        fake_host_plan(
+            &report,
+            &[
+                ("DSH_FAKE_HOST_CONNECT_DELAY_MS", "250"),
+                ("DSH_FAKE_HOST_RUN_COUNT", &run_count_env),
+            ],
+        ),
+        None,
+    ));
+    let (first, second) = tokio::join!(supervisor.start(), supervisor.start());
+    let first = first.expect("first start joins run");
+    let second = second.expect("second start joins run");
+    assert_eq!(first.url, second.url);
+    let runs = std::fs::read_to_string(&run_count).expect("one host run was recorded");
+    assert_eq!(
+        runs.lines().count(),
+        1,
+        "both callers must share one spawned Host"
+    );
+    let pid: u32 = std::fs::read_to_string(&report)
+        .expect("child report")
+        .trim()
+        .parse()
+        .expect("pid");
+    assert!(process_alive(pid));
+    supervisor.stop(false).await.expect("single run stops");
+    assert!(!process_alive(pid));
 }

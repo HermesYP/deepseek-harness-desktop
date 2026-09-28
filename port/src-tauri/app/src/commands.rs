@@ -336,9 +336,11 @@ pub async fn runtime_restart(
     app: tauri::AppHandle,
     state: tauri::State<'_, Arc<AppState>>,
 ) -> Result<RuntimeStatus, DshError> {
-    state.supervisor.stop(false).await?;
-    let ready = state.supervisor.start().await?;
-    state.gateway.set_host(&ready.url).await?;
+    let status = state.supervisor.restart().await?;
+    let url = status.url.as_deref().ok_or_else(|| {
+        DshError::runtime_unavailable("failed", "restarted host has no authenticated URL")
+    })?;
+    state.gateway.set_host(url).await?;
     let status = state.supervisor.status();
     app.emit("dsh://runtime/state", &status).ok();
     Ok(status)

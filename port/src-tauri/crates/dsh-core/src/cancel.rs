@@ -93,6 +93,9 @@ mod tests {
         let token = CancellationToken::new();
         token.cancel();
         let outcome: Result<u32, _> = token.race(std::future::pending::<u32>(), "op").await;
-        assert!(matches!(outcome, Err(crate::error::DshError::Cancelled { .. })));
+        assert!(matches!(
+            outcome,
+            Err(crate::error::DshError::Cancelled { .. })
+        ));
     }
 }

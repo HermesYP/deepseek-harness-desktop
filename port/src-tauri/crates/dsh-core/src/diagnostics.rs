@@ -202,7 +202,10 @@ impl RendererConsoleTail {
 
 /// The report file name: sortable by time, then the source
 /// (`crash-<ISO time with ':' and '.' as '-'>-<source>.log`).
-pub fn crash_report_file_name(time: &chrono::DateTime<chrono::Utc>, source: CrashReportSource) -> String {
+pub fn crash_report_file_name(
+    time: &chrono::DateTime<chrono::Utc>,
+    source: CrashReportSource,
+) -> String {
     let stamp = time.to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
     format!(
         "{CRASH_REPORT_PREFIX}{}-{}.log",
@@ -281,7 +284,12 @@ fn render_error(error: &ErrorReport, depth: usize, out: &mut String) {
 /// the Host's own diagnostic when it reported one, and the renderer console tail.
 pub fn render_crash_report(input: &CrashReportInput<'_>) -> String {
     let header = [
-        format!("time: {}", input.time.to_rfc3339_opts(chrono::SecondsFormat::Millis, true)),
+        format!(
+            "time: {}",
+            input
+                .time
+                .to_rfc3339_opts(chrono::SecondsFormat::Millis, true)
+        ),
         format!("source: {}", input.source.as_str()),
         format!("phase: {}", input.phase.as_str()),
         format!("app: {} {}", input.app.name, input.app.version),
@@ -327,8 +335,13 @@ pub fn write_crash_report(
     directory: &Path,
     input: &CrashReportInput<'_>,
 ) -> Result<PathBuf, DshError> {
-    std::fs::create_dir_all(directory)
-        .map_err(|e| DshError::io("create directory", Some(directory.display().to_string()), &e))?;
+    std::fs::create_dir_all(directory).map_err(|e| {
+        DshError::io(
+            "create directory",
+            Some(directory.display().to_string()),
+            &e,
+        )
+    })?;
     set_directory_owner_only(directory);
     let path = directory.join(crash_report_file_name(&input.time, input.source));
     let content = render_crash_report(input);
@@ -397,8 +410,13 @@ fn set_directory_owner_only(_directory: &Path) {}
 pub fn init_diagnostics(
     logs_dir: &Path,
 ) -> Result<tracing_appender::non_blocking::WorkerGuard, DshError> {
-    std::fs::create_dir_all(logs_dir)
-        .map_err(|e| DshError::io("create log directory", Some(logs_dir.display().to_string()), &e))?;
+    std::fs::create_dir_all(logs_dir).map_err(|e| {
+        DshError::io(
+            "create log directory",
+            Some(logs_dir.display().to_string()),
+            &e,
+        )
+    })?;
     let appender = tracing_appender::rolling::daily(logs_dir, "dsh-desktop.log");
     let (non_blocking, guard) = tracing_appender::non_blocking(appender);
     let subscriber = tracing_subscriber::fmt()
@@ -450,7 +468,10 @@ mod tests {
         let huge = "x".repeat(ERROR_SECTION_MAX_CHARS + 1000);
         let error = ErrorReport::message(huge.clone());
         let bounded = bounded_error_section(&error);
-        assert!(bounded.len() <= ERROR_SECTION_MAX_CHARS + 80, "must respect the cap");
+        assert!(
+            bounded.len() <= ERROR_SECTION_MAX_CHARS + 80,
+            "must respect the cap"
+        );
         assert!(bounded.ends_with(&format!(
             "… (error section cut at {ERROR_SECTION_MAX_CHARS} characters)"
         )));
@@ -464,7 +485,10 @@ mod tests {
         let error = ErrorReport::message("top")
             .with_property("code", "E")
             .with_cause(ErrorReport::message("inner"));
-        assert_eq!(bounded_error_section(&error), "top\n  code: E\ncaused by: inner");
+        assert_eq!(
+            bounded_error_section(&error),
+            "top\n  code: E\ncaused by: inner"
+        );
     }
 
     #[test]
@@ -474,7 +498,10 @@ mod tests {
             error = ErrorReport::message(format!("level{depth}")).with_cause(error);
         }
         let bounded = bounded_error_section(&error);
-        assert!(bounded.ends_with("[cause chain cut]"), "deep chains must be cut: {bounded}");
+        assert!(
+            bounded.ends_with("[cause chain cut]"),
+            "deep chains must be cut: {bounded}"
+        );
     }
 
     #[test]
@@ -484,7 +511,9 @@ mod tests {
         let chunk = "a".repeat(STDERR_TAIL_MAX_CHARS);
         tail.push(&chunk);
         assert!(tail.snapshot().chars().count() <= STDERR_TAIL_MAX_CHARS);
-        assert!(tail.snapshot().ends_with(&"a".repeat(STDERR_TAIL_MAX_CHARS - "héllo ✓ ".chars().count())));
+        assert!(tail
+            .snapshot()
+            .ends_with(&"a".repeat(STDERR_TAIL_MAX_CHARS - "héllo ✓ ".chars().count())));
         // Multi-byte input must never cut a char in half.
         let mut tail = StderrTail::new();
         tail.push(&"é".repeat(STDERR_TAIL_MAX_CHARS));
@@ -557,9 +586,7 @@ mod tests {
             time: chrono::Utc::now(),
         };
         let rendered = render_crash_report(&input);
-        let start = rendered
-            .find("--- host diagnostic")
-            .expect("section");
+        let start = rendered.find("--- host diagnostic").expect("section");
         let end = rendered.find("--- renderer console").expect("section");
         let section = &rendered[start..end];
         assert!(section.chars().count() < HOST_DIAGNOSTIC_MAX_CHARS + 100);
@@ -592,7 +619,10 @@ mod tests {
             .map(|e| e.file_name().to_string_lossy().into_owned())
             .collect();
         names.sort();
-        assert!(names.contains(&"keep-me.txt".to_string()), "unrelated files untouched");
+        assert!(
+            names.contains(&"keep-me.txt".to_string()),
+            "unrelated files untouched"
+        );
         assert_eq!(names.len(), CRASH_REPORTS_RETAINED + 1);
         assert!(
             names

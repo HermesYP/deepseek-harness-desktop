@@ -442,7 +442,17 @@ fn setup(app: &mut tauri::App) -> Result<(), dsh_core::error::DshError> {
         None,
         None,
     );
-    let supervisor = Arc::new(Supervisor::new(plan, None));
+    let recovery_app = app.handle().clone();
+    let supervisor = Arc::new(Supervisor::new(
+        plan,
+        Some(Box::new(move |fatal| {
+            let app = recovery_app.clone();
+            let message = fatal.message.clone();
+            tauri::async_runtime::spawn(async move {
+                fatal::report_fatal(&app, &message).await.ok();
+            });
+        })),
+    ));
     let gateway = tauri::async_runtime::block_on(dsh_gateway::start(
         dsh_gateway::GatewayConfig::loopback(shell_dir.clone()),
         signing_secret,

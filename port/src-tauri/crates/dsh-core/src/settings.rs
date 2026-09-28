@@ -16,6 +16,7 @@
 use std::collections::BTreeMap;
 use std::io::Write;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use fs4::fs_std::FileExt;
 use serde::{Deserialize, Serialize};
@@ -74,33 +75,66 @@ pub fn validate_key(key: &str) -> Result<(), DshError> {
     }
 }
 
-/// Atomic replacement: write a sibling temp file, then rename over the target.
+struct TempPath(PathBuf);
+
+impl Drop for TempPath {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(&self.0);
+    }
+}
+
+/// Atomic replacement: write a unique sibling temp file, then rename over the target.
 /// Windows uses `MoveFileExW` with `MOVEFILE_WRITE_THROUGH` (the upstream
 /// publication semantics); other platforms use `rename(2)` within the directory.
 pub fn write_atomic(path: &Path, contents: &str) -> Result<(), DshError> {
     let directory = path.parent().ok_or_else(|| {
-        DshError::io("write", Some(path.display().to_string()), &"path has no parent directory")
+        DshError::io(
+            "write",
+            Some(path.display().to_string()),
+            &"path has no parent directory",
+        )
     })?;
-    std::fs::create_dir_all(directory)
-        .map_err(|e| DshError::io("create directory", Some(directory.display().to_string()), &e))?;
+    std::fs::create_dir_all(directory).map_err(|e| {
+        DshError::io(
+            "create directory",
+            Some(directory.display().to_string()),
+            &e,
+        )
+    })?;
     let file_name = path
         .file_name()
         .and_then(|n| n.to_str())
         .unwrap_or("settings.json");
-    let temp = directory.join(format!(".{file_name}.tmp-{}", std::process::id()));
-    {
+    static TEMP_SEQUENCE: AtomicU64 = AtomicU64::new(0);
+    let (temp, mut file) = loop {
+        let sequence = TEMP_SEQUENCE.fetch_add(1, Ordering::Relaxed);
+        let candidate = directory.join(format!(
+            ".{file_name}.tmp-{}-{sequence}",
+            std::process::id()
+        ));
         let mut options = std::fs::OpenOptions::new();
-        options.write(true).create(true).truncate(true);
+        options.write(true).create_new(true);
         set_owner_only(&mut options);
-        let mut file = options
-            .open(&temp)
-            .map_err(|e| DshError::io("create temp file", Some(temp.display().to_string()), &e))?;
-        file.write_all(contents.as_bytes())
-            .map_err(|e| DshError::io("write temp file", Some(temp.display().to_string()), &e))?;
-        file.sync_all()
-            .map_err(|e| DshError::io("flush temp file", Some(temp.display().to_string()), &e))?;
-    }
+        match options.open(&candidate) {
+            Ok(file) => break (candidate, file),
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(error) => {
+                return Err(DshError::io(
+                    "create temp file",
+                    Some(candidate.display().to_string()),
+                    &error,
+                ));
+            }
+        }
+    };
+    let temp_guard = TempPath(temp.clone());
+    file.write_all(contents.as_bytes())
+        .map_err(|e| DshError::io("write temp file", Some(temp.display().to_string()), &e))?;
+    file.sync_all()
+        .map_err(|e| DshError::io("flush temp file", Some(temp.display().to_string()), &e))?;
+    drop(file);
     replace_file(&temp, path)?;
+    drop(temp_guard);
     Ok(())
 }
 
@@ -117,9 +151,14 @@ fn set_owner_only(_options: &mut std::fs::OpenOptions) {}
 #[cfg(windows)]
 fn replace_file(from: &Path, to: &Path) -> Result<(), DshError> {
     use std::os::windows::ffi::OsStrExt;
-    use windows_sys::Win32::Storage::FileSystem::{MoveFileExW, MOVEFILE_REPLACE_EXISTING, MOVEFILE_WRITE_THROUGH};
+    use windows_sys::Win32::Storage::FileSystem::{
+        MoveFileExW, MOVEFILE_REPLACE_EXISTING, MOVEFILE_WRITE_THROUGH,
+    };
     let wide = |p: &Path| -> Vec<u16> {
-        p.as_os_str().encode_wide().chain(std::iter::once(0)).collect()
+        p.as_os_str()
+            .encode_wide()
+            .chain(std::iter::once(0))
+            .collect()
     };
     let (from_wide, to_wide) = (wide(from), wide(to));
     let ok = unsafe {
@@ -173,17 +212,18 @@ impl SettingsStore {
         validate_key(key)?;
         self.mutate(|document| {
             document.settings.insert(key.to_string(), value);
+            Ok(())
         })
     }
 
     /// Remove one setting (missing keys are a `NotFound` error, never silent).
     pub fn reset(&mut self, key: &str) -> Result<(), DshError> {
         validate_key(key)?;
-        if !self.document.settings.contains_key(key) {
-            return Err(DshError::not_found("setting", key));
-        }
         self.mutate(|document| {
-            document.settings.remove(key);
+            if document.settings.remove(key).is_none() {
+                return Err(DshError::not_found("setting", key));
+            }
+            Ok(())
         })
     }
 
@@ -192,18 +232,12 @@ impl SettingsStore {
         &self.path
     }
 
-    fn mutate(&mut self, update: impl FnOnce(&mut SettingsDocument)) -> Result<(), DshError> {
-        let mut document = self.reload_and_lock()?;
-        update(&mut document);
-        let raw = serde_json::to_string(&document)
-            .map_err(|e| DshError::io("serialize", Some(self.path.display().to_string()), &e))?;
-        write_atomic(&self.path, &raw)?;
-        self.document = document;
-        Ok(())
-    }
-
-    /// Re-read under the exclusive lock so an external writer's changes are never lost.
-    fn reload_and_lock(&self) -> Result<SettingsDocument, DshError> {
+    fn mutate(
+        &mut self,
+        update: impl FnOnce(&mut SettingsDocument) -> Result<(), DshError>,
+    ) -> Result<(), DshError> {
+        // Keep the guard local to the whole transaction: neither it nor a document
+        // detached from its guard can escape this method.
         let lock_path = self.path.with_extension("lock");
         let lock = std::fs::OpenOptions::new()
             .create(true)
@@ -211,20 +245,25 @@ impl SettingsStore {
             .truncate(false)
             .open(&lock_path)
             .map_err(|e| DshError::io("open lock", Some(lock_path.display().to_string()), &e))?;
-        lock.try_lock_exclusive().map_err(|e| {
+        lock.lock_exclusive().map_err(|e| {
             DshError::io("lock settings", Some(self.path.display().to_string()), &e)
         })?;
-        let document = read_document(&self.path)?;
-        // The lock is released when `lock` drops at the end of the transaction.
-        drop(lock);
-        Ok(document)
+        let mut document = read_document(&self.path)?;
+        update(&mut document)?;
+        let raw = serde_json::to_string(&document)
+            .map_err(|e| DshError::io("serialize", Some(self.path.display().to_string()), &e))?;
+        write_atomic(&self.path, &raw)?;
+        self.document = document;
+        Ok(())
     }
 }
 
 fn read_document(path: &Path) -> Result<SettingsDocument, DshError> {
     let raw = match std::fs::read_to_string(path) {
         Ok(raw) => raw,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(SettingsDocument::default()),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            return Ok(SettingsDocument::default())
+        }
         Err(e) => return Err(DshError::io("read", Some(path.display().to_string()), &e)),
     };
     parse_document(&raw, path)
@@ -259,7 +298,9 @@ mod tests {
     fn set_get_reset_round_trip() {
         let dir = tempfile::tempdir().expect("tempdir");
         let mut store = temp_store(dir.path());
-        store.set("locale.preference", SettingValue::String("zh".into())).expect("set");
+        store
+            .set("locale.preference", SettingValue::String("zh".into()))
+            .expect("set");
         assert_eq!(
             store.get("locale.preference").expect("get").cloned(),
             Some(SettingValue::String("zh".into()))
@@ -278,7 +319,10 @@ mod tests {
         let mut store = temp_store(dir.path());
         for index in 0..25 {
             store
-                .set(&format!("key{index}"), SettingValue::Number(serde_json::Number::from(index)))
+                .set(
+                    &format!("key{index}"),
+                    SettingValue::Number(serde_json::Number::from(index)),
+                )
                 .expect("set");
         }
         let leftovers: Vec<_> = std::fs::read_dir(dir.path())
@@ -286,10 +330,102 @@ mod tests {
             .filter_map(|e| e.ok())
             .filter(|e| e.file_name().to_string_lossy().contains(".tmp-"))
             .collect();
-        assert!(leftovers.is_empty(), "temp files must be renamed away: {leftovers:?}");
+        assert!(
+            leftovers.is_empty(),
+            "temp files must be renamed away: {leftovers:?}"
+        );
         // Every committed write is readable in full.
-        let reopened = SettingsStore::open(dir.path().join("settings.json").as_path()).expect("reopen");
+        let reopened =
+            SettingsStore::open(dir.path().join("settings.json").as_path()).expect("reopen");
         assert_eq!(reopened.list().len(), 25);
+    }
+
+    #[test]
+    fn concurrent_store_instances_preserve_all_acknowledged_writes() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("settings.json");
+        let count = 8;
+        let barrier = std::sync::Arc::new(std::sync::Barrier::new(count));
+        let writers: Vec<_> = (0..count)
+            .map(|index| {
+                let path = path.clone();
+                let barrier = barrier.clone();
+                std::thread::spawn(move || {
+                    let mut store = SettingsStore::open(&path).expect("open writer store");
+                    barrier.wait();
+                    store
+                        .set(
+                            &format!("writer{index}"),
+                            SettingValue::String("x".repeat(256 * 1024)),
+                        )
+                        .expect("concurrent store write");
+                })
+            })
+            .collect();
+        for writer in writers {
+            writer.join().expect("writer thread");
+        }
+        let reopened = SettingsStore::open(&path).expect("reopen");
+        assert_eq!(reopened.list().len(), count);
+        for index in 0..count {
+            assert!(matches!(
+                reopened.get(&format!("writer{index}")).expect("get"),
+                Some(SettingValue::String(value)) if value.len() == 256 * 1024
+            ));
+        }
+        let leftovers: Vec<_> = std::fs::read_dir(dir.path())
+            .expect("read_dir")
+            .filter_map(Result::ok)
+            .filter(|entry| entry.file_name().to_string_lossy().contains(".tmp-"))
+            .collect();
+        assert!(leftovers.is_empty(), "temp files leaked: {leftovers:?}");
+    }
+
+    #[test]
+    fn process_writer() {
+        let Ok(path) = std::env::var("DSH_SETTINGS_CHILD_PATH") else {
+            return;
+        };
+        let path = PathBuf::from(path);
+        let mut store = SettingsStore::open(&path).expect("child open");
+        store
+            .set("child", SettingValue::String("c".repeat(2 * 1024 * 1024)))
+            .expect("child acknowledged write");
+        println!("child write acknowledged");
+    }
+
+    #[test]
+    fn concurrent_process_writes_preserve_both_acknowledged_values() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("settings.json");
+        let executable = std::env::current_exe().expect("test executable");
+        let child = std::process::Command::new(executable)
+            .arg("--exact")
+            .arg("settings::tests::process_writer")
+            .arg("--nocapture")
+            .env("DSH_SETTINGS_CHILD_PATH", &path)
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .spawn()
+            .expect("spawn second process");
+        let mut parent_store = SettingsStore::open(&path).expect("parent open");
+        parent_store
+            .set("parent", SettingValue::String("p".repeat(2 * 1024 * 1024)))
+            .expect("parent acknowledged write");
+        let output = child.wait_with_output().expect("wait for child");
+        assert!(
+            output.status.success(),
+            "child failed: stdout={} stderr={}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let child_output = String::from_utf8_lossy(&output.stdout);
+        println!("two-process child output: {child_output}");
+        assert!(child_output.contains("child write acknowledged"));
+        let reopened = SettingsStore::open(&path).expect("reopen");
+        assert_eq!(reopened.list().len(), 2, "both acknowledged writes survive");
+        assert!(reopened.get("parent").expect("get parent").is_some());
+        assert!(reopened.get("child").expect("get child").is_some());
     }
 
     #[test]
@@ -300,7 +436,11 @@ mod tests {
         std::fs::write(&path, raw).expect("seed");
         let error = SettingsStore::open(&path).expect_err("future schema must fail");
         assert!(matches!(error, DshError::Other { code, .. } if code == "settings_schema_future"));
-        assert_eq!(std::fs::read_to_string(&path).expect("reread"), raw, "file must stay unchanged");
+        assert_eq!(
+            std::fs::read_to_string(&path).expect("reread"),
+            raw,
+            "file must stay unchanged"
+        );
     }
 
     #[test]
@@ -308,7 +448,10 @@ mod tests {
         let dir = tempfile::tempdir().expect("tempdir");
         let path = dir.path().join("settings.json");
         std::fs::write(&path, "{not json").expect("seed");
-        assert!(matches!(SettingsStore::open(&path), Err(DshError::Io { .. })));
+        assert!(matches!(
+            SettingsStore::open(&path),
+            Err(DshError::Io { .. })
+        ));
     }
 
     #[test]
@@ -326,6 +469,9 @@ mod tests {
         let dir = tempfile::tempdir().expect("tempdir");
         let store = temp_store(dir.path());
         assert_eq!(*store.list(), BTreeMap::new());
-        assert!(!dir.path().join("settings.json").exists(), "open must not create eagerly");
+        assert!(
+            !dir.path().join("settings.json").exists(),
+            "open must not create eagerly"
+        );
     }
 }

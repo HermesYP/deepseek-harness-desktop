@@ -109,8 +109,7 @@ pub fn resolve_app_paths(user_data_override: Option<PathBuf>) -> AppPaths {
 /// `~/Library/Application Support/<product>` on macOS, `~/.local/share/<product>` on Linux.
 fn default_user_data_dir() -> PathBuf {
     let base = if cfg!(target_os = "macos") {
-        dirs::home_dir()
-            .map(|home| home.join("Library").join("Application Support"))
+        dirs::home_dir().map(|home| home.join("Library").join("Application Support"))
     } else {
         dirs::data_dir()
     };
@@ -155,16 +154,31 @@ mod tests {
     #[test]
     fn desktop_paths_mirror_upstream_layout() {
         let paths = resolve_desktop_paths(Some(PathBuf::from("H:\\my home")));
-        assert_eq!(paths.profile, Path::new("H:\\my home").join("profiles").join("desktop"));
-        assert_eq!(paths.lock, Path::new("H:\\my home").join("profiles").join("desktop").join("lock"));
+        assert_eq!(
+            paths.profile,
+            Path::new("H:\\my home").join("profiles").join("desktop")
+        );
+        assert_eq!(
+            paths.lock,
+            Path::new("H:\\my home")
+                .join("profiles")
+                .join("desktop")
+                .join("lock")
+        );
         assert_eq!(paths.home, Path::new("H:\\my home"));
     }
 
     #[test]
     fn app_paths_put_settings_and_keybindings_beside_user_data() {
         let paths = resolve_app_paths(Some(PathBuf::from("U:\\user data ✓")));
-        assert_eq!(paths.settings, Path::new("U:\\user data ✓").join("settings.json"));
-        assert_eq!(paths.keybindings, Path::new("U:\\user data ✓").join("keybindings.json"));
+        assert_eq!(
+            paths.settings,
+            Path::new("U:\\user data ✓").join("settings.json")
+        );
+        assert_eq!(
+            paths.keybindings,
+            Path::new("U:\\user data ✓").join("keybindings.json")
+        );
         assert_eq!(
             paths.background_close_confirmed,
             Path::new("U:\\user data ✓").join("background-close-confirmed")

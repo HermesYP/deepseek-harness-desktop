@@ -139,6 +139,9 @@ mod tests {
     #[test]
     fn display_never_carries_the_tag_shape() {
         let error = DshError::timeout("desktop quit: inspection", 2000);
-        assert_eq!(error.to_string(), "desktop quit: inspection timed out after 2000 ms");
+        assert_eq!(
+            error.to_string(),
+            "desktop quit: inspection timed out after 2000 ms"
+        );
     }
 }

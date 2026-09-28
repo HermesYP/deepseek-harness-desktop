@@ -42,7 +42,10 @@ where
     let value: T = serde_json::from_str(expected)
         .unwrap_or_else(|e| panic!("{name}: fixture does not deserialize: {e}"));
     let encoded = serde_json::to_string(&value).expect("serialize");
-    assert_eq!(encoded, expected, "{name}: round-trip must be byte-identical");
+    assert_eq!(
+        encoded, expected,
+        "{name}: round-trip must be byte-identical"
+    );
     let again: T = serde_json::from_str(&encoded).expect("deserialize");
     assert_eq!(again, value, "{name}: round-trip must be stable");
 }
@@ -57,18 +60,30 @@ const CLAIMED: &[(&str, &str)] = &[
     ("credential-presence.json", "CredentialPresence"),
     ("credential-ref.json", "CredentialRef"),
     ("credential-store-request.json", "CredentialStoreRequest"),
-    ("desktop-shortcut-input.keyboard.json", "DesktopShortcutInput"),
+    (
+        "desktop-shortcut-input.keyboard.json",
+        "DesktopShortcutInput",
+    ),
     ("desktop-shortcut-input.iframe.json", "DesktopShortcutInput"),
     ("desktop-shortcut-input.menu.json", "DesktopShortcutInput"),
-    ("desktop-shortcut-input.webview.json", "DesktopShortcutInput"),
-    ("desktop-update-presentation.json", "DesktopUpdatePresentation"),
+    (
+        "desktop-shortcut-input.webview.json",
+        "DesktopShortcutInput",
+    ),
+    (
+        "desktop-update-presentation.json",
+        "DesktopUpdatePresentation",
+    ),
     ("dsh-error.json", "DshError[]"),
     ("index-injection.json", "IndexInjection[]"),
     ("locale-apply-request.json", "LocaleApplyRequest"),
     ("locale-set-request.json", "LocaleSetRequest"),
     ("locale-state.json", "LocaleState"),
     ("menu-action-id.json", "MenuActionId[]"),
-    ("onboarding-set-active-request.json", "OnboardingSetActiveRequest"),
+    (
+        "onboarding-set-active-request.json",
+        "OnboardingSetActiveRequest",
+    ),
     ("pick-directory-request.json", "PickDirectoryRequest"),
     ("picked-directory.json", "PickedDirectory"),
     ("picked-directory.null.json", "PickedDirectory"),
@@ -88,7 +103,10 @@ const CLAIMED: &[(&str, &str)] = &[
     ("shortcuts-edit-request.json", "ShortcutsEditRequest"),
     ("shortcuts-get-request.json", "ShortcutsGetRequest"),
     ("shortcuts-recording-event.json", "ShortcutsRecordingEvent"),
-    ("shortcuts-recording-request.json", "ShortcutsRecordingRequest"),
+    (
+        "shortcuts-recording-request.json",
+        "ShortcutsRecordingRequest",
+    ),
     ("shell-window-event.json", "ShellWindowEvent"),
     ("shell-quit-confirmed-event.json", "ShellQuitConfirmedEvent"),
 ];
@@ -194,7 +212,10 @@ fn every_fixture_file_is_claimed_with_its_type_name() {
         .filter(|name| name.ends_with(".json"))
         .collect();
     unclaimed.sort();
-    let mut claimed: Vec<String> = CLAIMED.iter().map(|(file, _)| (*file).to_string()).collect();
+    let mut claimed: Vec<String> = CLAIMED
+        .iter()
+        .map(|(file, _)| (*file).to_string())
+        .collect();
     claimed.sort();
     assert_eq!(
         unclaimed, claimed,

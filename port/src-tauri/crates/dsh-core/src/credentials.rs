@@ -128,14 +128,19 @@ impl<B: SecretBackend> CredentialStore<B> {
     /// Open a store over any backend (used by tests and the OS implementation).
     pub fn open(index_path: &Path, backend: B) -> Result<Self, DshError> {
         let index = match std::fs::read_to_string(index_path) {
-            Ok(raw) => serde_json::from_str(&raw).map_err(|e| {
-                DshError::io("parse", Some(index_path.display().to_string()), &e)
-            })?,
+            Ok(raw) => serde_json::from_str(&raw)
+                .map_err(|e| DshError::io("parse", Some(index_path.display().to_string()), &e))?,
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => CredentialIndex {
                 schema_version: 1,
                 entries: BTreeMap::new(),
             },
-            Err(e) => return Err(DshError::io("read", Some(index_path.display().to_string()), &e)),
+            Err(e) => {
+                return Err(DshError::io(
+                    "read",
+                    Some(index_path.display().to_string()),
+                    &e,
+                ))
+            }
         };
         Ok(Self {
             backend,
@@ -145,12 +150,7 @@ impl<B: SecretBackend> CredentialStore<B> {
     }
 
     /// Store one secret. The value travels in memory only and is written to the OS store.
-    pub fn store(
-        &mut self,
-        provider: &str,
-        reference: &str,
-        secret: &str,
-    ) -> Result<(), DshError> {
+    pub fn store(&mut self, provider: &str, reference: &str, secret: &str) -> Result<(), DshError> {
         validate_identity(provider, reference)?;
         self.backend.set_secret(provider, reference, secret)?;
         self.index.entries.insert(
@@ -213,8 +213,9 @@ impl<B: SecretBackend> CredentialStore<B> {
     }
 
     fn save_index(&self) -> Result<(), DshError> {
-        let raw = serde_json::to_string(&self.index)
-            .map_err(|e| DshError::io("serialize", Some(self.index_path.display().to_string()), &e))?;
+        let raw = serde_json::to_string(&self.index).map_err(|e| {
+            DshError::io("serialize", Some(self.index_path.display().to_string()), &e)
+        })?;
         write_atomic(&self.index_path, &raw)
     }
 }
@@ -232,11 +233,16 @@ mod tests {
     }
 
     impl SecretBackend for MemoryBackend {
-        fn set_secret(&self, provider: &str, reference: &str, secret: &str) -> Result<(), DshError> {
-            self.secrets
-                .lock()
-                .expect("lock")
-                .insert((provider.to_string(), reference.to_string()), secret.to_string());
+        fn set_secret(
+            &self,
+            provider: &str,
+            reference: &str,
+            secret: &str,
+        ) -> Result<(), DshError> {
+            self.secrets.lock().expect("lock").insert(
+                (provider.to_string(), reference.to_string()),
+                secret.to_string(),
+            );
             Ok(())
         }
 
@@ -271,22 +277,36 @@ mod tests {
     }
 
     fn temp_store(dir: &Path) -> CredentialStore<MemoryBackend> {
-        CredentialStore::open(&dir.join("credentials-index.json"), MemoryBackend::default())
-            .expect("open store")
+        CredentialStore::open(
+            &dir.join("credentials-index.json"),
+            MemoryBackend::default(),
+        )
+        .expect("open store")
     }
 
     #[test]
     fn round_trip_store_get_has_delete() {
         let dir = tempfile::tempdir().expect("tempdir");
         let mut store = temp_store(dir.path());
-        store.store("client-connection", "browser-session", "s3cret ✓").expect("store");
+        store
+            .store("client-connection", "browser-session", "s3cret ✓")
+            .expect("store");
         assert_eq!(
-            store.get("client-connection", "browser-session").expect("get").as_deref(),
+            store
+                .get("client-connection", "browser-session")
+                .expect("get")
+                .as_deref(),
             Some("s3cret ✓")
         );
-        assert!(store.has("client-connection", "browser-session").expect("has"));
-        store.delete("client-connection", "browser-session").expect("delete");
-        assert!(!store.has("client-connection", "browser-session").expect("has"));
+        assert!(store
+            .has("client-connection", "browser-session")
+            .expect("has"));
+        store
+            .delete("client-connection", "browser-session")
+            .expect("delete");
+        assert!(!store
+            .has("client-connection", "browser-session")
+            .expect("has"));
         assert!(matches!(
             store.delete("client-connection", "browser-session"),
             Err(DshError::NotFound { .. })
@@ -305,9 +325,13 @@ mod tests {
         assert!(rows.iter().all(|row| row.has_secret));
         let rendered = serde_json::to_string(&rows).expect("serialize");
         assert!(!rendered.contains(secret), "list output leaked a secret");
-        assert!(!rendered.contains("other-secret"), "list output leaked a secret");
+        assert!(
+            !rendered.contains("other-secret"),
+            "list output leaked a secret"
+        );
         // The metadata index on disk contains no secret material either.
-        let index_raw = std::fs::read_to_string(dir.path().join("credentials-index.json")).expect("read index");
+        let index_raw =
+            std::fs::read_to_string(dir.path().join("credentials-index.json")).expect("read index");
         assert!(!index_raw.contains(secret));
         assert!(!index_raw.contains("other-secret"));
     }
@@ -318,7 +342,10 @@ mod tests {
         let mut store = temp_store(dir.path());
         store.store("p", "r", "v").expect("store");
         // Externally remove the OS entry; the row must report hasSecret=false.
-        store.backend.delete_secret("p", "r").expect("external delete");
+        store
+            .backend
+            .delete_secret("p", "r")
+            .expect("external delete");
         let rows = store.list().expect("list");
         assert_eq!(rows.len(), 1);
         assert!(!rows[0].has_secret);
@@ -328,7 +355,13 @@ mod tests {
     fn invalid_identities_are_rejected() {
         let dir = tempfile::tempdir().expect("tempdir");
         let mut store = temp_store(dir.path());
-        for (provider, reference) in [("", "r"), ("p", ""), ("p:q", "r"), ("p", "a\\b"), ("p", "a\nb")] {
+        for (provider, reference) in [
+            ("", "r"),
+            ("p", ""),
+            ("p:q", "r"),
+            ("p", "a\\b"),
+            ("p", "a\nb"),
+        ] {
             assert!(matches!(
                 store.store(provider, reference, "v"),
                 Err(DshError::InvalidArgument { .. })

@@ -26,9 +26,7 @@ const STARTUP_CONNECT_TIMEOUT: Duration = Duration::from_secs(30);
 
 use dsh_core::diagnostics::StderrTail;
 use dsh_core::error::DshError;
-use dsh_core::protocol::{
-    IndexInjection, QuitInspection, RuntimeState, RuntimeStatus,
-};
+use dsh_core::protocol::{IndexInjection, QuitInspection, RuntimeState, RuntimeStatus};
 use dsh_core::quit::QuitInspectionOutcome;
 use tokio::sync::watch;
 use tokio::sync::Mutex;
@@ -149,6 +147,8 @@ struct RunSlot {
     stderr: Arc<Mutex<StderrTail>>,
     platform_sessions:
         Option<tokio::sync::mpsc::UnboundedSender<Option<crate::control::PlatformSession>>>,
+    run_id: u64,
+    failure_reported: bool,
 }
 
 /// First-failure callback type (`on_failure`).
@@ -162,16 +162,15 @@ pub struct Supervisor {
     plan: SpawnPlan,
     status: watch::Sender<RuntimeStatus>,
     slot: Arc<Mutex<RunSlot>>,
+    /// Serializes complete start/stop/restart transactions.
+    lifecycle: Mutex<()>,
     on_failure: Option<FailureCallback>,
 }
 
 impl Supervisor {
     /// Create a supervisor for `plan`; `on_failure` receives the first
     /// unexpected child failure exactly once per run.
-    pub fn new(
-        plan: SpawnPlan,
-        on_failure: Option<FailureHandler>,
-    ) -> Self {
+    pub fn new(plan: SpawnPlan, on_failure: Option<FailureHandler>) -> Self {
         let (status, _) = watch::channel(RuntimeStatus {
             state: RuntimeState::Stopped,
             url: None,
@@ -192,7 +191,10 @@ impl Supervisor {
                 fatal: None,
                 stderr: Arc::new(Mutex::new(StderrTail::new())),
                 platform_sessions: None,
+                run_id: 0,
+                failure_reported: false,
             })),
+            lifecycle: Mutex::new(()),
             on_failure: on_failure.map(|f| -> FailureCallback { Arc::from(f) }),
         }
     }
@@ -209,15 +211,34 @@ impl Supervisor {
 
     /// The bounded host stderr tail (for crash reports; may contain plugin output).
     pub async fn stderr_tail(&self) -> String {
-        self.slot.lock().await.stderr.lock().await.snapshot().to_string()
+        self.slot
+            .lock()
+            .await
+            .stderr
+            .lock()
+            .await
+            .snapshot()
+            .to_string()
     }
 
     /// Start one Host child and await its `ready` message (the readiness
     /// boundary of the lifecycle protocol). Concurrent callers join the run.
     pub async fn start(&self) -> Result<HostReady, DshError> {
+        let _transaction = self.lifecycle.lock().await;
+        if self.status().state == RuntimeState::Ready {
+            if let Some(ready) = self.slot.lock().await.ready.clone() {
+                return Ok(ready);
+            }
+        }
+        self.start_inner().await
+    }
+
+    async fn start_inner(&self) -> Result<HostReady, DshError> {
         self.set_state(RuntimeState::Starting, None, None).await;
         let endpoint = ControlEndpoint::generate();
-        let server = ControlServer::bind(endpoint.clone()).await.map_err(control_error)?;
+        let server = ControlServer::bind(endpoint.clone())
+            .await
+            .map_err(control_error)?;
         let mut command = tokio::process::Command::new(&self.plan.program);
         command
             .args(&self.plan.args)
@@ -234,7 +255,11 @@ impl Supervisor {
         #[cfg(unix)]
         std::os::unix::process::CommandExt::process_group(&mut command, 0);
         let mut child = command.spawn().map_err(|e| {
-            DshError::io("spawn host", Some(self.plan.program.display().to_string()), &e)
+            DshError::io(
+                "spawn host",
+                Some(self.plan.program.display().to_string()),
+                &e,
+            )
         })?;
         let pid = child.id().ok_or_else(|| {
             DshError::runtime_unavailable("starting", "host child exited before containment")
@@ -261,7 +286,10 @@ impl Supervisor {
                             if let Ok(text) = std::str::from_utf8(&buffer[..count]) {
                                 stderr.lock().await.push(text);
                             } else {
-                                stderr.lock().await.push(&String::from_utf8_lossy(&buffer[..count]));
+                                stderr
+                                    .lock()
+                                    .await
+                                    .push(&String::from_utf8_lossy(&buffer[..count]));
                             }
                         }
                     }
@@ -271,8 +299,10 @@ impl Supervisor {
         // Publish ownership before the first await that can stall. The monitor
         // takes the Child handle but the slot retains the containment guard, so
         // stop() and failure cleanup can always terminate/reap the tree.
-        {
+        let run_id = {
             let mut slot = self.slot.lock().await;
+            slot.run_id = slot.run_id.wrapping_add(1);
+            slot.failure_reported = false;
             slot.link = None;
             slot.containment = Some(containment);
             slot.child = Some(child);
@@ -281,19 +311,24 @@ impl Supervisor {
             slot.exited = false;
             slot.ready = None;
             slot.fatal = None;
-        }
-        self.spawn_exit_monitor();
+            slot.run_id
+        };
+        self.spawn_exit_monitor(run_id);
         let mut watch_status = self.status.subscribe();
         match self.status().state {
             RuntimeState::Failed => {
                 let error = self.exit_error().await;
                 self.cleanup_failed_start().await;
-                self.set_state(RuntimeState::Failed, None, Some(error.to_string())).await;
+                self.set_state(RuntimeState::Failed, None, Some(error.to_string()))
+                    .await;
                 return Err(error);
             }
             RuntimeState::Stopping | RuntimeState::Stopped => {
                 self.cleanup_failed_start().await;
-                return Err(DshError::other("host_startup_cancelled", "host startup was cancelled"));
+                return Err(DshError::other(
+                    "host_startup_cancelled",
+                    "host startup was cancelled",
+                ));
             }
             _ => {}
         }
@@ -322,15 +357,19 @@ impl Supervisor {
             Ok(link) => link,
             Err(error) => {
                 self.cleanup_failed_start().await;
-                let error = DshError::other("host_startup_connection", format!("dsh desktop host control connection failed: {error}"));
-                self.set_state(RuntimeState::Failed, None, Some(error.to_string())).await;
+                let error = DshError::other(
+                    "host_startup_connection",
+                    format!("dsh desktop host control connection failed: {error}"),
+                );
+                self.set_state(RuntimeState::Failed, None, Some(error.to_string()))
+                    .await;
                 return Err(error);
             }
         };
         {
             self.slot.lock().await.link = Some(link.clone());
         }
-        self.spawn_event_pump(link.clone());
+        self.spawn_event_pump(link.clone(), run_id);
         // Await the readiness boundary: `ready`, first `fatal`, or child exit.
         loop {
             enum Observed {
@@ -373,7 +412,10 @@ impl Supervisor {
             }
             if watch_status.changed().await.is_err() {
                 // Status sender dropped: treat as teardown.
-                return Err(DshError::runtime_unavailable("stopped", "supervisor closed"));
+                return Err(DshError::runtime_unavailable(
+                    "stopped",
+                    "supervisor closed",
+                ));
             }
         }
     }
@@ -394,6 +436,21 @@ impl Supervisor {
         graceful_deadline: Duration,
         require_graceful: bool,
     ) -> Result<(), DshError> {
+        if self.status().state == RuntimeState::Starting {
+            self.set_state(RuntimeState::Stopping, None, None).await;
+            if let Some(containment) = self.slot.lock().await.containment.as_ref() {
+                containment.kill_tree(true);
+            }
+        }
+        let _transaction = self.lifecycle.lock().await;
+        self.stop_inner(graceful_deadline, require_graceful).await
+    }
+
+    async fn stop_inner(
+        &self,
+        graceful_deadline: Duration,
+        require_graceful: bool,
+    ) -> Result<(), DshError> {
         let (link_opt, containment_opt, ack_flag) = {
             let mut slot = self.slot.lock().await;
             if slot.child.is_none() && slot.link.is_none() && slot.containment.is_none() {
@@ -401,8 +458,7 @@ impl Supervisor {
             }
             self.set_state_unlocked(&mut slot, RuntimeState::Stopping)
                 .await;
-            slot.ack
-                .store(false, std::sync::atomic::Ordering::SeqCst);
+            slot.ack.store(false, std::sync::atomic::Ordering::SeqCst);
             (slot.link.clone(), slot.containment.take(), slot.ack.clone())
         };
         if let Some(link) = &link_opt {
@@ -446,8 +502,9 @@ impl Supervisor {
     /// Restart the Host: stop (graceful ordering per `apps/desktop/README.md` —
     /// wait for Host shutdown before relaunching), then start again.
     pub async fn restart(&self) -> Result<RuntimeStatus, DshError> {
-        self.stop(false).await?;
-        self.start().await?;
+        let _transaction = self.lifecycle.lock().await;
+        self.stop_inner(GRACEFUL_STOP_TIMEOUT, false).await?;
+        self.start_inner().await?;
         Ok(self.status())
     }
 
@@ -490,7 +547,10 @@ impl Supervisor {
     /// Errors mean task state is unknown and must refuse installation.
     pub async fn update_tasks(&self, action: UpdateTasksAction) -> Result<bool, DshError> {
         let link = self.slot.lock().await.link.clone().ok_or_else(|| {
-            DshError::runtime_unavailable(format!("{:?}", self.status().state), "host is unavailable")
+            DshError::runtime_unavailable(
+                format!("{:?}", self.status().state),
+                "host is unavailable",
+            )
         })?;
         update_tasks(&link, action).await.map_err(control_error)
     }
@@ -510,100 +570,89 @@ impl Supervisor {
         self.slot.lock().await.ready.clone()
     }
 
-    fn spawn_event_pump(&self, link: Arc<ControlLink>) {
+    fn spawn_event_pump(&self, link: Arc<ControlLink>, run_id: u64) {
         let slot = self.slot.clone();
         let on_failure = self.on_failure.clone();
         let status = self.status.clone();
         tokio::spawn(async move {
-            // First-failure-wins reporting (`fail()` semantics).
-            let mut reported = false;
             while let Some(event) = link.next_event().await {
                 match event {
                     HostEvent::Ready { url, injections } => {
+                        let mut guard = slot.lock().await;
+                        if guard.run_id == run_id && guard.fatal.is_none() && guard.ready.is_none()
                         {
-                            let mut guard = slot.lock().await;
-                            if guard.ready.is_none() {
-                                guard.ready = Some(HostReady {
-                                    url,
-                                    injections,
-                                    started_at: chrono::Utc::now()
-                                        .to_rfc3339_opts(chrono::SecondsFormat::Millis, true),
-                                });
-                            }
+                            guard.ready = Some(HostReady {
+                                url,
+                                injections,
+                                started_at: chrono::Utc::now()
+                                    .to_rfc3339_opts(chrono::SecondsFormat::Millis, true),
+                            });
+                            status.send_modify(|state| {
+                                if state.state == RuntimeState::Starting {
+                                    state.state = RuntimeState::Ready;
+                                }
+                            });
                         }
-                        status.send_modify(|state| state.state = RuntimeState::Ready);
                     }
-                    HostEvent::Fatal { message, diagnostic } => {
-                        {
-                            let mut guard = slot.lock().await;
-                            if guard.fatal.is_none() {
-                                guard.fatal = Some(HostFatal {
-                                    message: message.clone(),
-                                    diagnostic: diagnostic.clone(),
-                                });
-                            }
-                        }
-                        if !reported {
-                            reported = true;
-                            if let Some(callback) = &on_failure {
-                                callback(&HostFatal { message, diagnostic });
-                            }
-                        }
-                        status.send_modify(|_| {});
+                    HostEvent::Fatal {
+                        message,
+                        diagnostic,
+                    } => {
+                        terminal_failure(
+                            &slot,
+                            &status,
+                            &on_failure,
+                            run_id,
+                            HostFatal {
+                                message,
+                                diagnostic,
+                            },
+                        )
+                        .await;
                     }
                     HostEvent::PlatformSession { session } => {
-                        if let Some(session) = &session {
-                            if !session.validate() {
-                                // Protocol violation: a malformed frame is fatal
-                                // (`isDesktopHostEvent` strictness).
-                                {
-                                    let mut guard = slot.lock().await;
-                                    if guard.fatal.is_none() {
-                                        guard.fatal = Some(HostFatal {
-                                            message: "dsh desktop host sent an invalid IPC event"
-                                                .into(),
-                                            diagnostic: None,
-                                        });
-                                    }
-                                }
-                                if !reported {
-                                    reported = true;
-                                    if let Some(callback) = &on_failure {
-                                        callback(&HostFatal {
-                                            message: "dsh desktop host sent an invalid IPC event"
-                                                .into(),
-                                            diagnostic: None,
-                                        });
-                                    }
-                                }
-                                status.send_modify(|_| {});
-                                continue;
-                            }
+                        if session.as_ref().is_some_and(|session| !session.validate()) {
+                            terminal_failure(
+                                &slot,
+                                &status,
+                                &on_failure,
+                                run_id,
+                                HostFatal {
+                                    message: "dsh desktop host sent an invalid IPC event".into(),
+                                    diagnostic: None,
+                                },
+                            )
+                            .await;
+                            continue;
                         }
                         let guard = slot.lock().await;
-                        if let Some(sender) = &guard.platform_sessions {
-                            let _ = sender.send(session);
+                        if guard.run_id == run_id {
+                            if let Some(sender) = &guard.platform_sessions {
+                                let _ = sender.send(session);
+                            }
                         }
                     }
                     HostEvent::ShutdownComplete {} => {
-                        let stopping =
-                            status.borrow().state == RuntimeState::Stopping;
-                        {
-                            let mut guard = slot.lock().await;
-                            if stopping {
-                                guard.ack
-                                    .store(true, std::sync::atomic::Ordering::SeqCst);
-                            } else if guard.fatal.is_none() {
-                                // Unrequested `shutdown-complete` is a protocol
-                                // violation (host-process.ts:214-217).
-                                guard.fatal = Some(HostFatal {
-                                    message: "dsh desktop host acknowledged an unrequested shutdown"
-                                        .into(),
-                                    diagnostic: None,
-                                });
+                        if status.borrow().state == RuntimeState::Stopping {
+                            let guard = slot.lock().await;
+                            if guard.run_id == run_id {
+                                guard.ack.store(true, std::sync::atomic::Ordering::SeqCst);
                             }
+                        } else {
+                            terminal_failure(
+                                &slot,
+                                &status,
+                                &on_failure,
+                                run_id,
+                                HostFatal {
+                                    message:
+                                        "dsh desktop host acknowledged an unrequested shutdown"
+                                            .into(),
+                                    diagnostic: None,
+                                },
+                            )
+                            .await;
                         }
-                        status.send_modify(|_| {});
                     }
                     HostEvent::UpdateTasks { .. } | HostEvent::QuitInspection { .. } => {
                         // Correlated responses are routed to their waiters in
@@ -611,45 +660,75 @@ impl Supervisor {
                     }
                 }
             }
+            // Process exit closes control at nearly the same time it becomes
+            // observable to the child monitor. Let that monitor publish its
+            // more informative exit-code diagnosis first when applicable.
+            tokio::time::sleep(Duration::from_millis(50)).await;
+            let exit_code = {
+                let guard = slot.lock().await;
+                (guard.run_id == run_id && guard.exited)
+                    .then_some(guard.exit_code)
+                    .flatten()
+            };
+            let message = match exit_code {
+                Some(code) => format!("the dsh host exited unexpectedly (exit code {code})"),
+                None => "dsh desktop host control channel closed unexpectedly".into(),
+            };
+            terminal_failure(
+                &slot,
+                &status,
+                &on_failure,
+                run_id,
+                HostFatal {
+                    message,
+                    diagnostic: None,
+                },
+            )
+            .await;
         });
     }
 
-    fn spawn_exit_monitor(&self) {
+    fn spawn_exit_monitor(&self, run_id: u64) {
         let slot = self.slot.clone();
         let status = self.status.clone();
+        let on_failure = self.on_failure.clone();
         tokio::spawn(async move {
-            // Take the child out of the slot so its `wait()` never holds the
-            // run lock for the process lifetime.
-            let mut child = slot.lock().await.child.take();
+            let mut child = {
+                let mut guard = slot.lock().await;
+                if guard.run_id == run_id {
+                    guard.child.take()
+                } else {
+                    None
+                }
+            };
             let code = match child.as_mut() {
                 Some(child) => child.wait().await.ok().map(|status| status.code()),
                 None => None,
             };
             {
                 let mut guard = slot.lock().await;
+                if guard.run_id != run_id {
+                    return;
+                }
                 guard.exited = true;
                 guard.exit_code = code.flatten();
             }
-            // An exit observed while `Starting` or `Ready` is unexpected, so it is
-            // recorded as `Failed` (with the exit code) instead of merely waking
-            // subscribers: otherwise a mid-run crash leaves the state at `Ready`
-            // forever and every later command reports a dead host as available.
-            // An exit observed while `Stopping`, `Stopped` or `Failed` is an
-            // ordinary shutdown and must not overwrite that state.
-            //
-            // The same notification also wakes `start()`'s readiness loop, which
-            // reports the failure when the exit happens during startup.
-            status.send_modify(|state| {
-                if matches!(state.state, RuntimeState::Starting | RuntimeState::Ready) {
-                    state.state = RuntimeState::Failed;
-                    state.url = None;
-                    state.started_at = None;
-                    state.last_error = Some(match code.flatten() {
-                        Some(code) => format!("the dsh host exited unexpectedly (exit code {code})"),
+            terminal_failure(
+                &slot,
+                &status,
+                &on_failure,
+                run_id,
+                HostFatal {
+                    message: match code.flatten() {
+                        Some(code) => {
+                            format!("the dsh host exited unexpectedly (exit code {code})")
+                        }
                         None => "the dsh host exited unexpectedly (no exit code)".to_string(),
-                    });
-                }
-            });
+                    },
+                    diagnostic: None,
+                },
+            )
+            .await;
         });
     }
 
@@ -719,6 +798,50 @@ impl Supervisor {
         self.status.send_modify(|status| {
             status.state = state;
         });
+    }
+}
+
+async fn terminal_failure(
+    slot: &Arc<Mutex<RunSlot>>,
+    status: &watch::Sender<RuntimeStatus>,
+    on_failure: &Option<FailureCallback>,
+    run_id: u64,
+    fatal: HostFatal,
+) {
+    let notify = {
+        let mut guard = slot.lock().await;
+        if guard.run_id != run_id
+            || guard.fatal.is_some()
+            || !matches!(
+                status.borrow().state,
+                RuntimeState::Starting | RuntimeState::Ready
+            )
+        {
+            false
+        } else {
+            guard.fatal = Some(fatal.clone());
+            guard.ready = None;
+            if let Some(link) = &guard.link {
+                link.fail_pending();
+            }
+            if !guard.failure_reported {
+                guard.failure_reported = true;
+                status.send_modify(|current| {
+                    current.state = RuntimeState::Failed;
+                    current.url = None;
+                    current.started_at = None;
+                    current.last_error = Some(fatal.message.clone());
+                });
+                true
+            } else {
+                false
+            }
+        }
+    };
+    if notify {
+        if let Some(callback) = on_failure {
+            callback(&fatal);
+        }
     }
 }
 

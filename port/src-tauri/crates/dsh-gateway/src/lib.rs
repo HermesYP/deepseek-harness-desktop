@@ -318,6 +318,17 @@ async fn entrypoint(
             .ok()
     };
     if let Some(upgrade) = upgrade {
+        // Match the HTTP proxy policy before authentication or attaching the
+        // Host cookie: absent Origin is allowed for non-browser clients, while
+        // a supplied Origin must be this gateway's exact origin.
+        if let Some(origin) = header(&parts.headers, "origin") {
+            if origin != state.origin {
+                return Response::builder()
+                    .status(StatusCode::FORBIDDEN)
+                    .body(Body::empty())
+                    .expect("response");
+            }
+        }
         let authority = header(&parts.headers, "host").map(str::to_string);
         let cookie = header(&parts.headers, "cookie").map(str::to_string);
         let authenticated = state

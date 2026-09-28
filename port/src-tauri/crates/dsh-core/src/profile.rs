@@ -119,7 +119,7 @@ mod tests {
             &[
                 "@deepseek-ai/dsh-base",
                 "@deepseek-ai/dsh-web-app",
-                "@dsh-port/dsh-client-ui-updates",
+                "@dsh-port/dsh-desktop-updates-bundle",
             ]
         );
         assert_eq!(

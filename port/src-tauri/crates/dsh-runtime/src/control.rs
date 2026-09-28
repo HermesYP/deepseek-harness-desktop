@@ -202,8 +202,8 @@ pub enum HostEvent {
 
 /// Encode one message as a single NDJSON frame.
 pub fn encode_frame(message: &ShellMessage) -> Result<Vec<u8>, ControlError> {
-    let mut bytes = serde_json::to_vec(message)
-        .map_err(|e| ControlError::MalformedFrame(e.to_string()))?;
+    let mut bytes =
+        serde_json::to_vec(message).map_err(|e| ControlError::MalformedFrame(e.to_string()))?;
     bytes.push(b'\n');
     Ok(bytes)
 }
@@ -370,14 +370,16 @@ impl ControlServer {
         let (read_half, mut write_half) = tokio::io::split(stream);
         let mut reader = tokio::io::BufReader::new(read_half);
         let mut token_line = String::new();
-        let read = tokio::time::timeout(
-            Duration::from_secs(30),
-            reader.read_line(&mut token_line),
-        )
-        .await
-        .map_err(|_| ControlError::Authentication)?;
+        let read = tokio::time::timeout(Duration::from_secs(30), reader.read_line(&mut token_line))
+            .await
+            .map_err(|_| ControlError::Authentication)?;
         let count = read.map_err(|e| ControlError::Transport(e.to_string()))?;
-        if count == 0 || !token_matches(token_line.trim_end_matches(['\r', '\n']), &self.endpoint.token) {
+        if count == 0
+            || !token_matches(
+                token_line.trim_end_matches(['\r', '\n']),
+                &self.endpoint.token,
+            )
+        {
             return Err(ControlError::Authentication);
         }
         write_half
@@ -392,7 +394,9 @@ impl ControlServer {
     }
 
     #[cfg(windows)]
-    async fn accept_stream(&self) -> Result<tokio::net::windows::named_pipe::NamedPipeServer, ControlError> {
+    async fn accept_stream(
+        &self,
+    ) -> Result<tokio::net::windows::named_pipe::NamedPipeServer, ControlError> {
         let server = self
             .first
             .lock()
@@ -441,7 +445,10 @@ pub async fn connect(endpoint: &ControlEndpoint) -> Result<RawChannel, ControlEr
     if acknowledged == 0 {
         return Err(ControlError::Authentication);
     }
-    Ok(RawChannel { reader, writer: write_half })
+    Ok(RawChannel {
+        reader,
+        writer: write_half,
+    })
 }
 
 #[cfg(windows)]
@@ -455,7 +462,9 @@ async fn platform_connect(
 }
 
 #[cfg(unix)]
-async fn platform_connect(endpoint: &ControlEndpoint) -> Result<tokio::net::unix::UnixStream, ControlError> {
+async fn platform_connect(
+    endpoint: &ControlEndpoint,
+) -> Result<tokio::net::unix::UnixStream, ControlError> {
     tokio::net::UnixStream::connect(&endpoint.socket_name)
         .await
         .map_err(|e| ControlError::Transport(e.to_string()))
@@ -575,8 +584,8 @@ pub struct RawChannel {
 impl RawChannel {
     /// Send one Host→Shell frame.
     pub async fn send_event(&mut self, event: &HostEvent) -> Result<(), ControlError> {
-        let mut bytes = serde_json::to_vec(event)
-            .map_err(|e| ControlError::MalformedFrame(e.to_string()))?;
+        let mut bytes =
+            serde_json::to_vec(event).map_err(|e| ControlError::MalformedFrame(e.to_string()))?;
         bytes.push(b'\n');
         self.writer
             .write_all(&bytes)
@@ -610,6 +619,7 @@ pub struct ControlLink {
     outgoing: tokio::sync::Mutex<LinkWriteHalf>,
     events: tokio::sync::Mutex<tokio::sync::mpsc::UnboundedReceiver<HostEvent>>,
     pending: std::sync::Arc<std::sync::Mutex<HashMap<u64, Pending>>>,
+    closed: std::sync::Arc<std::sync::atomic::AtomicBool>,
     next_request_id: std::sync::atomic::AtomicU64,
 }
 
@@ -619,6 +629,9 @@ impl ControlLink {
         let pending: std::sync::Arc<std::sync::Mutex<HashMap<u64, Pending>>> =
             std::sync::Arc::new(std::sync::Mutex::new(HashMap::new()));
         let pending_reader = pending.clone();
+        let closed = std::sync::atomic::AtomicBool::new(false);
+        let closed = std::sync::Arc::new(closed);
+        let closed_reader = closed.clone();
         tokio::spawn(async move {
             let mut reader = reader;
             let mut decoder = FrameDecoder::new();
@@ -639,7 +652,8 @@ impl ControlLink {
                     };
                     match event {
                         Ok(
-                            event @ (HostEvent::UpdateTasks { .. } | HostEvent::QuitInspection { .. }),
+                            event @ (HostEvent::UpdateTasks { .. }
+                            | HostEvent::QuitInspection { .. }),
                         ) => {
                             let request_id = match &event {
                                 HostEvent::UpdateTasks { request_id, .. }
@@ -673,13 +687,15 @@ impl ControlLink {
                     }
                 }
             }
-            // EOF/teardown: fail all waiters by dropping the map entries.
+            // EOF/teardown: reject new requests and fail all existing waiters.
+            closed_reader.store(true, std::sync::atomic::Ordering::SeqCst);
             pending_reader.lock().expect("pending lock").clear();
         });
         Self {
             outgoing: tokio::sync::Mutex::new(write_half),
             events: tokio::sync::Mutex::new(rx),
             pending,
+            closed,
             next_request_id: std::sync::atomic::AtomicU64::new(1),
         }
     }
@@ -696,6 +712,12 @@ impl ControlLink {
             .flush()
             .await
             .map_err(|e| ControlError::Transport(e.to_string()))
+    }
+
+    /// Reject every in-flight correlated request after terminal Host failure.
+    pub fn fail_pending(&self) {
+        self.closed.store(true, std::sync::atomic::Ordering::SeqCst);
+        self.pending.lock().expect("pending lock").clear();
     }
 
     /// Next unsolicited event (`ready`, `fatal`, `platform-session`,
@@ -716,13 +738,19 @@ impl ControlLink {
             .next_request_id
             .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         let (tx, rx) = tokio::sync::oneshot::channel();
+        {
+            let mut pending = self.pending.lock().expect("pending lock");
+            if self.closed.load(std::sync::atomic::Ordering::SeqCst) {
+                return Err(ControlError::Transport("control channel closed".into()));
+            }
+            pending.insert(request_id, Pending { responder: tx });
+        }
+        self.send(&build(request_id)).await?;
+        let outcome = tokio::time::timeout(deadline, rx).await;
         self.pending
             .lock()
             .expect("pending lock")
-            .insert(request_id, Pending { responder: tx });
-        self.send(&build(request_id)).await?;
-        let outcome = tokio::time::timeout(deadline, rx).await;
-        self.pending.lock().expect("pending lock").remove(&request_id);
+            .remove(&request_id);
         match outcome {
             Ok(Ok(event)) => Ok(event),
             Ok(Err(_)) => Err(ControlError::Transport("control channel closed".into())),
@@ -764,7 +792,10 @@ mod tests {
         );
         assert!(decoder.next_line().is_none());
         decoder.push(b"plete\"}\n");
-        assert_eq!(decoder.next_line().unwrap().unwrap(), "{\"type\":\"shutdown-complete\"}");
+        assert_eq!(
+            decoder.next_line().unwrap().unwrap(),
+            "{\"type\":\"shutdown-complete\"}"
+        );
     }
 
     #[test]
@@ -772,23 +803,35 @@ mod tests {
         let mut decoder = FrameDecoder::new();
         decoder.push(b"not json\n");
         let line = decoder.next_line().unwrap().expect("transport-valid line");
-        assert!(decode_line(&line).is_err(), "malformed JSON is rejected at decode");
+        assert!(
+            decode_line(&line).is_err(),
+            "malformed JSON is rejected at decode"
+        );
         let mut decoder = FrameDecoder::new();
         let huge = vec![b'x'; MAX_FRAME_BYTES + 1];
         decoder.push(&huge);
-        assert!(matches!(decoder.next_line(), Some(Err(ControlError::FrameTooLarge))));
+        assert!(matches!(
+            decoder.next_line(),
+            Some(Err(ControlError::FrameTooLarge))
+        ));
     }
 
     #[test]
     fn decode_rejects_unknown_and_invalid_events() {
         assert!(decode_line("{\"type\":\"mystery\"}").is_err());
-        assert!(decode_line("{\"type\":\"ready\"}").is_err(), "ready requires url");
+        assert!(
+            decode_line("{\"type\":\"ready\"}").is_err(),
+            "ready requires url"
+        );
         assert!(decode_line("[1,2]").is_err());
         let ok = decode_line(
             "{\"type\":\"quit-inspection\",\"requestId\":3,\"activeTasks\":true,\"scheduledTasks\":false}",
         )
         .expect("valid");
-        assert!(matches!(ok, HostEvent::QuitInspection { request_id: 3, .. }));
+        assert!(matches!(
+            ok,
+            HostEvent::QuitInspection { request_id: 3, .. }
+        ));
     }
 
     #[test]
@@ -807,18 +850,36 @@ mod tests {
             user_id: Some("u".into()),
             embedded_page_dist: None,
             request_headers: Some(
-                [("x-custom".to_string(), "v".to_string())].into_iter().collect(),
+                [("x-custom".to_string(), "v".to_string())]
+                    .into_iter()
+                    .collect(),
             ),
         };
         assert!(valid.validate());
-        let bad_origin = PlatformSession { origin: "http://example.com".into(), ..valid.clone() };
-        assert!(!bad_origin.validate(), "plain http on a public host is refused");
-        let bad_header = PlatformSession {
-            request_headers: Some([("Authorization".to_string(), "x".to_string())].into_iter().collect()),
+        let bad_origin = PlatformSession {
+            origin: "http://example.com".into(),
             ..valid.clone()
         };
-        assert!(!bad_header.validate(), "uppercase and forbidden headers are refused");
-        let empty_token = PlatformSession { token: String::new(), ..valid.clone() };
+        assert!(
+            !bad_origin.validate(),
+            "plain http on a public host is refused"
+        );
+        let bad_header = PlatformSession {
+            request_headers: Some(
+                [("Authorization".to_string(), "x".to_string())]
+                    .into_iter()
+                    .collect(),
+            ),
+            ..valid.clone()
+        };
+        assert!(
+            !bad_header.validate(),
+            "uppercase and forbidden headers are refused"
+        );
+        let empty_token = PlatformSession {
+            token: String::new(),
+            ..valid.clone()
+        };
         assert!(!empty_token.validate());
     }
 
@@ -864,7 +925,10 @@ mod tests {
             token: "wrong".into(),
             ..endpoint.clone()
         };
-        assert!(connect(&wrong).await.is_err(), "the wrong token must not authenticate");
+        assert!(
+            connect(&wrong).await.is_err(),
+            "the wrong token must not authenticate"
+        );
         // The server refuses the unauthenticated attempt before any protocol frame.
         assert!(accept.await.expect("join").is_err());
     }

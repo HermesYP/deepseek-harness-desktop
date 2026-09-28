@@ -231,7 +231,10 @@ mod tests {
             Proceed(QuitReason::User)
         );
         // The three explanations.
-        assert_eq!(decide_quit(None, QuitHostState::Ready, &facts(true, false)), Ask(ActiveTasks));
+        assert_eq!(
+            decide_quit(None, QuitHostState::Ready, &facts(true, false)),
+            Ask(ActiveTasks)
+        );
         assert_eq!(
             decide_quit(None, QuitHostState::Ready, &facts(false, true)),
             Ask(ScheduledTasks)
@@ -251,7 +254,10 @@ mod tests {
             scheduled_tasks: false,
             error: Some("desktop quit: Host is stopping".into()),
         });
-        assert_eq!(decide_quit(None, QuitHostState::Ready, &errored), Ask(ActiveTasks));
+        assert_eq!(
+            decide_quit(None, QuitHostState::Ready, &errored),
+            Ask(ActiveTasks)
+        );
         // Host not ready or failed cannot run tasks → quit silently.
         assert_eq!(
             decide_quit(None, QuitHostState::NotReady, &facts(true, true)),
@@ -273,7 +279,11 @@ mod tests {
         ] {
             // Even with active work and an unknown inspection, a skip proceeds.
             assert_eq!(
-                decide_quit(Some(skip), QuitHostState::Ready, &QuitInspectionOutcome::Unknown),
+                decide_quit(
+                    Some(skip),
+                    QuitHostState::Ready,
+                    &QuitInspectionOutcome::Unknown
+                ),
                 QuitAction::Proceed(reason)
             );
         }
@@ -281,21 +291,36 @@ mod tests {
 
     #[test]
     fn unknown_prompt_maps_to_running_tasks() {
-        assert_eq!(resolve_quit_prompt(&QuitInspectionOutcome::Unknown), Some(QuitPrompt::ActiveTasks));
+        assert_eq!(
+            resolve_quit_prompt(&QuitInspectionOutcome::Unknown),
+            Some(QuitPrompt::ActiveTasks)
+        );
     }
 
     #[test]
     fn concurrent_requests_join_and_bypass_cancels() {
         let mut flow = QuitFlow::new();
         assert_eq!(flow.request(), QuitRequest::Start);
-        assert_eq!(flow.request(), QuitRequest::Join, "second request joins the open dialog");
+        assert_eq!(
+            flow.request(),
+            QuitRequest::Join,
+            "second request joins the open dialog"
+        );
         assert_eq!(flow.state(), QuitFlowState::Deciding);
         // An installer-owned quit cancels the pending decision.
         flow.bypass(QuitReason::Installer);
         assert_eq!(flow.state(), QuitFlowState::Bypassed);
-        assert_eq!(flow.request(), QuitRequest::Ignored, "no confirmation may open after bypass");
+        assert_eq!(
+            flow.request(),
+            QuitRequest::Ignored,
+            "no confirmation may open after bypass"
+        );
         flow.finish();
-        assert_eq!(flow.state(), QuitFlowState::Bypassed, "finish cannot reopen a bypassed flow");
+        assert_eq!(
+            flow.state(),
+            QuitFlowState::Bypassed,
+            "finish cannot reopen a bypassed flow"
+        );
     }
 
     #[test]
@@ -309,14 +334,23 @@ mod tests {
 
     #[test]
     fn host_state_derivation_matches_upstream_rule() {
-        assert_eq!(QuitHostState::from_runtime_state(RuntimeState::Ready), QuitHostState::Ready);
-        assert_eq!(QuitHostState::from_runtime_state(RuntimeState::Failed), QuitHostState::Failed);
+        assert_eq!(
+            QuitHostState::from_runtime_state(RuntimeState::Ready),
+            QuitHostState::Ready
+        );
+        assert_eq!(
+            QuitHostState::from_runtime_state(RuntimeState::Failed),
+            QuitHostState::Failed
+        );
         for state in [
             RuntimeState::Starting,
             RuntimeState::Stopping,
             RuntimeState::Stopped,
         ] {
-            assert_eq!(QuitHostState::from_runtime_state(state), QuitHostState::NotReady);
+            assert_eq!(
+                QuitHostState::from_runtime_state(state),
+                QuitHostState::NotReady
+            );
         }
     }
 }

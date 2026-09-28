@@ -101,7 +101,23 @@ function Test-Prerequisites {
 function Build-Ui {
   Write-Stage 'Preserved web client shell (port/ui)'
   Assert-Tool 'pnpm' 'Install pnpm 11.7.0.'
-  Invoke-Checked 'pnpm' @('install') $UiDir
+
+  # `port/ui` declares no dependencies of its own (an empty manifest and an empty
+  # lockfile importer), so `pnpm install` here is a no-op at best and previously
+  # risked purging the toolchain links with ERR_PNPM_ABORTED_REMOVE_MODULES_DIR.
+  # The toolchain is instead LINKED from the pinned upstream checkout by
+  # `port/ui/link-toolchain.ps1`. A fresh checkout needs that step, so the
+  # documented build command must perform it rather than relying on a manual run
+  # (review finding 5).
+  $linkToolchain = Join-Path $UiDir 'link-toolchain.ps1'
+  if (-not (Test-Path $linkToolchain)) {
+    throw "UI toolchain linker is missing: $linkToolchain"
+  }
+  & $linkToolchain
+  $vite = Join-Path $UiDir 'node_modules\vite\bin\vite.js'
+  if (-not (Test-Path $vite)) {
+    throw "UI toolchain is not linked: $vite is missing. Build the reference checkout first ('pnpm install; pnpm run build' in $Upstream), then re-run this stage."
+  }
 
   # Build with upstream's OFFICIAL client build profile. `ui-brand-official`
   # registers ONLY when `DSH_CLIENT_BUILD_PROFILE === 'official'`

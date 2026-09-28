@@ -23,16 +23,15 @@ pub async fn update_tasks(
 ) -> Result<bool, ControlError> {
     let response = link
         .request(
-            |request_id| ShellMessage::UpdateTasks {
-                request_id,
-                action,
-            },
+            |request_id| ShellMessage::UpdateTasks { request_id, action },
             UPDATE_TASKS_DEADLINE,
         )
         .await?;
     match response {
         HostEvent::UpdateTasks {
-            active, error: None, ..
+            active,
+            error: None,
+            ..
         } => Ok(active),
         HostEvent::UpdateTasks {
             active: _,

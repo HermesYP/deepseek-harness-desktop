@@ -325,6 +325,8 @@ impl Supervisor {
             }
             RuntimeState::Stopping | RuntimeState::Stopped => {
                 self.cleanup_failed_start().await;
+                self.slot.lock().await.ready = None;
+                self.set_state(RuntimeState::Stopped, None, None).await;
                 return Err(DshError::other(
                     "host_startup_cancelled",
                     "host startup was cancelled",
@@ -344,6 +346,8 @@ impl Supervisor {
                     return Err(error);
                 }
                 self.cleanup_failed_start().await;
+                self.slot.lock().await.ready = None;
+                self.set_state(RuntimeState::Stopped, None, None).await;
                 return Err(DshError::other("host_startup_cancelled", "host startup was cancelled"));
             }
             _ = tokio::time::sleep(STARTUP_CONNECT_TIMEOUT) => {
@@ -376,12 +380,17 @@ impl Supervisor {
                 Ready(HostReady),
                 Fatal(String),
                 Exited,
+                Cancelled,
             }
             // Observe under the lock, then act WITHOUT holding it: `set_state`
-            // locks the same non-reentrant mutex.
+            // locks the same non-reentrant mutex. Cancellation wins over a
+            // concurrently observed readiness event: a stopping Host is never
+            // published as usable.
             let observed = {
                 let slot = self.slot.lock().await;
-                if let Some(fatal) = &slot.fatal {
+                if matches!(self.status().state, RuntimeState::Stopping | RuntimeState::Stopped) {
+                    Some(Observed::Cancelled)
+                } else if let Some(fatal) = &slot.fatal {
                     Some(Observed::Fatal(fatal.message.clone()))
                 } else if let Some(ready) = &slot.ready {
                     Some(Observed::Ready(ready.clone()))
@@ -407,6 +416,15 @@ impl Supervisor {
                     self.set_state(RuntimeState::Failed, None, Some(error.to_string()))
                         .await;
                     return Err(error);
+                }
+                Some(Observed::Cancelled) => {
+                    self.cleanup_failed_start().await;
+                    self.slot.lock().await.ready = None;
+                    self.set_state(RuntimeState::Stopped, None, None).await;
+                    return Err(DshError::other(
+                        "host_startup_cancelled",
+                        "host startup was cancelled",
+                    ));
                 }
                 None => {}
             }
@@ -490,12 +508,22 @@ impl Supervisor {
             let mut slot = self.slot.lock().await;
             slot.child = None;
             slot.link = None;
+            // The process tree is gone regardless of whether graceful
+            // validation accepts the update handoff; never retain stale boot
+            // facts for a dead Host.
+            slot.ready = None;
         }
-        if require_graceful {
+        let graceful_error = if require_graceful {
             crate::proc_tree::check_graceful(&outcome)
-                .map_err(|e| DshError::other("update_unclean_exit", e.to_string()))?;
-        }
+                .err()
+                .map(|error| DshError::other("update_unclean_exit", error.to_string()))
+        } else {
+            None
+        };
         self.set_state(RuntimeState::Stopped, None, None).await;
+        if let Some(error) = graceful_error {
+            return Err(error);
+        }
         Ok(())
     }
 
@@ -713,6 +741,10 @@ impl Supervisor {
                 guard.exited = true;
                 guard.exit_code = code.flatten();
             }
+            // A readiness waiter must observe every child exit, including an
+            // expected exit while Stopping (terminal_failure intentionally
+            // leaves that state alone and therefore cannot provide this wake).
+            status.send_modify(|_| {});
             terminal_failure(
                 &slot,
                 &status,

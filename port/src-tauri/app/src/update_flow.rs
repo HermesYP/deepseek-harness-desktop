@@ -86,9 +86,18 @@ pub async fn check(app: &tauri::AppHandle) -> Result<DesktopUpdatePresentation, 
     let state = app.state::<std::sync::Arc<AppState>>();
     let feed_url = {
         let settings = state.settings.lock().await;
-        let channel = settings.get(UPDATE_CHANNEL_KEY)?;
-        let stable = settings.get(UPDATE_FEED_KEY)?;
-        let beta = settings.get(UPDATE_FEED_BETA_KEY)?;
+        let (channel, stable, beta) = match (
+            settings.get(UPDATE_CHANNEL_KEY),
+            settings.get(UPDATE_FEED_KEY),
+            settings.get(UPDATE_FEED_BETA_KEY),
+        ) {
+            (Ok(channel), Ok(stable), Ok(beta)) => (channel, stable, beta),
+            (Err(error), _, _) | (_, Err(error), _) | (_, _, Err(error)) => {
+                let presentation =
+                    fail(app, DesktopUpdateOperation::Check, &error.to_string()).await;
+                return Ok(presentation);
+            }
+        };
         match configured_feed(channel, stable, beta) {
             Some(url) => url,
             None => {
@@ -102,10 +111,16 @@ pub async fn check(app: &tauri::AppHandle) -> Result<DesktopUpdatePresentation, 
             }
         }
     };
-    let client = reqwest::Client::builder()
+    let client = match reqwest::Client::builder()
         .redirect(reqwest::redirect::Policy::none())
         .build()
-        .map_err(|e| DshError::other("update_client", e.to_string()))?;
+    {
+        Ok(client) => client,
+        Err(error) => {
+            let presentation = fail(app, DesktopUpdateOperation::Check, &error.to_string()).await;
+            return Ok(presentation);
+        }
+    };
     with_state(app, |update| {
         update.state.phase = DesktopUpdatePhase::Checking;
         update.state.failed_operation = None;
@@ -171,15 +186,19 @@ async fn current(app: &tauri::AppHandle) -> DesktopUpdateState {
     with_state(app, |update| update.state.clone()).await
 }
 
+fn mark_failure(state: &mut DesktopUpdateState, operation: DesktopUpdateOperation, message: &str) {
+    state.phase = DesktopUpdatePhase::Error;
+    state.failed_operation = Some(operation);
+    state.message = Some(message.to_string());
+}
+
 async fn fail(
     app: &tauri::AppHandle,
     operation: DesktopUpdateOperation,
     message: &str,
 ) -> DesktopUpdatePresentation {
     with_state(app, |update| {
-        update.state.phase = DesktopUpdatePhase::Error;
-        update.state.failed_operation = Some(operation);
-        update.state.message = Some(message.to_string());
+        mark_failure(&mut update.state, operation, message)
     })
     .await;
     publish(app, &current(app).await)
@@ -245,24 +264,34 @@ async fn download(app: &tauri::AppHandle) -> Result<(), DshError> {
     })
     .await;
     publish(app, &current(app).await);
-    let client = reqwest::Client::builder()
-        .redirect(reqwest::redirect::Policy::none())
-        .build()
-        .map_err(|e| DshError::other("update_client", e.to_string()))?;
-    let response = client
-        .get(&url)
-        .send()
-        .await
-        .map_err(|e| {
-            let _ = e;
-            DshError::other("update_download", "download failed")
-        })?
-        .error_for_status()
-        .map_err(|e| DshError::other("update_download", e.to_string()))?;
-    let bytes = response
-        .bytes()
-        .await
-        .map_err(|e| DshError::other("update_download", e.to_string()))?;
+    let download_result = async {
+        let client = reqwest::Client::builder()
+            .redirect(reqwest::redirect::Policy::none())
+            .build()
+            .map_err(|e| DshError::other("update_download", e.to_string()))?;
+        let response = client
+            .get(&url)
+            .send()
+            .await
+            .map_err(|e| {
+                DshError::other("update_download", format!("network request failed: {e}"))
+            })?
+            .error_for_status()
+            .map_err(|e| {
+                DshError::other("update_download", format!("artifact HTTP failure: {e}"))
+            })?;
+        response.bytes().await.map_err(|e| {
+            DshError::other("update_download", format!("response body read failed: {e}"))
+        })
+    }
+    .await;
+    let bytes = match download_result {
+        Ok(bytes) => bytes,
+        Err(error) => {
+            fail(app, DesktopUpdateOperation::Download, &error.to_string()).await;
+            return Err(error);
+        }
+    };
     with_state(app, |update| {
         update.state.phase = DesktopUpdatePhase::Verifying;
     })
@@ -289,16 +318,25 @@ async fn download(app: &tauri::AppHandle) -> Result<(), DshError> {
     let cache = dirs::cache_dir()
         .unwrap_or_else(std::env::temp_dir)
         .join("dsh-desktop-updater");
-    std::fs::create_dir_all(&cache).map_err(|e| {
-        DshError::io(
+    if let Err(error) = std::fs::create_dir_all(&cache) {
+        let error = DshError::io(
             "create updater cache",
             Some(cache.display().to_string()),
-            &e,
-        )
-    })?;
+            &error,
+        );
+        fail(app, DesktopUpdateOperation::Download, &error.to_string()).await;
+        return Err(error);
+    }
     let target = cache.join(format!("update-{}.bin", std::process::id()));
-    std::fs::write(&target, &bytes)
-        .map_err(|e| DshError::io("write update", Some(target.display().to_string()), &e))?;
+    if let Err(io_error) = std::fs::write(&target, &bytes) {
+        let error = DshError::io(
+            "write update",
+            Some(target.display().to_string()),
+            &io_error,
+        );
+        fail(app, DesktopUpdateOperation::Download, &error.to_string()).await;
+        return Err(error);
+    }
     let version = with_state(app, |update| {
         update.downloaded = Some(target.clone());
         update.downloaded_version.clone()
@@ -352,16 +390,49 @@ async fn confirm_install(app: &tauri::AppHandle, version: String) -> Result<(), 
     install(app).await
 }
 
+async fn restore_host_or_exit(app: &tauri::AppHandle, state: &AppState) {
+    if let Ok(status) = state.supervisor.restart().await {
+        if let Some(url) = status.url.as_deref() {
+            if state.gateway.set_host(url).await.is_ok() {
+                let restored = state.supervisor.status();
+                app.emit("dsh://runtime/state", &restored).ok();
+                return;
+            }
+        }
+    }
+    // A dead backend must never be left behind an open shell. If restart or
+    // gateway reattachment fails, terminate the application instead.
+    app.exit(1);
+}
+
 /// Installation admission (lifecycle protocol `update-tasks`): `lock` refuses
 /// new API requests and drains admitted ones, then re-checks tasks. Unknown
 /// task state refuses installation.
 async fn install(app: &tauri::AppHandle) -> Result<(), DshError> {
     let state = app.state::<std::sync::Arc<AppState>>();
-    let active = state
-        .supervisor
-        .update_tasks(UpdateTasksAction::Lock)
-        .await
-        .map_err(|_| DshError::other("update_tasks_unavailable", "task status is unavailable"))?;
+    let active = match state.supervisor.update_tasks(UpdateTasksAction::Lock).await {
+        Ok(active) => active,
+        Err(error) => {
+            // A timed-out lock request may still be draining in the Host. Send
+            // unlock even after timeout; the adapter generation invalidates its
+            // stale lock completion, and a late request finish cannot relock.
+            let rollback = state
+                .supervisor
+                .update_tasks(UpdateTasksAction::Unlock)
+                .await;
+            if rollback.is_err() {
+                restore_host_or_exit(app, &state).await;
+            }
+            let detail = if rollback.is_err() {
+                format!("{error}; admission rollback restarted the Host; retry the update")
+            } else {
+                error.to_string()
+            };
+            let failure = DshError::other("update_tasks_unavailable", "task status is unavailable");
+            fail(app, DesktopUpdateOperation::Install, &detail).await;
+            return Err(failure);
+        }
+    };
     if active {
         let messages = crate::state::messages(state.locale.lock().await.snapshot().effective);
         let stop = messages.update_stop_tasks.to_string();
@@ -378,10 +449,19 @@ async fn install(app: &tauri::AppHandle) -> Result<(), DshError> {
             ))
             .blocking_show();
         if !proceed {
-            let _ = state
+            if let Err(error) = state
                 .supervisor
                 .update_tasks(UpdateTasksAction::Unlock)
-                .await;
+                .await
+            {
+                restore_host_or_exit(app, &state).await;
+                let error = DshError::other(
+                    "update_admission_rollback",
+                    format!("admission rollback failed; Host restarted; retry the update: {error}"),
+                );
+                fail(app, DesktopUpdateOperation::Install, &error.to_string()).await;
+                return Err(error);
+            }
             return Ok(());
         }
     }
@@ -393,12 +473,17 @@ async fn install(app: &tauri::AppHandle) -> Result<(), DshError> {
     .await;
     publish(app, &current(app).await);
     if let Err(error) = state.supervisor.stop(true).await {
+        // `stop(true)` may have reaped the Host before rejecting graceful
+        // validation. Reattach a restarted backend before returning to the UI.
+        restore_host_or_exit(app, &state).await;
         with_state(app, |update| {
             update.state.phase = DesktopUpdatePhase::Error;
             update.state.failed_operation = Some(DesktopUpdateOperation::Install);
             update.state.preparation_failure =
                 Some(DesktopUpdatePreparationFailureKind::StopFailed);
-            update.state.message = Some(error.to_string());
+            update.state.message = Some(format!(
+                "{error}; Host restored; installation was not started"
+            ));
         })
         .await;
         publish(app, &current(app).await);
@@ -406,21 +491,26 @@ async fn install(app: &tauri::AppHandle) -> Result<(), DshError> {
     }
     let artifact: Option<PathBuf> = with_state(app, |update| update.downloaded.clone()).await;
     let Some(artifact) = artifact else {
-        return Err(DshError::other(
-            "update_artifact_missing",
-            "no downloaded artifact",
-        ));
+        let error = DshError::other("update_artifact_missing", "no downloaded artifact");
+        restore_host_or_exit(app, &state).await;
+        fail(app, DesktopUpdateOperation::Install, &error.to_string()).await;
+        return Err(error);
     };
     // Launch the installer and leave the exit to the update reason.
     #[cfg(windows)]
-    std::process::Command::new(&artifact)
-        .arg("/S")
-        .spawn()
-        .map_err(|e| DshError::io("launch installer", Some(artifact.display().to_string()), &e))?;
+    let launch_result = std::process::Command::new(&artifact).arg("/S").spawn();
     #[cfg(not(windows))]
-    std::process::Command::new(&artifact)
-        .spawn()
-        .map_err(|e| DshError::io("launch installer", Some(artifact.display().to_string()), &e))?;
+    let launch_result = std::process::Command::new(&artifact).spawn();
+    if let Err(io_error) = launch_result {
+        let error = DshError::io(
+            "launch installer",
+            Some(artifact.display().to_string()),
+            &io_error,
+        );
+        restore_host_or_exit(app, &state).await;
+        fail(app, DesktopUpdateOperation::Install, &error.to_string()).await;
+        return Err(error);
+    }
     crate::quit_flow::arm_skip(dsh_core::quit::QuitSkip::InstallerRestart);
     crate::quit_flow::confirm_exit(app, dsh_core::protocol::QuitReason::Update).await;
 }
@@ -575,12 +665,49 @@ mod tests {
     use dsh_core::protocol::SettingValue;
 
     use super::{
-        channel_feed_key, configured_feed, greater_version, no_feed_message, parse_feed_response,
+        channel_feed_key, configured_feed, greater_version, mark_failure, no_feed_message,
+        parse_feed_response,
     };
     use crate::state::{UPDATE_FEED_BETA_KEY, UPDATE_FEED_KEY};
+    use dsh_core::protocol::{DesktopUpdateOperation, DesktopUpdatePhase, DesktopUpdateState};
 
     fn text(value: &str) -> SettingValue {
         SettingValue::String(value.to_string())
+    }
+
+    #[test]
+    fn every_download_failure_class_transitions_to_published_error_state() {
+        for (class, message) in [
+            ("network", "network request failed: connection refused"),
+            ("404", "artifact HTTP failure: 404 Not Found"),
+            ("500", "artifact HTTP failure: 500 Internal Server Error"),
+            ("body read", "response body read failed: truncated body"),
+            ("cache/write", "write update: permission denied"),
+        ] {
+            let mut state = DesktopUpdateState {
+                phase: DesktopUpdatePhase::Downloading,
+                version: Some("0.1.8".into()),
+                message: None,
+                technical_details: None,
+                percent: Some(25.0),
+                failed_operation: None,
+                preparation_failure: None,
+            };
+            mark_failure(&mut state, DesktopUpdateOperation::Download, message);
+            let presentation = crate::commands::present_update(&state);
+            println!("{class}: {presentation:?}");
+            assert_eq!(state.phase, DesktopUpdatePhase::Error, "{class}");
+            assert_eq!(
+                state.failed_operation,
+                Some(DesktopUpdateOperation::Download),
+                "{class}"
+            );
+            assert_eq!(
+                presentation.failure,
+                Some(dsh_core::protocol::DesktopUpdateFailureKind::Download),
+                "{class} must publish a classified failure"
+            );
+        }
     }
 
     #[test]

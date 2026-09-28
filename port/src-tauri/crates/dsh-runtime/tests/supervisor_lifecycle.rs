@@ -62,6 +62,12 @@ fn run_fake_host() {
             token: std::env::var("DSH_DESKTOP_CONTROL_TOKEN").expect("token env"),
         };
         let mut channel = control::connect(&endpoint).await.expect("control connect");
+        if std::env::var("DSH_FAKE_HOST_WITHHOLD_READY").is_ok() {
+            let report = std::env::var("DSH_FAKE_HOST_REPORT").expect("report env");
+            std::fs::write(report, std::process::id().to_string()).expect("write host pid");
+            tokio::time::sleep(Duration::from_secs(60)).await;
+            return;
+        }
         if let Ok(path) = std::env::var("DSH_FAKE_HOST_RUN_COUNT") {
             use std::io::Write;
             let mut file = std::fs::OpenOptions::new()
@@ -252,6 +258,46 @@ async fn startup_connection_after_delay_still_reaches_ready() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn stop_after_control_connect_before_ready_completes_and_cancels_start() {
+    let scratch = tempfile::tempdir().expect("tempdir");
+    let report = scratch.path().join("host.pid");
+    let supervisor = std::sync::Arc::new(Supervisor::new(
+        fake_host_plan(&report, &[("DSH_FAKE_HOST_WITHHOLD_READY", "1")]),
+        None,
+    ));
+    let starting = {
+        let supervisor = supervisor.clone();
+        tokio::spawn(async move { supervisor.start().await })
+    };
+    tokio::time::timeout(Duration::from_secs(5), async {
+        while !report.exists() {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("authenticated Host withheld ready");
+    let pid: u32 = std::fs::read_to_string(&report)
+        .expect("host pid")
+        .parse()
+        .expect("pid");
+    tokio::time::timeout(
+        Duration::from_secs(2),
+        supervisor.stop_with_graceful_deadline(Duration::from_millis(100), false),
+    )
+    .await
+    .expect("stop must not wait for readiness transaction")
+    .expect("stop succeeds");
+    assert_eq!(supervisor.status().state, RuntimeState::Stopped);
+    let start_result = tokio::time::timeout(Duration::from_secs(2), starting)
+        .await
+        .expect("cancelled start completes")
+        .expect("start task joins");
+    assert!(start_result.is_err(), "cancelled start must not report ready");
+    assert!(!process_alive(pid), "cancelled start must reap Host child");
+    assert!(supervisor.boot_facts().await.is_none());
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn stop_immediately_after_start_reaps_unconnected_child() {
     let scratch = tempfile::tempdir().expect("tempdir");
     let report = scratch.path().join("host.pid");
@@ -358,16 +404,26 @@ async fn forced_stop_cannot_orphan_a_grandchild() {
 
     // Shortened graceful phase; the forced tree kill must still reap everything.
     let refused = supervisor
-        .stop_with_graceful_deadline(Duration::from_millis(300), true)
+        .stop_with_graceful_deadline(Duration::from_millis(100), true)
         .await;
-    assert!(
-        refused.is_err(),
-        "an unclean exit must refuse the update handoff"
-    );
+    let error = refused.expect_err("an unclean exit must refuse the update handoff");
+    let dsh_core::error::DshError::Other { code, .. } = error else {
+        panic!("expected typed unclean-exit error, got {error:?}");
+    };
+    assert_eq!(code, "update_unclean_exit");
+    assert_eq!(supervisor.status().state, RuntimeState::Stopped);
+    assert!(supervisor.status().url.is_none());
+    assert!(supervisor.status().started_at.is_none());
+    assert!(supervisor.boot_facts().await.is_none());
     assert!(
         !process_alive(grandchild),
         "a forced stop must not orphan a grandchild"
     );
+    supervisor
+        .stop_with_graceful_deadline(Duration::from_millis(100), true)
+        .await
+        .expect("second stop sees already-terminal Host");
+    assert_eq!(supervisor.status().state, RuntimeState::Stopped);
 }
 
 /// Fail-closed quit inspection: a Host that misses the 2-second deadline is

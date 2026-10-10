@@ -59,7 +59,7 @@ tokio-tungstenite = "0.26"
 mime_guess = "2"
 
 # --- desktop ---
-tauri = { version = "2", features = ["tray-icon", "image-png", "image-ico", "devtools"] }
+tauri = { version = "2", features = ["tray-icon", "image-png", "image-ico", "devtools", "unstable"] }
 tauri-plugin-dialog = "2"
 tauri-plugin-clipboard-manager = "2"
 tauri-plugin-opener = "2"

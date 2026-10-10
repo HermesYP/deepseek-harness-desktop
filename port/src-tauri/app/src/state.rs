@@ -4,10 +4,10 @@
 //! store, the shortcut configuration engine (`keybindings.json`), the locale
 //! model, the update service, the shared directory picker, and the quit flow.
 
-use std::path::PathBuf;
 use std::sync::Arc;
 
-use dsh_core::credentials::{CredentialStore, KeyringBackend};
+use crate::credential_backend::DesktopSecretBackend;
+use dsh_core::credentials::CredentialStore;
 use dsh_core::paths::AppPaths;
 use dsh_core::protocol::{
     Appearance, CredentialIdentity, LocaleId, LocaleSource, LocaleState, Theme,
@@ -19,6 +19,18 @@ use dsh_gateway::GatewayHandle;
 use dsh_runtime::supervisor::Supervisor;
 use tokio::sync::Mutex;
 
+/// The updater-owned half of `AppState` (candidate identity, flight ownership,
+/// download episodes), re-exported so `crate::state::UpdateCandidate` and the
+/// other existing paths are unchanged. Split out so the scratch updater probe
+/// compiles the identical type instead of re-declaring it.
+#[path = "state_update.rs"]
+mod state_update;
+
+pub use state_update::{
+    artifact_file_name, DownloadEpisode, UpdateCandidate, UpdateFlight, UpdateOperation,
+    UpdateService,
+};
+
 /// Settings key of the locale preference (desktop-owned; never mirrors
 /// Harness-owned settings under `$DSH_HOME`).
 pub const LOCALE_PREFERENCE_KEY: &str = "locale.preference";
@@ -29,11 +41,6 @@ pub const THEME_KEY: &str = "theme";
 pub const CREDENTIAL_PROVIDER_KEY: &str = "onboarding.credential-provider";
 /// Companion of {@link CREDENTIAL_PROVIDER_KEY}.
 pub const CREDENTIAL_REFERENCE_KEY: &str = "onboarding.credential-reference";
-/// Settings key of the update feed URL (an https manifest
-/// `{"version": "...", "url": "...", "sha256": "..."}`).
-pub const UPDATE_FEED_KEY: &str = "updates.feed-url";
-/// Settings key of the beta update feed URL.
-pub const UPDATE_FEED_BETA_KEY: &str = "updates.feed-url-beta";
 /// Settings key of the persisted release channel (`stable` or `beta`).
 pub const UPDATE_CHANNEL_KEY: &str = "updates.channel";
 
@@ -68,7 +75,6 @@ pub struct ShellMessages {
     pub restart_app_host_menu: &'static str,
     pub exit_application: &'static str,
     pub restart_application: &'static str,
-    pub startup_failed: &'static str,
     pub diagnostic_truncated: &'static str,
     pub report_written_to: &'static str,
     pub startup_reinstall_advice: &'static str,
@@ -117,7 +123,6 @@ pub const EN: ShellMessages = ShellMessages {
     restart_app_host_menu: "Restart App and Host",
     exit_application: "Exit",
     restart_application: "Restart",
-    startup_failed: "DeepSeek Harness is unavailable",
     diagnostic_truncated: "… Error details shortened.",
     report_written_to: "Diagnostic report: {path}",
     startup_reinstall_advice: "If application files are missing or damaged, close the application and reinstall it. Your tasks are stored separately.",
@@ -165,7 +170,6 @@ pub const ZH: ShellMessages = ShellMessages {
     restart_app_host_menu: "重启应用与 Host",
     exit_application: "退出",
     restart_application: "重启",
-    startup_failed: "DeepSeek Harness 无法使用",
     diagnostic_truncated: "… 错误详情已截短。",
     report_written_to: "诊断报告：{path}",
     startup_reinstall_advice: "如果应用文件缺失或损坏，请关闭应用并重新安装。任务数据存储在独立位置。",
@@ -228,13 +232,18 @@ pub fn resolve_startup_locale(
 }
 
 /// Operating-system languages in preference order (BCP 47 tags).
+///
+/// Windows reports its ordered preferred UI languages (not regional settings);
+/// the POSIX locale chain remains the fallback and the only source elsewhere.
+/// Evaluation order is deliberate: the environment chain runs last, so a stale
+/// `LANG` cannot mask the OS answer the native guest locale rule reads.
 pub fn os_languages() -> Vec<String> {
     #[cfg(target_os = "macos")]
     {
         // `defaults read -g AppleLanguages` is not reachable from a sandboxed
         // helper; the POSIX locale chain is the portable approximation.
     }
-    let mut languages = Vec::new();
+    let mut languages: Vec<String> = native_ui_languages();
     for key in ["LC_ALL", "LC_MESSAGES", "LANG", "LANGUAGE"] {
         if let Ok(value) = std::env::var(key) {
             for part in value.split(':') {
@@ -246,6 +255,61 @@ pub fn os_languages() -> Vec<String> {
         }
     }
     languages
+}
+
+/// Decode a Windows double-NUL-terminated ordered language list.
+#[cfg(any(target_os = "windows", test))]
+fn decode_ui_language_list(buffer: &[u16]) -> Vec<String> {
+    let mut languages = Vec::new();
+    for part in buffer
+        .split(|word| *word == 0)
+        .take_while(|part| !part.is_empty())
+    {
+        if let Ok(tag) = String::from_utf16(part) {
+            if !languages.contains(&tag) {
+                languages.push(tag);
+            }
+        }
+    }
+    languages
+}
+
+/// Preferred UI languages, deliberately independent of the user's region.
+#[cfg(target_os = "windows")]
+fn native_ui_languages() -> Vec<String> {
+    use windows::core::PWSTR;
+    use windows::Win32::Globalization::{GetUserPreferredUILanguages, MUI_LANGUAGE_NAME};
+    let mut count = 0u32;
+    let mut capacity = 0u32;
+    // SAFETY: the first call is the documented size query with no output buffer.
+    if unsafe { GetUserPreferredUILanguages(MUI_LANGUAGE_NAME, &mut count, None, &mut capacity) }
+        .is_err()
+        || !(2..=16_384).contains(&capacity)
+    {
+        return Vec::new();
+    }
+    let mut buffer = vec![0u16; capacity as usize];
+    // SAFETY: capacity exactly describes the writable, live UTF-16 buffer.
+    if unsafe {
+        GetUserPreferredUILanguages(
+            MUI_LANGUAGE_NAME,
+            &mut count,
+            Some(PWSTR(buffer.as_mut_ptr())),
+            &mut capacity,
+        )
+    }
+    .is_err()
+        || capacity as usize > buffer.len()
+    {
+        return Vec::new();
+    }
+    decode_ui_language_list(&buffer[..capacity as usize])
+}
+
+/// Non-Windows builds take their language order from the POSIX locale chain.
+#[cfg(not(target_os = "windows"))]
+fn native_ui_languages() -> Vec<String> {
+    Vec::new()
 }
 
 /// Current locale bookkeeping (preference persistence is `settings_*`-backed).
@@ -273,51 +337,28 @@ impl LocaleModel {
     }
 }
 
-/// Update-presentation state machine (`apps/desktop/src/ipc.ts` states).
-pub struct UpdateService {
-    pub state: dsh_core::protocol::DesktopUpdateState,
-    pub downloaded: Option<PathBuf>,
-    pub downloaded_version: Option<String>,
-}
-
-impl UpdateService {
-    pub fn idle() -> Self {
-        Self {
-            state: dsh_core::protocol::DesktopUpdateState {
-                phase: dsh_core::protocol::DesktopUpdatePhase::Idle,
-                version: None,
-                message: None,
-                technical_details: None,
-                percent: None,
-                failed_operation: None,
-                preparation_failure: None,
-            },
-            downloaded: None,
-            downloaded_version: None,
-        }
-    }
-}
-
 /// Shared shell state behind the Tauri commands and events.
 pub struct AppState {
     pub paths: AppPaths,
     pub settings: Mutex<SettingsStore>,
-    pub credentials: Mutex<CredentialStore<KeyringBackend>>,
+    pub credentials: Mutex<CredentialStore<DesktopSecretBackend>>,
     pub shortcuts: ShortcutPersistence,
     pub supervisor: Arc<Supervisor>,
     pub gateway: GatewayHandle,
+    pub policy: Arc<crate::policy_composition::PolicyGate>,
+    pub guests: Mutex<crate::guests::GuestViews>,
+    /// Host-owned credential state; never returned through application IPC.
+    pub platform_session: Mutex<Option<dsh_runtime::control::PlatformSession>>,
     pub locale: Mutex<LocaleModel>,
     pub theme: Mutex<Theme>,
     pub update: Mutex<UpdateService>,
     pub quit_flow: Mutex<QuitFlow>,
-    /// One open directory dialog shared by concurrent requests.
-    pub picker: Mutex<Option<tokio::sync::watch::Receiver<Option<Option<String>>>>>,
     /// Onboarding visibility signalled by `shell_onboarding_set_active`.
     pub onboarding_active: Mutex<bool>,
     /// Boot credential coordinates (amendment A5); `None` when unconfigured.
     pub credential_ref: Option<CredentialIdentity>,
     /// Recent error-level renderer console output for crash reports.
-    pub renderer_console: Mutex<dsh_core::diagnostics::RendererConsoleTail>,
+    pub renderer_console: Mutex<crate::renderer_diagnostics::RendererDiagnostics>,
     /// Once-only background-close acknowledgement state (Windows first hide).
     pub background_close_confirmed: Mutex<bool>,
     /// Startup outcome of the supervised Host run (set once per run).
@@ -348,4 +389,58 @@ pub fn shortcut_platform() -> ShortcutPlatform {
 /// `keybindings.json` storage over the application user-data directory (K1).
 pub fn shortcut_storage(paths: &AppPaths) -> FileShortcutStorage {
     FileShortcutStorage::new(&paths.keybindings)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn ui_language_list_preserves_order_and_stops_at_double_nul() {
+        let buffer: Vec<u16> = "de-DE\0zh-Hans\0en-US\0\0fr-FR\0".encode_utf16().collect();
+        assert_eq!(
+            decode_ui_language_list(&buffer),
+            ["de-DE", "zh-Hans", "en-US"]
+        );
+    }
+
+    #[test]
+    fn ui_language_list_ignores_invalid_utf16_and_duplicates() {
+        let mut buffer: Vec<u16> = "en-US\0en-US\0".encode_utf16().collect();
+        buffer.extend([0xD800, 0]);
+        buffer.extend("zh-Hant\0\0".encode_utf16());
+        assert_eq!(decode_ui_language_list(&buffer), ["en-US", "zh-Hant"]);
+        assert!(decode_ui_language_list(&[0, 0]).is_empty());
+    }
+
+    #[test]
+    fn preference_wins_over_environment_and_os() {
+        let languages = vec!["zh-Hans-CN".to_string(), "en-US".to_string()];
+        assert_eq!(
+            resolve_startup_locale(Some(LocaleId::En), &languages),
+            (LocaleId::En, LocaleSource::Preference)
+        );
+    }
+
+    #[test]
+    fn first_supported_language_decides_automatic_selection() {
+        assert_eq!(
+            resolve_startup_locale(None, &["de-DE".to_string(), "zh-Hans-CN".to_string()]),
+            (LocaleId::Zh, LocaleSource::Os)
+        );
+        assert_eq!(
+            resolve_startup_locale(None, &["fr-FR".to_string()]),
+            (LocaleId::En, LocaleSource::Default)
+        );
+    }
+
+    /// `zh-Hant-TW` must not be mistaken for a supported locale: upstream only
+    /// offers `en` and `zh`, and the primary subtag is the whole rule.
+    #[test]
+    fn primary_subtag_is_the_matching_rule() {
+        assert_eq!(
+            resolve_startup_locale(None, &["ZH-hant-tw".to_string()]).0,
+            LocaleId::Zh
+        );
+    }
 }

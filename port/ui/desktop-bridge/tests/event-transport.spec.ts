@@ -132,6 +132,20 @@ describe('dsh:// event transport (Tauri plugin:event envelope contract)', () => 
     }
   })
 
+  it('needs only __TAURI_INTERNALS__: the global Tauri API stays off', async () => {
+    const stub = createTransportStub()
+    stub.commands.shell_app_info = { version: '0.1.7-rc.2' }
+    const { index } = await freshBridge(stub)
+
+    // `withGlobalTauri: false` (port/src-tauri/app/tauri.conf.json) injects no
+    // `window.__TAURI__`; Tauri 2 always injects the internal channel, and the
+    // bridge resolves that first, so no desktop capability depends on the
+    // global API surface being present.
+    expect(Reflect.get(globalThis, '__TAURI__')).toBeUndefined()
+    expect(index.isDesktop()).toBe(true)
+    await expect(index.desktop.shellAppInfo()).resolves.toEqual({ version: '0.1.7-rc.2' })
+  })
+
   it('the disposer unlistens through the event plugin', async () => {
     const stub = createTransportStub()
     const { index } = await freshBridge(stub)
@@ -179,14 +193,15 @@ describe('dsh:// event transport (Tauri plugin:event envelope contract)', () => 
     expect(document.documentElement.dataset.platform).toBeUndefined()
   })
 
-  it('the fallback glue composes the full dshDesktop with a producer-backed keyboard', async () => {
+  it('the fallback glue composes dshDesktop with a producer-backed keyboard but no native browser', async () => {
     const stub = createTransportStub()
     await freshBridge(stub)
     const product = Reflect.get(globalThis, 'dshDesktop') as Record<string, unknown>
     expect(product.protocolVersion).toBe(1)
     expect(product.shortcuts).toBeDefined()
     expect(product.updates).toBeDefined()
-    expect(product.browser).toBeDefined()
+    // Retained Sidebar must use its iframe path until native presentation is composed.
+    expect(product.browser).toBeUndefined()
     // keyboard is mandatory in the desktop runtime (upstream throws when it is
     // absent) and must carry the in-page physical-input producer — its presence
     // without a producer would disable upstream's DOM shortcut dispatch.

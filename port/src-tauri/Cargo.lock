@@ -1048,6 +1048,7 @@ dependencies = [
  "dsh-gateway",
  "dsh-runtime",
  "reqwest 0.12.28",
+ "ring",
  "serde",
  "serde_json",
  "sha2",
@@ -1057,10 +1058,13 @@ dependencies = [
  "tauri-plugin-dialog",
  "tauri-plugin-opener",
  "tauri-plugin-single-instance",
+ "tempfile",
  "tokio",
  "tracing",
  "url",
  "uuid",
+ "webview2-com",
+ "windows",
 ]
 
 [[package]]

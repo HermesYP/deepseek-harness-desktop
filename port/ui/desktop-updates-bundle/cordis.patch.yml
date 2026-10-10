@@ -1,35 +1,28 @@
-# Port-owned desktop bundle layer.
+# Port-owned desktop bundle layer — NO-OP by decision (interim fallback).
 #
-# This file is a list of loader patch OPERATIONS, and the two forms are not
-# interchangeable:
+# The bundle stays in DESKTOP_PROFILE_BUNDLES so that EVERY profile which lists
+# it — including already-provisioned owned profiles that retain unknown or
+# extraneous bundle entries — is repaired by this source change alone. Removing
+# the bundle from the required list would not repair profiles that already list
+# it.
 #
-#   - id: <existing-row-id>      OVERRIDES an existing row (config, disabled, ...)
-#   - insert: [ ... ]            ADDS new rows to the composition
+# An empty top-level list composes nothing, so this layer now:
+#   * does NOT disable `ui-settings-account`, so the upstream account plugin owns
+#     `settings.launcher` again. `settings.launcher` is declared `kind: 'single'`
+#     by dsh-client-ui-settings-general, so exactly ONE launcher contribution
+#     must exist; restoring the account row also removes the competing port
+#     `SettingsOnlyLauncher`.
+#   * does NOT insert `dsh-port-ui-updates`, so there is no Updates section in
+#     Settings.
 #
-# A top-level `- id:` row does NOT create an entry. Using it for a brand-new
-# plugin makes the loader warn `patch: entry "dsh-port-ui-updates" not found`
-# and skip the row, so the Host never puts the plugin into the browser boot
-# manifest and Settings has no Updates section. That was the actual cause of
-# finding F-47 - the earlier "computed runtime resolution" hypothesis in
-# docs/verification-report.md was wrong and has been corrected there.
+# The application-menu update route is untouched and retained: it is independent
+# of the account plugin and of the Settings section
+# (`port/src-tauri/app/src/lib.rs:1030`, `MenuActionId::CheckForUpdates`).
 #
-# Why the plugin arrives through a bundle at all: a browser row is served only
-# when the Host can resolve the row's package, and it resolves it through "the
-# nearest ancestor manifest declaring the name"
-# (`packages/client/modules/src/index.ts`, `resolveMeta`). A package cannot
-# declare itself, so the row must live in a bundle whose manifest declares the
-# plugin as a dependency - the shape `packages/client/AGENTS.md` requires.
-
-# Override: remove the web-oriented account plugin, which owns the sidebar
-# account menu holding "Contact us" and "Sign in" when signed out. This row
-# DOES exist in the composed dsh-web-app layer, so an id override is correct
-# here. The port plugin re-provides `settings.launcher` so the More menu keeps
-# Settings, which is also the surface carrying the Updates section.
-- id: ui-settings-account
-  name: '@deepseek-ai/dsh-client-ui-settings-account'
-  disabled: true
-
-# Insert: add the port-owned Updates plugin as a NEW row.
-- insert:
-    - id: dsh-port-ui-updates
-      name: '@dsh-port/dsh-client-ui-updates'
+# Original operations are preserved at
+# outputs/port-remediation-2026-10-02/renderer-2f7530f8-f47a-4753-830b-ece35ff1170f/
+#   cordis.patch.yml.ORIGINAL-7138c674  (sha256 7138c6743309d6eaeb119ad8a2041f3af3016bbd2cd1290273963ec8aba88904)
+#
+# Disclosure on this fallback: signed-out More shows "Contact us" and "Sign in"
+# again, and the replacement Settings launcher is absent by design and unproven.
+[]

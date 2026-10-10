@@ -1,0 +1,85 @@
+{
+  "payloadSha256": "1ae3af7ee7df4404458230a9dc1a0a21582d25465eda9a462725ee5950de4e08",
+  "cases": [
+    {
+      "label": "valid",
+      "channel": "stable",
+      "trustedKey": "79b5562e8fe654f94078b112e8a98ba7901f853ae695bed7e0e3910bad049664",
+      "version": "0.1.8",
+      "messageChannel": "stable",
+      "messageSha256": "1ae3af7ee7df4404458230a9dc1a0a21582d25465eda9a462725ee5950de4e08",
+      "signature": "fca5cf4ad52c06fdabe188534338a6c36940b0def732efd82681451cddfe71e6bb8d5a17670a8326debc256e8affd72a91cce784dc462afbc096cb5e3bdb7b0e",
+      "expected": "ok"
+    },
+    {
+      "label": "other-version",
+      "channel": "stable",
+      "trustedKey": "79b5562e8fe654f94078b112e8a98ba7901f853ae695bed7e0e3910bad049664",
+      "version": "0.1.9",
+      "messageChannel": "stable",
+      "messageSha256": "1ae3af7ee7df4404458230a9dc1a0a21582d25465eda9a462725ee5950de4e08",
+      "signature": "0a26c3591d8ee7d2bec1616e54fd9006e7d61c69ebdc579548542629c38113ad5ea3d083877eddd2fe888db29531db3e47dc94a5654b1a6cb504d15a782fb70b",
+      "expected": "valid-over-signed-values"
+    },
+    {
+      "label": "other-channel",
+      "channel": "stable",
+      "trustedKey": "79b5562e8fe654f94078b112e8a98ba7901f853ae695bed7e0e3910bad049664",
+      "version": "0.1.8",
+      "messageChannel": "beta",
+      "messageSha256": "1ae3af7ee7df4404458230a9dc1a0a21582d25465eda9a462725ee5950de4e08",
+      "signature": "a62ebc7638ea8503378d604509d883cb0e3adc48860fbd8a5b0d2be5533690e4f2f704f0e022f86ceb3eaab8fa18bdd965a0f407908f488a0474a56cabfa1c0d",
+      "expected": "valid-over-signed-values"
+    },
+    {
+      "label": "other-digest",
+      "channel": "stable",
+      "trustedKey": "79b5562e8fe654f94078b112e8a98ba7901f853ae695bed7e0e3910bad049664",
+      "version": "0.1.8",
+      "messageChannel": "stable",
+      "messageSha256": "d9298a10d1b0735837dc4bd85dac641b0f3cef27a47e5d53a54f2f3f5b2fcffa",
+      "signature": "a34484b1ff5815dcab9957e4ea5f1d53d269515db14346bcbfe710601022af4107d995593fcbf35100d9d68f5c0173bfc8a80a23faaad7619e5167bf4c34e408",
+      "expected": "valid-over-signed-values"
+    },
+    {
+      "label": "valid",
+      "channel": "beta",
+      "trustedKey": "a7fcf7dced5531d5ac385cc7bda1a4eb7d00d6248a7f8fbd8dbbddf73a21d2a0",
+      "version": "0.1.8",
+      "messageChannel": "beta",
+      "messageSha256": "1ae3af7ee7df4404458230a9dc1a0a21582d25465eda9a462725ee5950de4e08",
+      "signature": "e7c671dfedbbd1d97577cbb10fe3e9198a8dc9af4dbcf5cf277d9990d424d3aac37300c78a07ebffe2910b9f3ba08a176af771e8f5290426cd26d9aadf72e70f",
+      "expected": "ok"
+    },
+    {
+      "label": "other-version",
+      "channel": "beta",
+      "trustedKey": "a7fcf7dced5531d5ac385cc7bda1a4eb7d00d6248a7f8fbd8dbbddf73a21d2a0",
+      "version": "0.1.9",
+      "messageChannel": "beta",
+      "messageSha256": "1ae3af7ee7df4404458230a9dc1a0a21582d25465eda9a462725ee5950de4e08",
+      "signature": "91aa1e6e908d6ab9dfd116de3ce18771cb4bae9b63b8b9d7f45833ea4de5de5f95c87d8f69f15ffc957a464e72e7b212fb64d976ed09e351177b7da78b1a7f0f",
+      "expected": "valid-over-signed-values"
+    },
+    {
+      "label": "other-channel",
+      "channel": "beta",
+      "trustedKey": "a7fcf7dced5531d5ac385cc7bda1a4eb7d00d6248a7f8fbd8dbbddf73a21d2a0",
+      "version": "0.1.8",
+      "messageChannel": "stable",
+      "messageSha256": "1ae3af7ee7df4404458230a9dc1a0a21582d25465eda9a462725ee5950de4e08",
+      "signature": "24a145ae77f54379efd47b67fe2851cb3e148d11ce26b486e4290408375b0511e4cd6026683670fb9acd368c6db5436d324c792d3ab125e009b6afe55def0204",
+      "expected": "valid-over-signed-values"
+    },
+    {
+      "label": "other-digest",
+      "channel": "beta",
+      "trustedKey": "a7fcf7dced5531d5ac385cc7bda1a4eb7d00d6248a7f8fbd8dbbddf73a21d2a0",
+      "version": "0.1.8",
+      "messageChannel": "beta",
+      "messageSha256": "d9298a10d1b0735837dc4bd85dac641b0f3cef27a47e5d53a54f2f3f5b2fcffa",
+      "signature": "3ffa15c7735b023e909876452541cbb69bd11167256b6c1840e4d758885375440a6295c08f97631e7a4a92e9712ebfc376c72dd40541f475faabb1f87b18760d",
+      "expected": "valid-over-signed-values"
+    }
+  ]
+}

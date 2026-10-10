@@ -1,14 +1,11 @@
 {
   "identifier": "default",
-  "description": "Principle of least privilege for the owned application window: only the core event/IPC surface the preserved client bridge uses. Plugins are reached through Rust commands, never directly from the renderer.",
-  "windows": ["main"],
-  "remote": {
-    "urls": ["http://127.0.0.1:*"]
-  },
+  "description": "Permission inventory only. Runtime authority is granted to the main webview at this launch's exact owned gateway origin; native guests receive no desktop bridge authority.",
+  "local": false,
+  "webviews": ["main"],
   "permissions": [
     "core:event:allow-listen",
     "core:event:allow-unlisten",
-    "core:window:allow-start-resize-dragging",
     "bridge"
   ]
 }

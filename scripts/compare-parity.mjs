@@ -1,27 +1,44 @@
 /**
- * Parity comparison harness.
+ * Parity comparison harness (CLI).
  *
  * Compares a REFERENCE capture tree against a PORT capture tree produced by the
- * same capture harness, at identical viewports, themes and interaction steps,
- * and reports per-step parity. Dependency-free on purpose: it compares the
- * deterministic DOM facts recorded in `trace.json` plus exact image bytes, and
- * never guesses at pixels it cannot account for.
+ * same capture harness, at identical viewports, themes and interaction steps.
  *
  * Usage:
  *   node scripts/compare-parity.mjs --reference <dir> --port <dir> [--out <report.json>]
+ *     [--raster-tolerance <fraction>] [--raster-max-delta <0-255>]
  *
- * Verdicts per step:
- *   identical        image bytes match AND every tracked DOM fact matches
- *   dom-identical    every tracked DOM fact matches, image bytes differ
- *   different        at least one tracked DOM fact differs
- *   missing-in-port  the port produced no frame for this step
- *   action-error     one side recorded an action error for this step
+ * All comparison logic lives in `scripts/lib/parity-core.mjs` so the
+ * fixture-level tests can drive the identical code path in-process. This file
+ * only parses arguments, writes the report and reports the verdict.
  *
- * Owned by: lead (acceptance evidence). Do not edit in an implementation lane.
+ * WHAT WAS WRONG, AND WHY EACH FIX MATTERS
+ *
+ *   1. WRONG STEP PAIRED. Reading `trace.trace[i]` by array POSITION was wrong
+ *      because the capture harness pushes one entry per action error IN ADDITION
+ *      to one entry per step: the recorded reference trace has 24 entries for 19
+ *      steps, so from the first failed action onward every comparison paired
+ *      unrelated steps. Steps are now keyed by their stable id.
+ *   2. SELF-COMPARISON "PASSED". Comparing a tree with itself yields "identical"
+ *      for every frame and proves nothing. Refused as a usage error.
+ *   3. ZERO CAPTURES "PASSED". An empty or mismatched tree produced
+ *      `compared: 0` and exit 0. A comparison that covered nothing now fails.
+ *   4. VISUAL VERDICT WAS AN ASSUMPTION. "dom-identical" carried the note
+ *      "raster differs (expected across engines)" — an assumption standing in for
+ *      a measurement. Frames are decoded and compared per pixel, and the report
+ *      carries the measured ratio, peak delta and every explicit mask with its
+ *      reason.
+ *   5. ENVIRONMENT WAS NOT CHECKED. Trees captured at different viewports,
+ *      locales, DPI or harness revisions were compared as if comparable.
+ *   6. ACTION ERRORS WERE TOLERATED. They are blocking verdicts now.
+ *
+ * Owned by: parity lane V.
  */
-import { createHash } from 'node:crypto'
-import { readFile, writeFile, readdir, stat } from 'node:fs/promises'
-import { resolve, join } from 'node:path'
+import { writeFile } from 'node:fs/promises'
+import { resolve } from 'node:path'
+import { Verdict, usageError } from '../port/tests/helpers/verdict.mjs'
+import { SEQUENCE } from '../port/tests/helpers/capture-sequence.mjs'
+import { compareTrees, validateOptions } from './lib/parity-core.mjs'
 
 const arg = (name, fallback) => {
   const i = process.argv.indexOf(`--${name}`)
@@ -31,130 +48,78 @@ const arg = (name, fallback) => {
 const referenceRoot = resolve(arg('reference', 'docs/evidence/reference'))
 const portRoot = resolve(arg('port', 'docs/evidence/port'))
 const outPath = resolve(arg('out', 'docs/evidence/parity-report.json'))
+const toleranceArg = arg('raster-tolerance', '0.002')
+const rasterTolerance = Number(toleranceArg)
+const maxDeltaArg = arg('raster-max-delta', '24')
+const rasterMaxDelta = Number(maxDeltaArg)
 
-/**
- * The deterministic DOM facts that must match for visual/state parity. These are
- * exactly what the capture harness records, so the comparison has no hidden
- * heuristics: text content, landmark count and installed font faces.
- */
-const TRACKED_FACTS = ['title', 'lang', 'landmarkCount', 'fonts', 'textSample']
-
-async function exists(path) {
-  try { await stat(path); return true } catch { return false }
+try {
+  validateOptions({ rasterTolerance, rasterMaxDelta })
+} catch (error) {
+  usageError(`${error.message} (--raster-tolerance / --raster-max-delta)`)
 }
 
-/** SHA-256 of a file, or null when absent. */
-async function hashOf(path) {
-  if (!await exists(path)) return null
-  return createHash('sha256').update(await readFile(path)).digest('hex')
-}
-
-/** Load one run's trace.json and index its steps by capture order. */
-async function loadTrace(dir) {
-  const path = join(dir, 'trace.json')
-  if (!await exists(path)) return null
-  return JSON.parse(await readFile(path, 'utf8'))
-}
-
-function diffFacts(a, b) {
-  const differences = []
-  for (const fact of TRACKED_FACTS) {
-    const left = JSON.stringify(a?.[fact] ?? null)
-    const right = JSON.stringify(b?.[fact] ?? null)
-    if (left !== right) differences.push(fact)
-  }
-  return differences
-}
-
-async function listStepIds(dir) {
-  if (!await exists(dir)) return []
-  const entries = await readdir(dir)
-  return entries
-    .filter((name) => name.endsWith('.png'))
-    .map((name) => name.slice(0, -4))
-    .sort()
-}
-
-const rows = []
-const viewports = (await exists(referenceRoot))
-  ? (await readdir(referenceRoot, { withFileTypes: true })).filter((e) => e.isDirectory()).map((e) => e.name)
-  : []
-
-for (const viewport of viewports) {
-  for (const theme of ['light', 'dark']) {
-    const refDir = join(referenceRoot, viewport, theme)
-    const portDir = join(portRoot, viewport, theme)
-    const refTrace = await loadTrace(refDir)
-    const portTrace = await loadTrace(portDir)
-    const stepIds = await listStepIds(refDir)
-
-    for (let i = 0; i < stepIds.length; i += 1) {
-      const step = stepIds[i]
-      const id = `${viewport}/${theme}/${step}`
-      const refImage = join(refDir, `${step}.png`)
-      const portImage = join(portDir, `${step}.png`)
-
-      if (!await exists(portImage)) {
-        rows.push({ id, verdict: 'missing-in-port', differences: ['frame'] })
-        continue
-      }
-
-      const refStep = refTrace?.trace?.[i]
-      const portStep = portTrace?.trace?.[i]
-      const refHash = await hashOf(refImage)
-      const portHash = await hashOf(portImage)
-
-      if (refStep?.actionError || portStep?.actionError) {
-        rows.push({
-          id,
-          verdict: 'action-error',
-          differences: ['actionError'],
-          note: { reference: refStep?.actionError ?? null, port: portStep?.actionError ?? null },
-        })
-        continue
-      }
-
-      const differences = diffFacts(refStep?.dom, portStep?.dom)
-      const verdict = differences.length > 0
-        ? 'different'
-        : (refHash === portHash ? 'identical' : 'dom-identical')
-
-      rows.push({
-        id,
-        verdict,
-        differences,
-        ...(verdict === 'dom-identical' ? { note: 'DOM facts match; raster differs (expected across engines)' } : {}),
-      })
-    }
-  }
-}
-
-const counts = rows.reduce((acc, row) => {
-  acc[row.verdict] = (acc[row.verdict] ?? 0) + 1
-  return acc
-}, {})
-
-const report = {
-  generatedAt: new Date().toISOString(),
-  referenceRoot,
-  portRoot,
-  trackedFacts: TRACKED_FACTS,
-  counts,
-  totals: { compared: rows.length },
-  rows,
+let report
+try {
+  report = await compareTrees({ referenceRoot, portRoot, rasterTolerance, rasterMaxDelta })
+} catch (error) {
+  // Configuration problems (same tree, absent tree) are usage errors: they mean
+  // the gate was not given what it needs to run honestly, which is not the same
+  // as the product under test failing.
+  usageError(String(error.message))
 }
 
 await writeFile(outPath, JSON.stringify(report, null, 2))
+console.log(`\n${JSON.stringify({
+  outPath,
+  counts: report.counts,
+  compared: report.totals.compared,
+  parity: report.totals.parity,
+  blocking: report.totals.blocking,
+}, null, 2)}`)
 
-// eslint-disable-next-line no-console
-console.log(JSON.stringify({ outPath, counts, compared: rows.length }, null, 2))
-const blocking = rows.filter((r) => r.verdict === 'different' || r.verdict === 'missing-in-port')
+const verdict = new Verdict('parity comparison')
+verdict.record(
+  'both trees cover the same viewports',
+  report.missingViewports.length === 0 ? 'PASS' : 'FAIL',
+  report.missingViewports.length === 0 ? 'viewports match' : report.missingViewports.join(', '),
+)
+verdict.record(
+  'the comparison actually covered every step',
+  report.totals.compared > 0 ? 'PASS' : 'FAIL',
+  report.totals.compared > 0
+    ? `${report.totals.compared} step comparison(s)`
+    : 'no step was compared; a comparison that covers nothing cannot pass',
+)
+verdict.record(
+  'the trees recorded matching environment identities',
+  report.identityMismatches.length === 0 ? 'PASS' : 'FAIL',
+  report.identityMismatches.length === 0 ? undefined : report.identityMismatches.join(' | '),
+)
+verdict.record(
+  'every compared step reached visual and state parity',
+  report.totals.blocking === 0 && report.totals.parity > 0 ? 'PASS' : 'FAIL',
+  report.totals.blocking === 0
+    ? (report.totals.parity > 0 ? `${report.totals.parity} step(s) identical` : 'no step reached identical')
+    : `${report.totals.blocking} step(s) are not parity`,
+)
+
+const blocking = report.rows.filter(row => row.verdict !== 'identical' && row.verdict !== 'not-applicable')
 if (blocking.length > 0) {
-  // eslint-disable-next-line no-console
-  console.error(`PARITY GAPS: ${blocking.length} step(s) differ or are missing:`)
-  for (const row of blocking.slice(0, 40)) {
-    // eslint-disable-next-line no-console
-    console.error(`  ${row.verdict.padEnd(16)} ${row.id}  [${(row.differences ?? []).join(', ')}]`)
+  console.error(`\nPARITY GAPS: ${blocking.length} step(s) are not parity:`)
+  for (const row of blocking.slice(0, 60)) {
+    const detail = (row.differences ?? []).join(', ')
+    const raster = row.raster === undefined ? '' : ` raster ${(row.raster.differingRatio * 100).toFixed(3)}%`
+    console.error(`  ${row.verdict.padEnd(16)} ${row.id}  [${detail}]${raster}`)
   }
-  process.exitCode = 1
 }
+const notApplicable = report.rows.filter(row => row.verdict === 'not-applicable')
+if (notApplicable.length > 0) {
+  console.log(`\nNOT COMPARED (optional actions the reference did not exercise): ${notApplicable.length}`)
+  for (const row of notApplicable) console.log(`  ${row.id}`)
+}
+if (report.totals.parity > 0 && report.totals.blocking === 0) {
+  console.log(`\nExpected step count per viewport/theme: ${SEQUENCE.length}`)
+}
+
+verdict.finish()

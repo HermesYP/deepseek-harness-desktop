@@ -1,0 +1,10 @@
+[package]
+name = "dsh-runtime"
+version = "0.0.0"
+edition = "2021"
+
+# Minimal stand-in for the workspace `dsh-runtime` crate: the update-task
+# control enum the updater reads. Mirrors `dsh_runtime::control::UpdateTasksAction`.
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }

@@ -1,0 +1,13 @@
+{
+  "name": "@dsh-port/native-guests",
+  "private": true,
+  "type": "module",
+  "description": "Port presentation adapters that give the preserved Sidebar Browser and embedded Platform surfaces a real native guest view instead of an iframe.",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "test": "cd .. && node node_modules/vitest/vitest.mjs run native-guests/tests/",
+    "test:types": "cd .. && node node_modules/typescript/bin/tsc --noEmit -p native-guests/tsconfig.json"
+  }
+}

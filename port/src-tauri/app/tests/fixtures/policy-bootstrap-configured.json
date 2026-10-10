@@ -1,0 +1,8 @@
+{
+  "schemaVersion": 1,
+  "clientVersion": "4.1.0-ui.2",
+  "dshMandatoryUpdatePolicy": {
+    "origin": "https://policy.example.test",
+    "allowedPageOrigins": ["https://download.example.test"]
+  }
+}

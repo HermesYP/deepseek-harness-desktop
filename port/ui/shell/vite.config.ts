@@ -21,11 +21,29 @@ import type { Plugin } from 'vite'
 import react from '@vitejs/plugin-react'
 // Read-only reuse of the upstream build-environment helper (same defines as apps/web).
 import { clientBuildEnvironmentDefines } from '../../../_upstream/scripts/client-build-environment.ts'
+import { createPolicyBootstrap } from './policy-bootstrap.mjs'
 
 const src = (rel: string): string => fileURLToPath(new URL(rel, import.meta.url))
 const STANDALONE_ERROR = 'port/ui/shell is not a standalone application: bare Vite cannot inject window.__DSH_BOOT__. '
   + 'Serve the built output through the Rust gateway (shell-owned boot path, docs/contracts/ui-backend-protocol.md §7.3).'
 const DEFAULT_CLIENT_TITLE = 'DSH Local Build'
+// One snapshot supplies both the actual UI substitutions and native metadata.
+const clientBuildDefines = Object.freeze(clientBuildEnvironmentDefines(process.env))
+
+/** Emit only desktop policy inputs, not the rest of the application manifest. */
+function desktopPolicyBootstrap(): Plugin {
+  let source: string
+  return {
+    name: 'dsh-desktop-policy-bootstrap',
+    async buildStart() {
+      const applicationPackage = JSON.parse(await readFile(src('../../../_upstream/apps/desktop/package.json'), 'utf8'))
+      source = `${JSON.stringify(createPolicyBootstrap(applicationPackage, clientBuildDefines), null, 2)}\n`
+    },
+    generateBundle() {
+      this.emitFile({ type: 'asset', fileName: 'desktop-policy-bootstrap.json', source })
+    },
+  }
+}
 
 /** Escape build-time text before placing it in the HTML title element. */
 function escapeHtmlText(value: string): string {
@@ -129,7 +147,7 @@ export default defineConfig({
   base: './',
   cacheDir: src('../.cache/vite'),
   plugins: [
-    rejectStandaloneServe(), clientDocumentTitle(), brandFontLicense(), react(),
+    rejectStandaloneServe(), clientDocumentTitle(), brandFontLicense(), desktopPolicyBootstrap(), react(),
   ],
   build: {
     outDir: src('../dist'),
@@ -181,7 +199,7 @@ export default defineConfig({
     ],
   },
   define: {
-    ...clientBuildEnvironmentDefines(process.env),
+    ...clientBuildDefines,
     // vendored loader internal.ts: fromInternal() probes the Node major —
     // "0.0.0" takes neither branch, returning undefined (exactly the empty
     // internal slot the shell boot fills with the client module loader).

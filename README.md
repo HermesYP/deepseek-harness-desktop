@@ -22,33 +22,15 @@ its authorship.
 
 ## Status
 
-Verified working, end to end on Windows x86_64:
+The desktop port is under active Windows repair. [The current repair ledger](<docs/repair-ledger-2026-10-10.md>) separates changed-source gates, rebuilt DEBUG account acceptance and clean-machine release qualification. [The verification report](<docs/verification-report.md>) retains historical successes **and failures**; its earlier installed/UI counts do not accept current bytes.
 
-- Installs from an NSIS installer and launches with **no development overrides**
-  (**18 PASS / 0 FAIL / 0 SKIP** on the installed-acceptance harness).
-- Host reaches readiness; gateway enforces the 401/303/cookie authentication boundary; the mux
-  WebSocket upgrades.
-- The preserved client mounts and renders its workspace in the real WebView2, with **128 of 196**
-  upstream `apps/web/dist` files still **byte-identical**.
-- Frameless port-drawn window: drag region, minimise / maximise / close, eight resize grips
-  (**resize verified by `WM_NCHITTEST`**), and caption colours that track the client's own theme
-  tokens live.
-- Desktop profile is created by the shell before the Host spawns, is idempotent, and **never
-  overwrites existing files** — a user's edited `cordis.patch.yml` survives every launch.
+- Rust owns the Tauri shell, credential boundary, gateway and Host supervision; the preserved client and agent runtime remain TypeScript/Node, not Rust.
+- Packaging pins Node **22.20.0** through [the runtime manifest](<port/installer/node-runtime.json>), not an arbitrary system-Node fallback. Installation with system Node absent still requires disposable clean-machine qualification.
+- Browser/Platform native-guest admission remains disabled. The renderer must use the real web fallback rather than advertise unusable native capabilities.
+- Update delivery fails closed without packaged feed trust; no production feed, signing key, signed release or successful production update is claimed. Serving the Updates module is not proof it activates in Settings.
+- No current matched native/UI parity, product performance, macOS/Linux build or clean-machine release acceptance is claimed.
 
-Not delivered, and stated plainly:
-
-- **Not a fully Rust application.** The UI and the agent runtime are TypeScript.
-- **Requires a system Node.js on `PATH`** — the installer is not yet self-contained.
-- **Unsigned.** No signed release is claimed.
-- **No update delivery.** The flow is implemented and proven, but no feed or signing key is
-  provisioned.
-- **macOS and Linux are uncompiled.** Upstream ships no Linux desktop at all.
-- **Updates-in-Settings** builds and ships but is not yet served by the Host (see finding F-47).
-
-The full, deliberately blunt account — including this project's own false greens and false reds — is
-in [`docs/verification-report.md`](docs/verification-report.md) (42 findings) and
-[`docs/limitations.md`](docs/limitations.md).
+See [the limitations](<docs/limitations.md>) and [binding contracts](<docs/contracts/tauri-contract.md>) for scope.
 
 ## Layout
 
@@ -74,8 +56,8 @@ docs                                analysis, contracts, decisions, verification
 # Build the preserved client, the runtime payload, and the Windows installer
 ./port/scripts/build.ps1 -Stage all
 
-# Installed acceptance: installs and launches with NO overrides
-./port/scripts/verify-installed.ps1 -WaitSeconds 120
+# Separate disposable-host release gate: only with explicit authorization
+# ./port/scripts/verify-installed.ps1 -WaitSeconds 120
 
 # Development launch, with the boot handoff and assembled-flow checks
 ./port/scripts/dev-e2e.ps1 -Verify

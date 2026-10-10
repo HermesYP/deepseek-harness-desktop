@@ -1,0 +1,14 @@
+[package]
+name = "probe-isolated-dirs"
+version = "0.0.0"
+edition = "2021"
+publish = false
+
+# Probe-only stand-in for the `dirs` crate (TEST ONLY). It is not a product
+# crate and is not published; it exists so the probe's updater cache resolves
+# under the CURRENT process temp directory instead of a live, shared Windows
+# KnownFolder. Only the one symbol the included production text names
+# (`update_flow.rs::artifact_cache_dir` -> `dirs::cache_dir`) is provided.
+#
+# No dependencies: `cache_dir` uses `std::env::temp_dir()` alone and performs no
+# I/O, creates no directory, and calls no platform KnownFolder API.

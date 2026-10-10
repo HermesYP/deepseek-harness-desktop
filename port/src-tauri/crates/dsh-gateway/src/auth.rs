@@ -266,12 +266,24 @@ fn cookie_name(authority: &str) -> String {
 
 /// Read the exact generated cookie without general Cookie decoding
 /// (`browser-auth.ts:111-118`).
+///
+/// The reference splits on `;` and **continues** past any segment that carries
+/// no `=` at all, so one bare segment (or an empty one from a doubled `;`) never
+/// hides a later matching pair. For a segment that does carry `=`, the name is
+/// the text before the **first** `=` with surrounding whitespace removed, the
+/// value is the text after it trimmed, and the comparison is exact and
+/// case-sensitive: a longer or differently cased name does not match. The first
+/// matching segment wins, so a duplicated name resolves to its first occurrence
+/// rather than the last.
 fn cookie_value(header_value: &str, name: &str) -> Option<String> {
     for segment in header_value.split(';') {
-        let (key, value) = segment.split_once('=')?;
-        if key.trim() == name {
-            return Some(value.trim().to_string());
+        let Some(at) = segment.find('=') else {
+            continue;
+        };
+        if segment[..at].trim() != name {
+            continue;
         }
+        return Some(segment[at + 1..].trim().to_string());
     }
     None
 }
@@ -418,5 +430,64 @@ mod tests {
             auth.authorize_index("GET", "/", "", Some(authority()), Some(&tampered)),
             IndexOutcome::Unauthorized
         ));
+    }
+
+    #[test]
+    fn cookie_parsing_continues_past_bare_segments_and_pins_the_name() {
+        let name = cookie_name(authority());
+        // A bare segment (no `=`) and an empty segment are skipped, not treated
+        // as the end of the header (`browser-auth.ts:112-116`).
+        assert_eq!(
+            cookie_value(&format!("flag; ; {name}=value; other=1"), &name),
+            Some("value".to_string())
+        );
+        // Duplicate names resolve to the FIRST occurrence, never the last.
+        assert_eq!(
+            cookie_value(&format!("{name}=first; {name}=second"), &name),
+            Some("first".to_string())
+        );
+        // The name is the text before the first `=` after trimming, and the
+        // value is trimmed.
+        assert_eq!(
+            cookie_value(&format!("{name} =  padded  "), &name),
+            Some("padded".to_string())
+        );
+        // The comparison is exact and case-sensitive: a longer name, an
+        // unrelated name, and a case variant are different cookies.
+        assert_eq!(cookie_value(&format!("{name}extra=v"), &name), None);
+        assert_eq!(cookie_value("dsh-auth=v", &name), None);
+        assert_eq!(cookie_value(&name.to_uppercase(), &name), None);
+        // An empty value parses as an empty string, which then fails
+        // verification exactly as the reference's empty slice does.
+        assert_eq!(
+            cookie_value(&format!("{name}="), &name),
+            Some(String::new())
+        );
+        assert_eq!(cookie_value("", &name), None);
+        assert_eq!(cookie_value("flag; other", &name), None);
+    }
+
+    #[test]
+    fn a_bare_cookie_segment_does_not_hide_the_session_cookie() {
+        let auth = auth();
+        let cookie = mint(&auth);
+        let name_value = cookie.split(';').next().expect("pair").to_string();
+        // The regression this pins: the previous parser used `split_once('=')?`,
+        // so one bare segment returned `None` for the whole header and a valid
+        // session cookie behind it was treated as absent.
+        let header = format!("consent; {name_value}; theme=dark");
+        assert!(
+            auth.is_authenticated(Some(authority()), Some(&header)),
+            "a bare segment must not mask a later exact cookie"
+        );
+        // A duplicate of the generated name in FRONT of the real pair is the
+        // segment that gets verified, so the request is not authenticated. The
+        // reference reads the first match rather than the last.
+        let name = cookie_name(authority());
+        let shadowed = format!("{name}=v1.AA.BB; {name_value}");
+        assert!(
+            !auth.is_authenticated(Some(authority()), Some(&shadowed)),
+            "the first exact-name segment is the one verified"
+        );
     }
 }

@@ -351,6 +351,12 @@
           "markdownDescription": "Allows the preserved client bridge to call only its declared desktop commands."
         },
         {
+          "description": "Allows only the isolated local mandatory-policy presentation and actions.",
+          "type": "string",
+          "const": "policy-surface",
+          "markdownDescription": "Allows only the isolated local mandatory-policy presentation and actions."
+        },
+        {
           "description": "No features are enabled by default, as we believe\nthe clipboard can be inherently dangerous and it is \napplication specific if read and/or write access is needed.\n\nClipboard interaction needs to be explicitly enabled.\n",
           "type": "string",
           "const": "clipboard-manager:default",

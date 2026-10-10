@@ -1,0 +1,85 @@
+[package]
+name = "updater-probe"
+version = "0.0.0"
+edition = "2021"
+
+[features]
+# Kept for documentation; the cfg itself is set by `.cargo/config.toml` as a
+# `--cfg` flag, because `cfg(updater_probe)` must apply to the *included*
+# production text and a Cargo feature only defines `feature = "..."`.
+default = []
+updater_probe = []
+
+[lints.rust]
+# `update_flow.rs` swaps its handle alias and dialog import under this cfg, so
+# `updater_probe` must be a RECOGNIZED cfg here - `check-cfg` declares it and the
+# `features` table above makes Cargo pass it too. The level is `warn`, not
+# `allow`: any *other* unexpected cfg in the included production text is still
+# reported, so this row cannot hide a cfg that a shipped build would reject.
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(updater_probe)'] }
+
+# Scratch harness for lane U2. It compiles the REAL `app/src/update_*.rs`
+# modules (via `#[path]`) so the updater runtime and policy tests execute under
+# the DSH sandbox. It is not a product artifact and is not part of the
+# `port/src-tauri` workspace.
+
+[dependencies]
+dsh-core = { path = "dsh_core_stub", package = "dsh-core" }
+dsh-runtime = { path = "dsh_runtime_stub", package = "dsh-runtime" }
+# TEST-ONLY dependency substitution. The shipped `dirs` crate answers
+# `cache_dir()` from the Windows KnownFolder API, which a plain `LOCALAPPDATA`
+# environment redirect cannot move: it resolves the live, shared updater cache
+# (`...\LocalAppData\dsh-desktop-updater`), and a standalone integration run must
+# never read or write another installation's cache. The dependency KEY stays
+# `dirs` so the included production text (`update_flow.rs::artifact_cache_dir`)
+# is unchanged, and the package behind it is the probe-owned
+# `probe-isolated-dirs` (`dirs_stub/`), which answers under the current process
+# temp directory. The registry `dirs` crate remains in the lock because `tauri`
+# and `tauri-build` still depend on it.
+dirs = { path = "dirs_stub", package = "probe-isolated-dirs", version = "0.0.0" }
+reqwest = { version = "0.12", default-features = false, features = [
+  "json",
+  "stream",
+  "rustls-tls",
+  "gzip",
+  "brotli",
+  "deflate",
+] }
+ring = "0.17"
+serde = { version = "1", features = ["derive"] }
+serde_json = { version = "1", features = ["preserve_order"] }
+sha2 = "0.10"
+tauri = { version = "2", default-features = false, features = [
+  # `wry` (a default feature) is deliberately **not** enabled: it links the Wry
+  # runtime, whose event loop resolves WebView2 entry points at process start,
+  # and the headless test binary then fails to load with
+  # `STATUS_ENTRYPOINT_NOT_FOUND`. The probe drives `MockRuntime` only, so the
+  # window/tray backends are unnecessary; `tauri::test::*` comes from the `test`
+  # feature below.
+  "test",
+] }
+# `tauri-plugin-dialog` is deliberately **not** a dependency. It links the Wry
+# runtime, whose event loop resolves WebView2 entry points at process start, and
+# the probe's test binary then fails to load with
+# `STATUS_ENTRYPOINT_NOT_FOUND`. The one type the production text names from it
+# (`MessageDialogButtons`) is re-declared in `src/dialog.rs` with the same
+# variants.
+tokio = { version = "1", features = [
+  "rt-multi-thread",
+  "macros",
+  "sync",
+  "time",
+  "process",
+  "io-util",
+  "io-std",
+  "net",
+  "signal",
+  "fs",
+  "test-util",
+] }
+uuid = { version = "1", features = ["v4"] }
+tempfile = "3"
+tracing = "0.1"
+url = "2"
+
+[workspace]

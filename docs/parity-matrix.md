@@ -26,7 +26,9 @@ Upstream reference: commit `477b4f420553e8a52c2fbccc464d7561b239c443`, version `
 | `blocked` | — |
 | `not inspected` | — |
 
-Detailed per-domain counts are maintained in `docs/verification-report.md` so this table and the report cannot drift.
+Detailed per-domain counts are maintained in the [verification report](<verification-report.md>) so this table and the report cannot drift.
+
+Current qualification distinguishes evidence planes: an actual pinned scratch payload is now sealed, its packaged Node/adapter Host gate passes 9 tests, and its advertised Updates JavaScript resource is served with the correct entry revision and MIME. The [sealed-artifact report](<../port/.scratch/integration-review-20261001/adapter-launch-67CffV/report.json>) verifies the unchanged seal before/after Host execution. This is **not native UI activation or matched product parity** and does not promote the matrix rows to `verified`; strict desktop lint and native composition/acceptance remain open.
 
 ### Inventory coverage behind these rows
 

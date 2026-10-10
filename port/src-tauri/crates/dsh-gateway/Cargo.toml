@@ -30,3 +30,15 @@ url = { workspace = true }
 
 [dev-dependencies]
 tempfile = "3"
+
+# Load-generation harness for same-machine reference/port comparison (LANE 9 of
+# port/scripts/benchmark.ps1). Kept behind a feature so an ordinary `cargo test`
+# never builds or runs a benchmark binary, and so the harness cannot be mistaken
+# for a product entry point.
+[[bin]]
+name = "gateway-benchmark"
+path = "src/bin/gateway_benchmark.rs"
+required-features = ["benchmark-harness"]
+
+[features]
+benchmark-harness = []

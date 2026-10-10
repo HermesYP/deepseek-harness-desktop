@@ -1,0 +1,12 @@
+[package]
+name = "dsh-core"
+version = "0.0.0"
+edition = "2021"
+
+# Minimal stand-in for the workspace `dsh-core` crate: only the items the
+# updater modules read. Field names, enum cases, and serde attributes mirror the
+# real definitions (`port/src-tauri/crates/dsh-core/src/{protocol,error,quit}.rs`)
+# so a signature or wire-format change in the real crate still breaks the probe.
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }

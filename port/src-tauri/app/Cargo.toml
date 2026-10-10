@@ -17,6 +17,7 @@ dsh-runtime = { path = "../crates/dsh-runtime" }
 chrono = { workspace = true }
 dirs = { workspace = true }
 reqwest = { workspace = true }
+ring = "0.17"
 serde = { workspace = true }
 serde_json = { workspace = true }
 sha2 = { workspace = true }
@@ -30,5 +31,22 @@ tracing = { workspace = true }
 url = { workspace = true }
 uuid = { workspace = true }
 
+[target.'cfg(windows)'.dependencies]
+# Security/FileSystem/Threading are explicit for creation-time owner-only
+# development handoffs; Security_Authorization also supports the native probe's
+# ACL readback. Do not rely on transitive Tauri/WebView2 feature unification.
+# These enable modules of the already-locked windows crate, not a version change.
+# Win32_System_Registry is only for the ignored probe's read-only SDK policy preflight.
+windows = { version = "0.61", features = ["Win32_Foundation", "Win32_Globalization", "Win32_Security", "Win32_Security_Authorization", "Win32_Storage_FileSystem", "Win32_System_Registry", "Win32_System_Threading", "Win32_UI_Shell", "Win32_UI_WindowsAndMessaging"] }
+# Must match the locked Tauri/Wry native interface version.
+webview2-com = "=0.38.2"
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["test-util"] }
+tempfile = "3"
+
 [features]
 default = []
+
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(updater_probe)'] }

@@ -1,18 +1,16 @@
 import type { SnapshotStore } from '@deepseek-ai/dsh-client-store'
-import type { DesktopUpdatePresentation } from '../../../desktop-bridge/protocol.ts'
+import type { UpdatesTransitionState } from './state.ts'
 
 export type ReleaseChannel = 'stable' | 'beta'
 
-export interface UpdatesSectionState {
-  appVersion: string
-  channel: ReleaseChannel
-  feed: string | null
-  update: DesktopUpdatePresentation
-  checked: boolean
-  busy: boolean
-  channelBusy: boolean
-  error: 'channel' | 'action' | null
-}
+/**
+ * The published Updates section state.
+ *
+ * It is the transition state itself, so every rendered field — the phase, the
+ * per-operation ownership tokens, the channel generation and the retained
+ * errors — is a value the transitions in `state.ts` produced.
+ */
+export type UpdatesSectionState = UpdatesTransitionState
 
 /** Data and actions supplied by the client plugin to its Settings section. */
 export interface UpdatesSectionInjected {

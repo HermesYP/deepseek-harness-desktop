@@ -292,7 +292,10 @@ async fn stop_after_control_connect_before_ready_completes_and_cancels_start() {
         .await
         .expect("cancelled start completes")
         .expect("start task joins");
-    assert!(start_result.is_err(), "cancelled start must not report ready");
+    assert!(
+        start_result.is_err(),
+        "cancelled start must not report ready"
+    );
     assert!(!process_alive(pid), "cancelled start must reap Host child");
     assert!(supervisor.boot_facts().await.is_none());
 }
@@ -581,7 +584,14 @@ async fn fatal_frame_after_ready_publishes_failed_and_calls_callback() {
             observed.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         })),
     );
-    supervisor.start().await.expect("host reaches ready first");
+    // The wire sends Ready first, but startup may observe the immediately
+    // following terminal event before returning. Both outcomes are valid;
+    // neither may resurrect Ready after the terminal publication.
+    if let Err(error) = supervisor.start().await {
+        assert!(
+            matches!(error, dsh_core::error::DshError::Other { ref code, .. } if code == "host_fatal")
+        );
+    }
     tokio::time::timeout(Duration::from_secs(3), async {
         while supervisor.status().state != RuntimeState::Failed {
             tokio::time::sleep(Duration::from_millis(10)).await;
@@ -616,7 +626,14 @@ async fn control_channel_eof_publishes_failed_and_calls_callback() {
             observed.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         })),
     );
-    supervisor.start().await.expect("host reaches ready first");
+    // The wire sends Ready first, but startup may observe the immediately
+    // following terminal event before returning. Both outcomes are valid;
+    // neither may resurrect Ready after the terminal publication.
+    if let Err(error) = supervisor.start().await {
+        assert!(
+            matches!(error, dsh_core::error::DshError::Other { ref code, .. } if code == "host_fatal")
+        );
+    }
     tokio::time::timeout(Duration::from_secs(3), async {
         while supervisor.status().state != RuntimeState::Failed {
             tokio::time::sleep(Duration::from_millis(10)).await;
@@ -637,6 +654,64 @@ async fn control_channel_eof_publishes_failed_and_calls_callback() {
         .stop_with_graceful_deadline(Duration::from_millis(100), false)
         .await
         .expect("cleanup");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn denied_stop_preserves_live_host_and_committed_restart_finishes_after_revocation() {
+    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+    let scratch = tempfile::tempdir().expect("tempdir");
+    let report = scratch.path().join("grandchild.pid");
+    let supervisor = Supervisor::new(fake_host_plan(&report, &[]), None);
+    let original = supervisor.start().await.expect("original host ready");
+    let original_pid: u32 = std::fs::read_to_string(&report)
+        .unwrap()
+        .trim()
+        .parse()
+        .unwrap();
+    let denied = supervisor
+        .stop_if(false, || {
+            Err(dsh_core::error::DshError::other(
+                "fixture_denied",
+                "no stop consent",
+            ))
+        })
+        .await;
+    assert!(denied.is_err());
+    assert_eq!(supervisor.status().state, RuntimeState::Ready);
+    assert_eq!(supervisor.status().url, Some(original.url));
+    assert!(
+        process_alive(original_pid),
+        "denial preserves the existing process tree"
+    );
+    assert!(
+        supervisor.quit_inspection().await.error.is_none(),
+        "original control channel remains usable"
+    );
+    let admitted = AtomicBool::new(true);
+    let checks = AtomicUsize::new(0);
+    let restarted = supervisor
+        .restart_if(|| {
+            checks.fetch_add(1, Ordering::SeqCst);
+            assert!(admitted.swap(false, Ordering::SeqCst));
+            // Revocation occurs immediately after admission. Once teardown commits,
+            // starting the replacement Host must not be abandoned halfway through.
+            Ok(())
+        })
+        .await
+        .expect("admitted restart completes");
+    assert_eq!(checks.load(Ordering::SeqCst), 1);
+    assert_eq!(restarted.state, RuntimeState::Ready);
+    assert!(!process_alive(original_pid));
+    let replacement_pid: u32 = std::fs::read_to_string(&report)
+        .unwrap()
+        .trim()
+        .parse()
+        .unwrap();
+    assert_ne!(replacement_pid, original_pid);
+    assert!(process_alive(replacement_pid));
+    assert!(supervisor.quit_inspection().await.error.is_none());
+    supervisor.stop(false).await.expect("fixture cleanup");
+    assert!(!process_alive(replacement_pid));
 }
 
 #[tokio::test(flavor = "multi_thread")]

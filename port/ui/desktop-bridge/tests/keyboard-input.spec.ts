@@ -96,6 +96,7 @@ async function setup() {
 describe('dshDesktop.keyboard physical-input producer', () => {
   afterEach(() => {
     vi.unstubAllGlobals()
+    vi.restoreAllMocks()
     vi.resetModules()
   })
 
@@ -154,6 +155,56 @@ describe('dshDesktop.keyboard physical-input producer', () => {
     expect(invoked).toBe(1)
     window.dispatchEvent(new KeyboardEvent('keyup', { code: 'KeyB', ctrlKey: true, bubbles: true }))
     window.dispatchEvent(new KeyboardEvent('keyup', { code: 'KeyA', ctrlKey: true, bubbles: true }))
+  })
+
+  it('contains a throwing listener: the other listeners still receive every input', async () => {
+    const { shortcuts, keyboard, stub } = await setup()
+    await shortcuts.get(DEFINITIONS) // rev-7: the producer is live
+    const faults: string[] = []
+    const spy = vi.spyOn(console, 'error').mockImplementation((...args: unknown[]) => {
+      faults.push(args.map(argument => String(argument)).join(' '))
+    })
+    // The first subscription installs the sources, and `dsh://shortcuts/input`
+    // is registered asynchronously (once per producer instance); let it settle
+    // before adding the rest so the Rust-side arm is delivered exactly once.
+    const disposeFirst = keyboard.subscribe(() => { throw new Error('first-listener') })
+    await flush()
+
+    const healthy: string[] = []
+    keyboard.subscribe(input => { healthy.push(...codesOf([input])) })
+    const disposeThird = keyboard.subscribe(() => { throw new Error('third-listener') })
+    keyboard.subscribe(input => { healthy.push(...codesOf([input])) })
+
+    // Physical input and Rust-side input share one delivery path, so both go
+    // through the throwing listeners.
+    window.dispatchEvent(new KeyboardEvent('keydown', { code: 'KeyA', bubbles: true }))
+    stub.emit('dsh://shortcuts/input', { revision: 'rev-7', kind: 'menu', commandId: 'close_page_or_window' })
+    await flush()
+
+    // Both healthy listeners received the physical input; neither throw reached
+    // the key handler, and each faulting listener was reported once per input.
+    expect(healthy).toEqual(['KeyA', 'KeyA'])
+    expect(faults).toHaveLength(4)
+    expect(faults[0]).toContain('first-listener')
+    expect(faults[1]).toContain('third-listener')
+
+    // Faults are per listener: disposing one faulting listener removes exactly
+    // its reports and leaves the other listeners (including the other fault)
+    // working independently.
+    disposeFirst()
+    window.dispatchEvent(new KeyboardEvent('keydown', { code: 'KeyB', bubbles: true }))
+    await flush()
+    expect(healthy).toEqual(['KeyA', 'KeyA', 'KeyB', 'KeyB'])
+    expect(faults).toHaveLength(5)
+    expect(faults[4]).toContain('third-listener')
+
+    disposeThird()
+    window.dispatchEvent(new KeyboardEvent('keydown', { code: 'KeyC', bubbles: true }))
+    await flush()
+    expect(healthy).toEqual(['KeyA', 'KeyA', 'KeyB', 'KeyB', 'KeyC', 'KeyC'])
+    expect(faults).toHaveLength(5)
+
+    spy.mockRestore()
   })
 
   it('tracks key release and clears held keys on blur', async () => {
@@ -258,6 +309,65 @@ describe('dshDesktop.keyboard physical-input producer', () => {
     document.body.dispatchEvent(new KeyboardEvent('keydown', { code: 'KeyK', bubbles: true }))
     await flush()
     expect(received.map(input => input.revision)).toEqual(['rev-8'])
+  })
+
+  it('shares pending native subscriptions between concurrent keyboard consumers', async () => {
+    const { index, markers, revisions } = await setup()
+    const stops = [vi.fn(), vi.fn(), vi.fn()]
+    const onShortcutsInput = vi.fn().mockResolvedValue(stops[0])
+    const onShortcutsChanged = vi.fn().mockResolvedValue(stops[1])
+    const onShortcutsRecording = vi.fn().mockResolvedValue(stops[2])
+    const keyboard = markers.createKeyboardApi({
+      ...index.desktop, onShortcutsInput, onShortcutsChanged, onShortcutsRecording,
+    }, revisions)
+    const first = keyboard.subscribe(() => undefined)
+    const second = keyboard.subscribe(() => undefined)
+    await flush()
+    expect(onShortcutsInput).toHaveBeenCalledTimes(1)
+    expect(onShortcutsChanged).toHaveBeenCalledTimes(1)
+    expect(onShortcutsRecording).toHaveBeenCalledTimes(1)
+    first()
+    for (const stop of stops) expect(stop).not.toHaveBeenCalled()
+    second()
+    for (const stop of stops) expect(stop).toHaveBeenCalledTimes(1)
+  })
+
+  it('handles a rejected native subscription and retries when another consumer subscribes', async () => {
+    const { index, markers, revisions } = await setup()
+    const failure = new Error('input unavailable')
+    const stop = vi.fn()
+    const report = vi.spyOn(console, 'error').mockImplementation(() => undefined)
+    const onShortcutsInput = vi.fn().mockRejectedValueOnce(failure).mockResolvedValue(stop)
+    const keyboard = markers.createKeyboardApi({ ...index.desktop, onShortcutsInput }, revisions)
+    const first = keyboard.subscribe(() => undefined)
+    await flush()
+    expect(report).toHaveBeenCalledWith('dsh desktop keyboard: input subscription failed', failure)
+    const second = keyboard.subscribe(() => undefined)
+    await flush()
+    expect(onShortcutsInput).toHaveBeenCalledTimes(2)
+    first()
+    second()
+    expect(stop).toHaveBeenCalledTimes(1)
+  })
+
+  it('retires a late subscription without replacing the next consumer generation', async () => {
+    const { index, markers, revisions } = await setup()
+    const pending: ((stop: () => void) => void)[] = []
+    const onShortcutsInput = vi.fn(() => new Promise<() => void>(resolve => { pending.push(resolve) }))
+    const keyboard = markers.createKeyboardApi({ ...index.desktop, onShortcutsInput }, revisions)
+    const first = keyboard.subscribe(() => undefined)
+    first()
+    const second = keyboard.subscribe(() => undefined)
+    const oldStop = vi.fn()
+    const currentStop = vi.fn()
+    pending[1]!(currentStop)
+    await flush()
+    pending[0]!(oldStop)
+    await flush()
+    expect(oldStop).toHaveBeenCalledTimes(1)
+    expect(currentStop).not.toHaveBeenCalled()
+    second()
+    expect(currentStop).toHaveBeenCalledTimes(1)
   })
 
   it('the disposer removes the listener and the DOM listener', async () => {

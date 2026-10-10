@@ -11,9 +11,17 @@
 //!   window's recent error-level console output (≤ 64 KiB).
 //! - Owner-only file permissions where the platform supports them.
 //! - Startup keeps the ten newest reports and deletes older ones, touching no
-//!   other file in the directory.
+//!   other file in the directory. Selection parses the generated name back into
+//!   its timestamp and source ([`parse_crash_report_name`]), so `web-boot` — the
+//!   one source whose spelling contains a separator — is retained and pruned
+//!   exactly like the rest.
 //! - Host stderr retention is capped at the last 64 Ki characters
 //!   ([`StderrTail`]); a fatal host-exit report therefore carries exactly that tail.
+//!
+//! Logging contract: [`init_diagnostics`] installs the process-wide subscriber
+//! once and returns a [`DiagnosticsGuard`] the application owns and flushes at
+//! shutdown. A repeat is intentional and inert; a first install that fails
+//! because another component already owns the subscriber is an explicit error.
 
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -30,6 +38,14 @@ pub enum CrashReportSource {
 }
 
 impl CrashReportSource {
+    /// Every source this module generates, in wire order.
+    pub const ALL: [CrashReportSource; 4] = [
+        CrashReportSource::Host,
+        CrashReportSource::WebBoot,
+        CrashReportSource::Renderer,
+        CrashReportSource::Main,
+    ];
+
     /// Wire spelling used in file names and the report header.
     pub fn as_str(self) -> &'static str {
         match self {
@@ -38,6 +54,13 @@ impl CrashReportSource {
             CrashReportSource::Renderer => "renderer",
             CrashReportSource::Main => "main",
         }
+    }
+
+    /// Parse the wire spelling back to its source; `None` for anything else.
+    pub fn parse(value: &str) -> Option<Self> {
+        Self::ALL
+            .into_iter()
+            .find(|source| source.as_str() == value)
     }
 }
 
@@ -109,6 +132,16 @@ impl ErrorReport {
 
 /// File name prefix every report shares.
 pub const CRASH_REPORT_PREFIX: &str = "crash-";
+
+/// File name suffix every report shares.
+pub const CRASH_REPORT_SUFFIX: &str = ".log";
+
+/// Fixed width of the UTC stamp in a generated report name
+/// (`YYYY-MM-DDTHH-MM-SS-mmmZ`).
+const CRASH_REPORT_STAMP_LEN: usize = 24;
+
+/// Separator between the stamp and the source token in a generated report name.
+const CRASH_REPORT_SOURCE_SEPARATOR: char = '-';
 
 /// Reports kept after pruning, newest first by file name.
 pub const CRASH_REPORTS_RETAINED: usize = 10;
@@ -208,35 +241,71 @@ pub fn crash_report_file_name(
 ) -> String {
     let stamp = time.to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
     format!(
-        "{CRASH_REPORT_PREFIX}{}-{}.log",
+        "{CRASH_REPORT_PREFIX}{}-{}{CRASH_REPORT_SUFFIX}",
         stamp.replace([':', '.'], "-"),
         source.as_str()
     )
 }
 
+/// Parse one generated report file name back into its timestamp and source —
+/// the exact inverse of [`crash_report_file_name`].
+///
+/// The stamp is fixed width, so the source token is whatever follows its
+/// [`CRASH_REPORT_STAMP_LEN`] characters. Splitting on the **last** `-` instead
+/// would read `web-boot` as the source `boot`, which silently excluded every
+/// web-boot report from pruning. The timestamp is reconstructed and parsed
+/// rather than shape-checked so that only names this module could have written
+/// parse, which is what makes deletion safe.
+pub fn parse_crash_report_name(
+    name: &str,
+) -> Option<(chrono::DateTime<chrono::Utc>, CrashReportSource)> {
+    let rest = name.strip_prefix(CRASH_REPORT_PREFIX)?;
+    let rest = rest.strip_suffix(CRASH_REPORT_SUFFIX)?;
+    let (stamp, source) = rest.split_at_checked(CRASH_REPORT_STAMP_LEN)?;
+    let source = source.strip_prefix(CRASH_REPORT_SOURCE_SEPARATOR)?;
+    Some((
+        parse_crash_report_stamp(stamp)?,
+        CrashReportSource::parse(source)?,
+    ))
+}
+
+/// Digits of `range`, or `None` when the slice is absent or not all digits.
+fn stamp_digits(stamp: &str, range: std::ops::Range<usize>) -> Option<&str> {
+    let text = stamp.get(range)?;
+    text.bytes()
+        .all(|byte| byte.is_ascii_digit())
+        .then_some(text)
+}
+
+/// Rebuild the RFC 3339 timestamp from a generated stamp.
+fn parse_crash_report_stamp(stamp: &str) -> Option<chrono::DateTime<chrono::Utc>> {
+    let bytes = stamp.as_bytes();
+    if bytes.len() != CRASH_REPORT_STAMP_LEN
+        || bytes[4] != b'-'
+        || bytes[7] != b'-'
+        || bytes[10] != b'T'
+        || bytes[13] != b'-'
+        || bytes[16] != b'-'
+        || bytes[19] != b'-'
+        || bytes[23] != b'Z'
+    {
+        return None;
+    }
+    let (year, month) = (stamp_digits(stamp, 0..4)?, stamp_digits(stamp, 5..7)?);
+    let (day, hour) = (stamp_digits(stamp, 8..10)?, stamp_digits(stamp, 11..13)?);
+    let (minute, second) = (stamp_digits(stamp, 14..16)?, stamp_digits(stamp, 17..19)?);
+    let millis = stamp_digits(stamp, 20..23)?;
+    chrono::DateTime::parse_from_rfc3339(&format!(
+        "{year}-{month}-{day}T{hour}:{minute}:{second}.{millis}Z"
+    ))
+    .ok()
+    .map(|time| time.with_timezone(&chrono::Utc))
+}
+
 /// Whether a file name is exactly one this module generates (pruning touches
 /// only names that match).
 pub fn is_crash_report_name(name: &str) -> bool {
-    let Some(rest) = name.strip_prefix(CRASH_REPORT_PREFIX) else {
-        return false;
-    };
-    let Some(rest) = rest.strip_suffix(".log") else {
-        return false;
-    };
-    let Some((stamp, source)) = rest.rsplit_once('-') else {
-        return false;
-    };
-    let source_ok = matches!(source, "host" | "web-boot" | "renderer" | "main");
-    // stamp = YYYY-MM-DDTHH-MM-SS-mmmZ
-    let stamp_ok = stamp.len() == 24
-        && stamp.as_bytes()[4] == b'-'
-        && stamp.as_bytes()[7] == b'-'
-        && stamp.as_bytes()[10] == b'T'
-        && stamp.as_bytes()[13] == b'-'
-        && stamp.as_bytes()[16] == b'-'
-        && stamp.as_bytes()[19] == b'-'
-        && stamp.ends_with('Z');
-    source_ok && stamp_ok
+    parse_crash_report_name(name).is_some()
 }
 
 /// Inputs of [`render_crash_report`] and [`write_crash_report`].
@@ -356,8 +425,13 @@ pub fn write_crash_report(
     Ok(path)
 }
 
-/// Delete the oldest reports beyond `retained`, judged by file-name order, and
-/// leave every other file in the directory alone. A missing directory is not a failure.
+/// Delete the oldest reports beyond `retained` and leave every other file in the
+/// directory alone. A missing directory is not a failure.
+///
+/// Selection is by parsed timestamp, so **every** source this module generates
+/// participates — including `web-boot`, whose hyphenated spelling a last-`-`
+/// split cannot read. A tie on the timestamp breaks on the file name so the
+/// retained set is deterministic.
 pub fn prune_crash_reports(directory: &Path, retained: usize) -> Result<(), DshError> {
     let entries = match std::fs::read_dir(directory) {
         Ok(entries) => entries,
@@ -370,14 +444,16 @@ pub fn prune_crash_reports(directory: &Path, retained: usize) -> Result<(), DshE
             ))
         }
     };
-    let mut reports: Vec<String> = entries
+    let mut reports: Vec<(chrono::DateTime<chrono::Utc>, String)> = entries
         .filter_map(|entry| entry.ok())
-        .map(|entry| entry.file_name().to_string_lossy().into_owned())
-        .filter(|name| is_crash_report_name(name))
+        .filter_map(|entry| {
+            let name = entry.file_name().to_string_lossy().into_owned();
+            parse_crash_report_name(&name).map(|(time, _)| (time, name))
+        })
         .collect();
     reports.sort();
     let excess = reports.len().saturating_sub(retained);
-    for name in reports.into_iter().take(excess) {
+    for (_, name) in reports.into_iter().take(excess) {
         let _ = std::fs::remove_file(directory.join(name));
     }
     Ok(())
@@ -404,12 +480,99 @@ fn set_file_owner_only(_options: &mut std::fs::OpenOptions) {
 #[cfg(not(unix))]
 fn set_directory_owner_only(_directory: &Path) {}
 
+/// Keeps the structured-log writer alive for as long as the process needs it.
+///
+/// The application owns exactly one of these for the process lifetime. Call
+/// [`flush`](Self::flush) at shutdown (dropping the guard does the same) to send
+/// the writer its shutdown message, let it drain the records already queued, and
+/// join its thread; a guard that is never dropped can lose the last records.
+///
+/// A repeated [`init_diagnostics`] returns an *inert* guard
+/// ([`owns_writer`](Self::owns_writer) is `false`): a global subscriber can only
+/// be installed once per process, so the repeat owns nothing to flush.
+pub struct DiagnosticsGuard {
+    /// The writer ownership, or `None` for the inert guard a repeated
+    /// initialization returns.
+    inner: Option<tracing_appender::non_blocking::WorkerGuard>,
+}
+
+impl DiagnosticsGuard {
+    /// Flush the records already queued and stop the writer thread. Idempotent.
+    ///
+    /// Dropping the inner `WorkerGuard` sends the shutdown message (waiting up to
+    /// 100 ms for the worker to drain) and joins the writer thread.
+    pub fn flush(&mut self) {
+        self.inner.take();
+    }
+
+    /// Whether this guard owns the process's log writer. `false` for the inert
+    /// guard of a repeated initialization.
+    pub fn owns_writer(&self) -> bool {
+        self.inner.is_some()
+    }
+}
+
+impl Drop for DiagnosticsGuard {
+    fn drop(&mut self) {
+        self.flush();
+    }
+}
+
+impl std::fmt::Debug for DiagnosticsGuard {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("DiagnosticsGuard")
+            .field("owns_writer", &self.owns_writer())
+            .finish()
+    }
+}
+
+/// Whether **this process** installed the global tracing subscriber from
+/// [`init_diagnostics`]. A foreign subscriber leaves this `false`.
+static DIAGNOSTICS_INSTALLED: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+
+/// Run one initialization step against `installed`: install the subscriber
+/// unless this process already installed one.
+///
+/// The flag and installer are parameters so the three outcomes are testable
+/// without touching the process-wide subscriber:
+/// - a fresh install that succeeds is `Ok(true)` — the caller owns the writer;
+/// - a repeat of *our own* install is `Ok(false)` and never calls the installer,
+///   which is what makes a second intentional initialization harmless;
+/// - an installer failure is an explicit error. `set_global_default` fails only
+///   when another component already owns the global subscriber, so this is the
+///   first-subscriber failure that must not look like a success. The flag is
+///   reset so a later retry can still install.
+fn install_subscriber_once(
+    installed: &std::sync::atomic::AtomicBool,
+    install: impl FnOnce() -> Result<(), String>,
+) -> Result<bool, DshError> {
+    use std::sync::atomic::Ordering;
+    if installed
+        .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
+        .is_err()
+    {
+        return Ok(false);
+    }
+    match install() {
+        Ok(()) => Ok(true),
+        Err(message) => {
+            installed.store(false, Ordering::SeqCst);
+            Err(DshError::other("diagnostics_subscriber", message))
+        }
+    }
+}
+
 /// Install structured diagnostic logging: daily-rolling files under `logs_dir`,
-/// owner-only where supported. The returned guard must be kept alive for the
-/// lifetime of the process.
-pub fn init_diagnostics(
-    logs_dir: &Path,
-) -> Result<tracing_appender::non_blocking::WorkerGuard, DshError> {
+/// owner-only where supported.
+///
+/// The returned guard must be kept alive for the process lifetime, and flushed
+/// (or dropped) at shutdown. A repeated call is intentional and returns an inert
+/// guard rather than failing. A call whose `set_global_default` fails — meaning
+/// some other component already installed a global subscriber — is an explicit
+/// error instead of a silent loss of every log record; so is a `logs_dir` that
+/// cannot be created.
+pub fn init_diagnostics(logs_dir: &Path) -> Result<DiagnosticsGuard, DshError> {
     std::fs::create_dir_all(logs_dir).map_err(|e| {
         DshError::io(
             "create log directory",
@@ -424,10 +587,13 @@ pub fn init_diagnostics(
         .with_ansi(false)
         .with_target(false)
         .finish();
-    // A global subscriber can only be set once per process; a second install
-    // (tests, restart-in-process) keeps the first and still returns a guard.
-    let _ = tracing::subscriber::set_global_default(subscriber);
-    Ok(guard)
+    let owns_writer = install_subscriber_once(&DIAGNOSTICS_INSTALLED, || {
+        tracing::subscriber::set_global_default(subscriber)
+            .map_err(|error| format!("a global tracing subscriber was already installed: {error}"))
+    })?;
+    Ok(DiagnosticsGuard {
+        inner: owns_writer.then_some(guard),
+    })
 }
 
 #[cfg(test)]
@@ -458,6 +624,40 @@ mod tests {
             "crash-2026-03-04T05-06-07-089Z-other.log",
             "notes.log",
             "crash-2026-03-04T05-06-07-089Z-host.log.bak",
+        ] {
+            assert!(!is_crash_report_name(bad), "{bad} must not match");
+        }
+    }
+
+    #[test]
+    fn every_generated_name_round_trips_including_web_boot() {
+        let time = chrono::DateTime::parse_from_rfc3339("2026-03-04T05:06:07.089Z")
+            .expect("time")
+            .with_timezone(&chrono::Utc);
+        for source in CrashReportSource::ALL {
+            let name = crash_report_file_name(&time, source);
+            let (parsed_time, parsed_source) =
+                parse_crash_report_name(&name).unwrap_or_else(|| panic!("{name} must parse"));
+            assert_eq!(parsed_time, time, "{name}");
+            assert_eq!(parsed_source, source, "{name}");
+            assert_eq!(CrashReportSource::parse(source.as_str()), Some(source));
+        }
+        // The hyphenated spelling is the regression: reading the source as the
+        // text after the LAST `-` yields `boot`, which no source parses as.
+        let web_boot = crash_report_file_name(&time, CrashReportSource::WebBoot);
+        assert_eq!(web_boot, "crash-2026-03-04T05-06-07-089Z-web-boot.log");
+        assert!(is_crash_report_name(&web_boot));
+        assert_eq!(
+            parse_crash_report_name(&web_boot).map(|(_, source)| source),
+            Some(CrashReportSource::WebBoot)
+        );
+        // A name only the shape (not the value) of which matches is not pruned:
+        // the stamp must also be a real timestamp.
+        for bad in [
+            "crash-2026-13-45T99-99-99-999Z-main.log",
+            "crash-2026-03-04T05-06-07-089Z-web-boot.txt",
+            "crash-2026-03-04T05-06-07-089Z-.log",
+            "crash-2026-03-04T05-06-07-089Z-web-boot-extra.log",
         ] {
             assert!(!is_crash_report_name(bad), "{bad} must not match");
         }
@@ -593,16 +793,24 @@ mod tests {
     }
 
     #[test]
-    fn write_and_prune_retain_ten_newest_matching_only() {
+    fn write_and_prune_retain_ten_newest_across_every_source() {
         let dir = tempfile::tempdir().expect("tempdir");
         std::fs::write(dir.path().join("keep-me.txt"), "x").expect("seed");
+        // A name only the shape of which matches is not a report this module
+        // could have written, so pruning must leave it alone.
+        std::fs::write(
+            dir.path().join("crash-2026-13-45T99-99-99-999Z-main.log"),
+            "x",
+        )
+        .expect("seed look-alike");
         let base = chrono::DateTime::parse_from_rfc3339("2026-01-01T00:00:00.000Z")
             .expect("time")
             .with_timezone(&chrono::Utc);
-        for index in 0..12 {
-            let time = base + chrono::Duration::seconds(index);
+        for index in 0..12u32 {
+            let time = base + chrono::Duration::seconds(i64::from(index));
+            let source = CrashReportSource::ALL[index as usize % CrashReportSource::ALL.len()];
             let input = CrashReportInput {
-                source: CrashReportSource::Main,
+                source,
                 phase: CrashReportPhase::Startup,
                 error: &ErrorReport::message("boom"),
                 host_diagnostic: None,
@@ -623,12 +831,87 @@ mod tests {
             names.contains(&"keep-me.txt".to_string()),
             "unrelated files untouched"
         );
-        assert_eq!(names.len(), CRASH_REPORTS_RETAINED + 1);
         assert!(
-            names
-                .iter()
-                .all(|n| n == "keep-me.txt" || n.as_str() >= "crash-2026-01-01T00-00-02"),
-            "only the two oldest reports may be pruned: {names:?}"
+            names.contains(&"crash-2026-13-45T99-99-99-999Z-main.log".to_string()),
+            "a value-invalid look-alike is not ours to delete"
         );
+        assert_eq!(names.len(), CRASH_REPORTS_RETAINED + 2);
+        for name in &names {
+            if name.ends_with(".txt") || name.contains("13-45T99") {
+                continue;
+            }
+            assert!(
+                name.as_str() >= "crash-2026-01-01T00-00-02",
+                "only the two oldest reports may be pruned: {names:?}"
+            );
+        }
+        // The hyphenated source participates: the writing loop produced
+        // `web-boot` reports, and pruning must have kept the newest of them.
+        assert!(
+            names.iter().any(|name| name.ends_with("-web-boot.log")),
+            "web-boot reports are not excluded from retention: {names:?}"
+        );
+    }
+
+    #[test]
+    fn first_subscriber_failure_is_explicit_and_repeat_init_is_inert() {
+        use std::cell::Cell;
+        use std::sync::atomic::{AtomicBool, Ordering};
+        // A fresh install that succeeds owns the writer.
+        let installed = AtomicBool::new(false);
+        assert!(install_subscriber_once(&installed, || Ok(())).expect("fresh install"));
+        assert!(installed.load(Ordering::SeqCst));
+
+        // A repeat of our own install never calls the installer again.
+        let calls = Cell::new(0);
+        let repeated = install_subscriber_once(&installed, || {
+            calls.set(calls.get() + 1);
+            Ok(())
+        })
+        .expect("a repeat is intentional");
+        assert!(!repeated);
+        assert_eq!(
+            calls.get(),
+            0,
+            "a repeat must not install a second subscriber"
+        );
+
+        // A foreign subscriber makes the FIRST install fail explicitly, and the
+        // failure resets the flag so a later retry can still install.
+        let foreign = AtomicBool::new(false);
+        let error = install_subscriber_once(&foreign, || Err("foreign subscriber".to_string()))
+            .expect_err("a foreign subscriber is an explicit failure");
+        assert_eq!(
+            error,
+            DshError::other("diagnostics_subscriber", "foreign subscriber")
+        );
+        assert!(
+            !foreign.load(Ordering::SeqCst),
+            "a failed first install must not look installed"
+        );
+        assert!(install_subscriber_once(&foreign, || Ok(())).expect("retry"));
+    }
+
+    #[test]
+    fn init_diagnostics_installs_once_and_repeated_init_is_inert() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let logs = dir.path().join("logs");
+        let mut first = init_diagnostics(&logs).expect("the first install in this binary succeeds");
+        assert!(first.owns_writer(), "the first call owns the writer");
+        let second = init_diagnostics(&logs).expect("a repeated init is intentional");
+        assert!(!second.owns_writer(), "a repeated init owns nothing");
+        first.flush();
+        first.flush();
+        assert!(!first.owns_writer(), "flush is idempotent");
+        assert!(logs.is_dir(), "the log directory is created");
+    }
+
+    #[test]
+    fn init_diagnostics_fails_loudly_when_the_log_directory_cannot_be_created() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let file = dir.path().join("not-a-directory");
+        std::fs::write(&file, b"x").expect("seed");
+        let error = init_diagnostics(&file).expect_err("an existing file is not a log directory");
+        assert!(matches!(error, DshError::Io { .. }), "{error:?}");
     }
 }

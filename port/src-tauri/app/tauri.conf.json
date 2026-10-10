@@ -9,10 +9,10 @@
     "frontendDist": "../../ui/dist"
   },
   "app": {
-    "withGlobalTauri": true,
+    "withGlobalTauri": false,
     "windows": [],
     "security": {
-      "csp": null
+      "csp": "default-src 'self' data: blob:; script-src 'self' 'unsafe-inline' 'unsafe-eval' blob:; style-src 'self' 'unsafe-inline' blob:; img-src 'self' data: blob:; font-src 'self' data:; media-src 'self' data: blob:; connect-src 'self' ipc: http://ipc.localhost; frame-src 'self' blob: data: about:; worker-src 'self' blob:; manifest-src 'self'; base-uri 'none'; object-src 'none'; form-action 'none'; frame-ancestors 'none'"
     }
   },
   "bundle": {
@@ -33,7 +33,11 @@
         "installMode": "currentUser",
         "languages": ["SimpChinese", "English"],
         "displayLanguageSelector": true,
-        "startMenuFolder": "DeepSeek Harness"
+        "startMenuFolder": "DeepSeek Harness",
+        "installerHooks": "../../installer/installer-hooks.nsh",
+        "customLanguageFiles": {
+          "SimpChinese": "../../installer/installer-strings.nsh"
+        }
       }
     }
   }

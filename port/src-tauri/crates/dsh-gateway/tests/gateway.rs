@@ -50,6 +50,17 @@ async fn fake_host() -> SocketAddr {
             }),
         )
         .route(
+            "/api/write",
+            axum::routing::any(
+                |method: axum::http::Method, body: axum::body::Bytes| async move {
+                    format!(
+                        "{method} /api/write body={}",
+                        String::from_utf8_lossy(&body)
+                    )
+                },
+            ),
+        )
+        .route(
             "/client-modules/client.js",
             axum::routing::get(|| async {
                 axum::response::Response::builder()
@@ -236,8 +247,37 @@ async fn valid_token_mints_cookie_and_bad_tokens_get_the_minimal_401() {
         "index.html must carry the boot gate: {body}"
     );
 
-    // A valid browser cookie still cannot expose a traversal target as a shell
-    // file; the non-shell path is proxied to the configured Host instead.
+    // A bare cookie segment in front of the session cookie must not hide it
+    // (the reference's parser continues past a segment with no `=`).
+    let response = client
+        .get(format!("{origin}/"))
+        .header("cookie", format!("consent; {cookie}"))
+        .send()
+        .await
+        .expect("request");
+    assert_eq!(
+        response.status().as_u16(),
+        200,
+        "a bare segment must not mask the session cookie"
+    );
+
+    // A duplicate of the generated name in front of the real pair is the
+    // segment that gets verified, so the request is not authenticated.
+    let name = cookie.split('=').next().expect("cookie name");
+    let response = client
+        .get(format!("{origin}/"))
+        .header("cookie", format!("{name}=v1.AA.BB; {cookie}"))
+        .send()
+        .await
+        .expect("request");
+    assert_eq!(
+        response.status().as_u16(),
+        401,
+        "the first exact-name cookie segment is the one verified"
+    );
+
+    // Authentication cannot expose a traversal target. The reference static
+    // handler refuses paths outside the packaged root with 403.
     let host_addr = fake_host().await;
     handle
         .set_host(&format!("http://{host_addr}/?token=fixture-only"))
@@ -260,15 +300,29 @@ async fn valid_token_mints_cookie_and_bad_tokens_get_the_minimal_401() {
         Some("text/javascript; charset=utf-8")
     );
     let escaped = client
-        .get(format!("{origin}/..%5c..%5csettings.json"))
+        .get(format!("{origin}/assets/..%5c..%5csettings.json"))
         .header("cookie", &cookie)
         .send()
         .await
         .expect("request");
     assert_eq!(
         escaped.status().as_u16(),
-        404,
-        "path traversal is proxied, never served as a shell file"
+        403,
+        "a shell-owned path traversal is refused before either shell serving or Host forwarding"
+    );
+    // A root-level traversal is not shell-owned: it proxies, and the Host's own
+    // answer (404 from the fixture) is what reaches the renderer, never the
+    // gateway's 403.
+    let proxied_traversal = client
+        .get(format!("{origin}/..%5c..%5csettings.json"))
+        .header("cookie", &cookie)
+        .send()
+        .await
+        .expect("request");
+    assert_eq!(proxied_traversal.status().as_u16(), 404);
+    assert!(
+        proxied_traversal.bytes().await.expect("body").is_empty(),
+        "the Host answered, not the packaged shell"
     );
 
     // Unauthenticated non-index requests are refused too.
@@ -278,6 +332,186 @@ async fn valid_token_mints_cookie_and_bad_tokens_get_the_minimal_401() {
         .await
         .expect("request");
     assert_eq!(response.status().as_u16(), 401);
+}
+
+#[tokio::test]
+async fn shell_routes_answer_405_for_writes_and_404_for_missing_files() {
+    let (_dir, handle, client) = gateway().await;
+    let host_addr = fake_host().await;
+    handle
+        .set_host(&format!("http://{host_addr}/?token=fixture-only"))
+        .await
+        .expect("host bind");
+    let cookie = mint_cookie(&handle, &client).await;
+    let origin = handle.origin().to_string();
+
+    // Shell-owned pathnames are GET/HEAD only: every other method is a bodyless
+    // local 405 and never reaches the Host (`web-document.ts:19`).
+    for path in [
+        "/",
+        "/index.html",
+        "/assets/app.js",
+        "/favicon.svg",
+        "/manifest.webmanifest",
+        "/favicon-dark.svg",
+        "/mandatory-policy.html",
+        "/desktop-policy-bootstrap.json",
+    ] {
+        let response = client
+            .post(format!("{origin}{path}"))
+            .header("cookie", &cookie)
+            .body("payload")
+            .send()
+            .await
+            .expect("request");
+        assert_eq!(response.status().as_u16(), 405, "POST {path}");
+        assert!(
+            response.headers().get("content-type").is_none(),
+            "POST {path} is bodyless"
+        );
+        assert!(response.bytes().await.expect("body").is_empty());
+    }
+
+    // A missing shell file is the reference's own 404, never a Host fallback.
+    let missing = client
+        .get(format!("{origin}/desktop-policy-bootstrap.json"))
+        .header("cookie", &cookie)
+        .send()
+        .await
+        .expect("request");
+    assert_eq!(missing.status().as_u16(), 404);
+    assert!(missing.bytes().await.expect("body").is_empty());
+
+    // Host writes are unaffected: a proxied write keeps its method and body.
+    let written = client
+        .post(format!("{origin}/api/write"))
+        .header("cookie", &cookie)
+        .body("payload")
+        .send()
+        .await
+        .expect("request");
+    assert_eq!(written.status().as_u16(), 200);
+    assert_eq!(
+        written.text().await.expect("body"),
+        "POST /api/write body=payload"
+    );
+
+    // A session refutation precedes the route table: an unauthenticated write on
+    // a shell path is still the minimal 401, not a 405.
+    let anonymous = client
+        .post(format!("{origin}/assets/app.js"))
+        .body("payload")
+        .send()
+        .await
+        .expect("request");
+    assert_eq!(anonymous.status().as_u16(), 401);
+    assert_eq!(
+        anonymous.text().await.expect("body"),
+        auth::UNAUTHORIZED_BODY
+    );
+}
+
+#[tokio::test]
+async fn shell_document_policy_is_served_by_default_and_attached_to_the_document_only() {
+    // The shipped configuration serves the policy on the document.
+    let (_dir, handle, client) = gateway().await;
+    let cookie = mint_cookie(&handle, &client).await;
+    let origin = handle.origin().to_string();
+    for (method, path) in [
+        (reqwest::Method::GET, "/"),
+        (reqwest::Method::HEAD, "/index.html"),
+    ] {
+        let response = client
+            .request(method.clone(), format!("{origin}{path}"))
+            .header("cookie", &cookie)
+            .send()
+            .await
+            .expect("request");
+        assert_eq!(response.status().as_u16(), 200, "{method} {path}");
+        let policy = response
+            .headers()
+            .get("content-security-policy")
+            .and_then(|value| value.to_str().ok())
+            .unwrap_or_else(|| panic!("{method} {path} must serve the shell document policy"));
+        for expected in [
+            "default-src 'self' data: blob:;",
+            "script-src 'self' 'unsafe-inline' 'unsafe-eval' blob:;",
+            "style-src 'self' 'unsafe-inline' blob:;",
+            "img-src 'self' data: blob:;",
+            "font-src 'self' data:;",
+            "media-src 'self' data: blob:;",
+            "connect-src 'self' ipc: http://ipc.localhost;",
+            "frame-src 'self' blob: data: about:;",
+            "worker-src 'self' blob:;",
+            "manifest-src 'self';",
+            "base-uri 'none';",
+            "object-src 'none';",
+            "form-action 'none';",
+            "frame-ancestors 'none'",
+        ] {
+            assert!(
+                policy.contains(expected),
+                "{path} is missing {expected:?}: {policy}"
+            );
+        }
+        // A nonce or hash source would make `'unsafe-inline'` ignored and the
+        // preserved client's runtime inline script rows (the boot gate, the
+        // `client-modules` queue row, the theme boot row) would not execute.
+        assert!(
+            !policy.contains("nonce-")
+                && !policy.contains("sha256-")
+                && !policy.contains("sha384-"),
+            "{path} must not carry a nonce/hash source: {policy}"
+        );
+    }
+    // The policy describes a document, so assets carry none of it, and the boot
+    // gate the served index carries is still injected under it (it is inline and
+    // allowed by `'unsafe-inline'`).
+    let asset = client
+        .get(format!("{origin}/assets/app.js"))
+        .header("cookie", &cookie)
+        .send()
+        .await
+        .expect("request");
+    assert!(asset.headers().get("content-security-policy").is_none());
+    let document = client
+        .get(format!("{origin}/"))
+        .header("cookie", &cookie)
+        .send()
+        .await
+        .expect("request");
+    assert!(document
+        .text()
+        .await
+        .expect("body")
+        .contains("globalThis.__DSH_BOOT_READY__"));
+
+    // An explicit opt-out is the only way to serve a policy-free document.
+    let dir = tempfile::tempdir().expect("tempdir");
+    let root = dir.path().to_path_buf();
+    std::fs::write(
+        root.join("index.html"),
+        "<html><head></head><body>dsh</body></html>",
+    )
+    .expect("index");
+    let detached = start(
+        GatewayConfig::loopback(root).without_shell_content_security_policy(),
+        vec![13u8; 32],
+    )
+    .await
+    .expect("gateway");
+    let detached_cookie = mint_cookie(&detached, &client).await;
+    let response = client
+        .get(format!("{}/", detached.origin()))
+        .header("cookie", &detached_cookie)
+        .send()
+        .await
+        .expect("request");
+    assert_eq!(response.status().as_u16(), 200);
+    assert!(
+        response.headers().get("content-security-policy").is_none(),
+        "the explicit opt-out serves no document policy"
+    );
 }
 
 #[tokio::test]

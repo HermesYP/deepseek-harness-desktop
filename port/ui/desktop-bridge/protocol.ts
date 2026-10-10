@@ -98,6 +98,28 @@ export interface WindowSetFullscreenRequest {
   readonly enabled: boolean
 }
 
+/** Windows caption controls the shell dispatches (`shell_window_chrome_action`). */
+export type WindowChromeAction = 'drag' | 'minimize' | 'maximize' | 'close'
+
+/** `shell_window_chrome_action` request. */
+export interface WindowChromeActionRequest {
+  readonly action: WindowChromeAction
+}
+
+/**
+ * Resize directions of `shell_window_resize_dragging` — the variant names of
+ * `tauri_runtime::ResizeDirection`, which carries no serde rename, so the
+ * frameless grip layer sends (and Rust accepts) exactly this spelling.
+ */
+export type WindowResizeDirection =
+  | 'East' | 'North' | 'NorthEast' | 'NorthWest'
+  | 'South' | 'SouthEast' | 'SouthWest' | 'West'
+
+/** `shell_window_resize_dragging` request. */
+export interface WindowResizeDraggingRequest {
+  readonly direction: WindowResizeDirection
+}
+
 /** `shell_theme_set` request. */
 export interface ThemeSetRequest {
   readonly theme: ThemePreference
@@ -407,12 +429,224 @@ export interface ShellWindowEvent {
   readonly state: ShellWindowState
 }
 
+/**
+ * `dsh://shell/window-error` payload: why one window presentation request was
+ * refused or failed, as the serialized {@link DshError} taxonomy.
+ *
+ * The failure is a separate channel from {@link ShellWindowEvent} on purpose:
+ * it never changes the presentation state, so a consumer keeps the last
+ * observed `ShellWindowState` (a refused hide is not a hide). The shell emits
+ * it when it cannot honour the request — for example a policy denial or a
+ * native hide failure.
+ */
+export type ShellWindowErrorEvent = DshError
+
 /** Terminal quit reasons of `dsh://shell/quit-confirmed`. */
 export type QuitReason = 'user' | 'installer' | 'update' | 'fatal-recovery' | 'os-shutdown'
 
 /** `dsh://shell/quit-confirmed` payload. */
 export interface ShellQuitConfirmedEvent {
   readonly reason: QuitReason
+}
+
+/** `dsh://update/state` payload. Backs `updatesPresentation`. */
+export type DesktopUpdatePresentationEvent = DesktopUpdatePresentation
+
+// ---------------------------------------------------------------------------
+// Native guests, native file paths, caption menus and renderer diagnostics.
+//
+// These are the port's typed additions to the wire vocabulary. Each one names a
+// `#[tauri::command]` or an emitted event that exists in the Rust application
+// crate today, so the TypeScript mirror and the shell agree on one spelling:
+//
+//   * guest commands/events   `port/src-tauri/app/src/guests/{commands,mod}.rs`
+//   * native file paths       `port/src-tauri/app/src/native_paths.rs` +
+//                             `commands.rs` (`shell_host_paths*`)
+//   * caption menus           `port/src-tauri/app/src/menu_action.rs` +
+//                             `commands.rs` (`shell_caption_menu`)
+//   * renderer console        `port/src-tauri/app/src/renderer_bridge.rs`
+//
+// Naming follows the same rule as the rest of this file: a type upstream
+// declares keeps upstream's name (`DesktopBrowserReservation`,
+// `DesktopBrowserOpenRequest`); a port-specific addition gets a port-specific
+// name.
+// ---------------------------------------------------------------------------
+
+/** One guest's approved, process-local storage partition (upstream `DesktopBrowserReservation`). */
+export interface BrowserReservation {
+  /** Opaque main-issued lease; also the guest child view's label. */
+  readonly lease: string
+  /** Approved storage partition derived from the workspace identity. */
+  readonly partition: string
+}
+
+/** Rectangle in CSS pixels, as the renderer measures it (`guests::geometry::GuestBounds`). */
+export interface GuestBounds {
+  readonly x: number
+  readonly y: number
+  readonly width: number
+  readonly height: number
+}
+
+/** `guest_browser_acquire` request. */
+export interface BrowserAcquireRequest {
+  /** Resolved workspace storage identity (`cwd:<path>` or `session:<id>`). */
+  readonly workspace: string
+  /** Initial rectangle; a zero extent hides the guest until the presentation places it. */
+  readonly bounds: GuestBounds
+}
+
+/** `guest_browser_release` / `guest_browser_state` request. */
+export interface BrowserLeaseRequest {
+  readonly lease: string
+}
+
+/** `guest_browser_set_bounds` request. */
+export interface BrowserBoundsRequest {
+  readonly lease: string
+  readonly bounds: GuestBounds
+}
+
+/** `guest_browser_navigate` request. The address is re-validated by the shell. */
+export interface BrowserNavigateRequest {
+  readonly lease: string
+  readonly url: string
+}
+
+/** Navigation verbs one existing guest accepts (`guests::registry::command_browser`). */
+export type GuestNavigationCommand = 'back' | 'forward' | 'reload' | 'clear-history'
+
+/** `guest_browser_command` request. */
+export interface BrowserCommandRequest {
+  readonly lease: string
+  readonly command: GuestNavigationCommand
+}
+
+/** Main-frame load failure of a guest document (`guests::GuestBrowserFailure`). */
+export interface GuestBrowserFailure {
+  /** Chromium/WebView2 error code. */
+  readonly code: number
+  /** Human-readable description. */
+  readonly description: string
+}
+
+/**
+ * One browser guest's observed document state (`guests::GuestBrowserState`).
+ *
+ * Every field is a native observation; nothing is inferred from what the client
+ * asked for, and no credential or injected header is part of the payload. It is
+ * both the `guest_browser_state` response and the
+ * `dsh://guests/browser-state` payload.
+ */
+export interface GuestBrowserState {
+  /** The guest's reservation. */
+  readonly lease: string
+  /** Current document address, or `''` before the first commit. */
+  readonly url: string
+  /** Current document title. */
+  readonly title: string
+  /** Whether the guest is loading. */
+  readonly loading: boolean
+  /** Whether a backward history entry exists. */
+  readonly canGoBack: boolean
+  /** Whether a forward history entry exists. */
+  readonly canGoForward: boolean
+  /** Whether the guest lost its document. */
+  readonly gone: boolean
+  /** Main-frame load failure for the current document, when the shell reported one. */
+  readonly error: GuestBrowserFailure | null
+}
+
+/** Destinations the embedded Platform document supports (`platform-pages.ts`). */
+export type PlatformPage = 'usage' | 'top-up'
+
+/** `guest_platform_open` request (upstream `dshPlatform.open`). */
+export interface PlatformOpenRequest {
+  readonly page: PlatformPage
+  readonly bounds: GuestBounds
+}
+
+/** `guest_platform_set_bounds` request. */
+export interface GuestBoundsRequest {
+  readonly bounds: GuestBounds
+}
+
+/**
+ * `dsh://guests/browser-open` payload (`guests::BrowserOpenRequest`): an approved
+ * `window.open` inside a guest, routed to that lease's one listener.
+ */
+export interface BrowserOpenRequestEvent {
+  /** The guest whose document requested the popup. */
+  readonly lease: string
+  /** Validated `http`/`https` URL the client opens in a new Browser tab. */
+  readonly url: string
+}
+
+/**
+ * `shell_host_paths` response (`native_paths::HostPaths`).
+ *
+ * The shell adopts the absolute paths of one native OS drop; the page reads this
+ * batch once (guarded by `consumed`) and pairs each path with the `File` the
+ * browser produced for that drop. The command returns what the shell actually
+ * observed and never a synthesised path.
+ */
+export interface HostPaths {
+  /** Absolute paths adopted from the most recent native drop, in drop order. */
+  readonly paths: readonly string[]
+  /** Whether the page already imported this batch. */
+  readonly consumed: boolean
+}
+
+/** Names of the two Windows caption menus the shell can pop (`menu_action::caption_items`). */
+export type CaptionMenuName = 'application' | 'edit'
+
+/**
+ * `shell_caption_menu` request: one caption menu anchored at a client point.
+ * `x`/`y` are CSS pixels measured from the button's `getBoundingClientRect()`.
+ */
+export interface CaptionMenuRequest {
+  readonly name: CaptionMenuName
+  readonly x: number
+  readonly y: number
+}
+
+/**
+ * `shell_caption_palette` request: the renderer's positional
+ * `[language, fill, symbol]` measurement (`chrome::CaptionPalette::from_json`
+ * accepts exactly three strings), sent by the shell's own caption probe.
+ */
+export interface CaptionPaletteRequest {
+  readonly palette: readonly [string, string, string]
+}
+
+/**
+ * One batched renderer console line (`renderer_bridge::ConsoleEntry`).
+ *
+ * Reporting is bounded by the shell: at most 32 entries, a source id of at most
+ * 4096 characters and a message of at most 32768 characters. The batch is a
+ * diagnostic, so the shell refuses an oversized one rather than truncating it.
+ */
+export interface RendererConsoleEntry {
+  /** Where the line came from; the shell keeps at most its origin, never a boot URL with a query. */
+  readonly sourceId: string
+  /** Source line number. */
+  readonly line: number
+  /** Already-clipped message text. */
+  readonly message: string
+}
+
+/** `shell_renderer_console` request. */
+export interface RendererConsoleRequest {
+  readonly lines: readonly RendererConsoleEntry[]
+}
+
+/**
+ * `policy_presented` request: the isolated mandatory-policy surface
+ * (`policy-surface` permission set) acknowledges the decision sequence it is
+ * showing, so the shell can record that the presentation was seen.
+ */
+export interface PolicyPresentedRequest {
+  readonly sequence: number
 }
 
 // ---------------------------------------------------------------------------
@@ -497,6 +731,13 @@ export type DshErrorKind = DshError['kind']
  * arguments in the spelling below (Tauri maps them to snake_case Rust
  * parameters); response payloads and events use the contract field names
  * verbatim.
+ *
+ * One exception, recorded here because it is the easiest thing to get wrong:
+ * the commands in {@link DshRequestCommandName} declare a SINGLE
+ * `request: <Struct>` parameter, so their payload travels nested under
+ * `request`. The `shell_*`, `settings_*`, `credential_*`, `runtime_*` and
+ * `update_*` commands declare flat parameters and are invoked flat, and
+ * `guest_platform_close`/`guest_platform_status` declare none at all.
  */
 export interface DshCommandMap {
   shell_app_info: { readonly request: void; readonly response: AppInfo }
@@ -504,6 +745,12 @@ export interface DshCommandMap {
   shell_locale_set: { readonly request: LocaleSetRequest; readonly response: LocaleState }
   shell_locale_apply: { readonly request: LocaleApplyRequest; readonly response: LocaleState }
   shell_window_set_fullscreen: { readonly request: WindowSetFullscreenRequest; readonly response: void }
+  /** Windows caption control (`drag`/`minimize`/`maximize`/`close`). */
+  shell_window_chrome_action: { readonly request: WindowChromeActionRequest; readonly response: void }
+  /** Frameless resize grip; the direction is `tauri_runtime::ResizeDirection`'s variant name. */
+  shell_window_resize_dragging: { readonly request: WindowResizeDraggingRequest; readonly response: void }
+  /** Toggle WebView developer tools (Windows F12 accelerator). */
+  shell_window_toggle_devtools: { readonly request: void; readonly response: void }
   shell_theme_set: { readonly request: ThemeSetRequest; readonly response: void }
   shell_appearance: { readonly request: void; readonly response: Appearance }
   shell_menu_action: { readonly request: MenuActionRequest; readonly response: void }
@@ -533,10 +780,52 @@ export interface DshCommandMap {
   update_status: { readonly request: void; readonly response: DesktopUpdatePresentation }
   update_open: { readonly request: void; readonly response: void }
   update_check: { readonly request: void; readonly response: DesktopUpdatePresentation }
+  guest_browser_acquire: { readonly request: BrowserAcquireRequest; readonly response: BrowserReservation }
+  guest_browser_release: { readonly request: BrowserLeaseRequest; readonly response: void }
+  guest_browser_set_bounds: { readonly request: BrowserBoundsRequest; readonly response: void }
+  guest_browser_navigate: { readonly request: BrowserNavigateRequest; readonly response: void }
+  guest_browser_command: { readonly request: BrowserCommandRequest; readonly response: void }
+  guest_browser_state: { readonly request: BrowserLeaseRequest; readonly response: GuestBrowserState }
+  guest_platform_open: { readonly request: PlatformOpenRequest; readonly response: void }
+  guest_platform_set_bounds: { readonly request: GuestBoundsRequest; readonly response: void }
+  guest_platform_close: { readonly request: void; readonly response: void }
+  /** Port extension beyond the reference's `PlatformBridge`: whether a Platform document is live. */
+  guest_platform_status: { readonly request: void; readonly response: boolean }
+  shell_host_paths: { readonly request: void; readonly response: HostPaths }
+  shell_host_paths_consume: { readonly request: void; readonly response: void }
+  /** Windows caption menus (`application`/`edit`). */
+  shell_caption_menu: { readonly request: CaptionMenuRequest; readonly response: void }
+  /** Caption palette measurement reported by the shell's own caption probe. */
+  shell_caption_palette: { readonly request: CaptionPaletteRequest; readonly response: void }
+  /** Mandatory-policy presentation acknowledgement; the isolated policy surface's commands. */
+  policy_presented: { readonly request: PolicyPresentedRequest; readonly response: void }
+  /** Retry the mandatory-policy check. */
+  policy_retry: { readonly request: void; readonly response: void }
+  /** Re-run the authoritative mandatory update. */
+  policy_update: { readonly request: void; readonly response: void }
+  /** Quit from the policy surface. */
+  policy_quit: { readonly request: void; readonly response: void }
+  /** Bounded main-renderer console batch. Installed by the shell's own initialization script. */
+  shell_renderer_console: { readonly request: RendererConsoleRequest; readonly response: void }
 }
 
 /** Every `#[tauri::command]` name in the contract. */
 export type DshCommandName = keyof DshCommandMap
+
+/**
+ * Commands whose Rust signature declares exactly ONE `request: <Struct>`
+ * parameter, so the payload travels nested under `request`.
+ *
+ * Every other command declares flat parameters (or none) and is invoked
+ * directly. `guest_platform_close` and `guest_platform_status` take no request
+ * struct, so they are NOT members here. This list is the single home of that
+ * wire fact: `index.ts`'s `invokeRequestCommand` keys off it and `guests.ts`
+ * invokes through it.
+ */
+export type DshRequestCommandName =
+  | 'guest_browser_acquire' | 'guest_browser_release' | 'guest_browser_set_bounds'
+  | 'guest_browser_navigate' | 'guest_browser_command' | 'guest_browser_state'
+  | 'guest_platform_open' | 'guest_platform_set_bounds'
 
 /** Event name to payload map for the Rust-`emit`ed `dsh://` events. */
 export interface DshEventMap {
@@ -548,7 +837,16 @@ export interface DshEventMap {
   'dsh://shortcuts/input': DesktopShortcutInput
   'dsh://update/state': DesktopUpdatePresentation
   'dsh://shell/window': ShellWindowEvent
+  /**
+   * One refused or failed window presentation request. Separate from
+   * `dsh://shell/window` so a failure never fabricates a presentation state.
+   */
+  'dsh://shell/window-error': ShellWindowErrorEvent
   'dsh://shell/quit-confirmed': ShellQuitConfirmedEvent
+  /** Approved guest popup, routed to the listener registered for that lease. */
+  'dsh://guests/browser-open': BrowserOpenRequestEvent
+  /** One guest's observed document state; drives the native element's DOM events. */
+  'dsh://guests/browser-state': GuestBrowserState
 }
 
 /** Every `dsh://` event name in the contract. */

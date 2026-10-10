@@ -17,14 +17,19 @@
  * does internally.
  */
 import type {
-  AppInfo, Appearance, BootFailedRequest, BootPayload, ClipboardText, ClipboardWriteRequest,
+  AppInfo, Appearance, BootFailedRequest, BootPayload, BrowserAcquireRequest, BrowserBoundsRequest,
+  BrowserCommandRequest, BrowserLeaseRequest, BrowserNavigateRequest, BrowserOpenRequestEvent,
+  BrowserReservation, CaptionMenuRequest, CaptionPaletteRequest, ClipboardText, ClipboardWriteRequest,
   CredentialLookupRequest, CredentialPresence, CredentialRef, CredentialStoreRequest,
   DesktopUpdatePresentation, DshCommandMap, DshCommandName, DshError, DshEventMap, DshEventName,
-  LocaleApplyRequest, LocaleSetRequest, LocaleState, MenuActionRequest, OnboardingSetActiveRequest,
-  OpenExternalRequest, PickedDirectory, PickDirectoryRequest, QuitInspection, RuntimeStatus,
-  SettingValue, SettingsGetRequest, SettingsMap, SettingsResetRequest, SettingsSetRequest,
-  ShellCloseWindowRequest, ShortcutConfigSnapshot, ShortcutSaveResult, ShortcutsEditRequest,
-  ShortcutsGetRequest, ShortcutsRecordingRequest, ThemeSetRequest, WindowSetFullscreenRequest,
+  DshRequestCommandName, GuestBrowserState, GuestBoundsRequest, HostPaths, LocaleApplyRequest,
+  LocaleSetRequest, LocaleState, MenuActionRequest, OnboardingSetActiveRequest, OpenExternalRequest,
+  PickedDirectory, PickDirectoryRequest, PlatformOpenRequest, PolicyPresentedRequest, QuitInspection,
+  RendererConsoleRequest, RuntimeStatus, SettingValue, SettingsGetRequest, SettingsMap,
+  SettingsResetRequest, SettingsSetRequest, ShellCloseWindowRequest, ShellWindowErrorEvent,
+  ShortcutConfigSnapshot, ShortcutSaveResult, ShortcutsEditRequest, ShortcutsGetRequest,
+  ShortcutsRecordingRequest, ThemeSetRequest, WindowChromeActionRequest, WindowResizeDraggingRequest,
+  WindowSetFullscreenRequest,
 } from './protocol.ts'
 
 /** Disposer returned by every event subscription. */
@@ -110,6 +115,51 @@ export async function invokeCommand<K extends DshCommandName>(
 }
 
 /**
+ * Invoke one command that is not (yet) a member of {@link DshCommandMap}.
+ *
+ * Exists for the port-specific guest commands of `port/ui/desktop-bridge/guests.ts`,
+ * which are declared there and requested for the contract separately. It uses the
+ * SAME channel {@link invokeCommand} resolved at module evaluation — the object
+ * the shell guarantees — so a caller can never disagree with the facade about
+ * which transport is live. Every other command belongs in the typed map.
+ * @param command - command name.
+ * @param args - request payload fields as top-level invoke arguments.
+ * @returns the command response.
+ * @throws {NotDesktopError} outside the desktop shell.
+ */
+export async function invokeUnlisted(
+  command: string,
+  args?: Record<string, unknown>,
+): Promise<unknown> {
+  const invoke = readInvoke()
+  if (invoke === undefined) throw new NotDesktopError()
+  return await invoke(command, args)
+}
+
+/**
+ * Invoke one command whose Rust signature declares a single `request: <Struct>`
+ * parameter, so the payload travels nested under `request`.
+ *
+ * {@link DshRequestCommandName} is the complete list of such commands (the
+ * `guest_*` family). Callers that need a command outside {@link DshCommandMap}
+ * use {@link invokeUnlisted}; every other command belongs in the typed map and
+ * is invoked flat through {@link invokeCommand}, which is why this is a
+ * separate function rather than a mode of that one.
+ * @param command - command name from {@link DshRequestCommandName}.
+ * @param request - the command's request struct.
+ * @returns the typed command response.
+ * @throws {NotDesktopError} outside the desktop shell.
+ */
+export async function invokeRequestCommand<K extends DshRequestCommandName>(
+  command: K,
+  request: DshCommandMap[K]['request'],
+): Promise<DshCommandMap[K]['response']> {
+  const invoke = readInvoke()
+  if (invoke === undefined) throw new NotDesktopError()
+  return await invoke(command, { request }) as DshCommandMap[K]['response']
+}
+
+/**
  * Subscribe to one `dsh://` event over the Tauri event plugin. Tauri invokes
  * the registered callback with the {@link TauriEventEnvelope} `{event, id,
  * payload}`; this wrapper unwraps `.payload`, so `listener` receives the
@@ -165,6 +215,12 @@ export interface DshDesktopApi {
   shellLocaleApply(request: LocaleApplyRequest): Promise<LocaleState>
   /** `shell_window_set_fullscreen` */
   shellWindowSetFullscreen(request: WindowSetFullscreenRequest): Promise<void>
+  /** `shell_window_chrome_action` — one Windows caption control. */
+  shellWindowChromeAction(request: WindowChromeActionRequest): Promise<void>
+  /** `shell_window_resize_dragging` — one frameless resize grip. */
+  shellWindowResizeDragging(request: WindowResizeDraggingRequest): Promise<void>
+  /** `shell_window_toggle_devtools` */
+  shellWindowToggleDevtools(): Promise<void>
   /** `shell_theme_set` */
   shellThemeSet(request: ThemeSetRequest): Promise<void>
   /** `shell_appearance` */
@@ -223,6 +279,44 @@ export interface DshDesktopApi {
   updateOpen(): Promise<void>
   /** `update_check` */
   updateCheck(): Promise<DesktopUpdatePresentation>
+  /** `guest_browser_acquire` — reserve one Sidebar Browser guest (`dshDesktop.browser.acquire`). */
+  guestBrowserAcquire(request: BrowserAcquireRequest): Promise<BrowserReservation>
+  /** `guest_browser_release` — drop the lease and destroy the guest document. */
+  guestBrowserRelease(request: BrowserLeaseRequest): Promise<void>
+  /** `guest_browser_set_bounds` — move, show or hide one existing guest. */
+  guestBrowserSetBounds(request: BrowserBoundsRequest): Promise<void>
+  /** `guest_browser_navigate` — load one address; the shell re-validates it. */
+  guestBrowserNavigate(request: BrowserNavigateRequest): Promise<void>
+  /** `guest_browser_command` — one navigation verb (`back`/`forward`/`reload`/`clear-history`). */
+  guestBrowserCommand(request: BrowserCommandRequest): Promise<void>
+  /** `guest_browser_state` — the guest's current observed document. */
+  guestBrowserState(request: BrowserLeaseRequest): Promise<GuestBrowserState>
+  /** `guest_platform_open` — open the embedded Platform document. */
+  guestPlatformOpen(request: PlatformOpenRequest): Promise<void>
+  /** `guest_platform_set_bounds` — place the embedded Platform document. */
+  guestPlatformSetBounds(request: GuestBoundsRequest): Promise<void>
+  /** `guest_platform_close` — destroy the embedded Platform document. */
+  guestPlatformClose(): Promise<void>
+  /** `guest_platform_status` — whether a Platform document is currently open. */
+  guestPlatformStatus(): Promise<boolean>
+  /** `shell_host_paths` — the absolute paths adopted from the most recent native drop. */
+  shellHostPaths(): Promise<HostPaths>
+  /** `shell_host_paths_consume` — report that the page imported the pending drop. */
+  shellHostPathsConsume(): Promise<void>
+  /** `shell_caption_menu` — pop one Windows caption menu at a client point. */
+  shellCaptionMenu(request: CaptionMenuRequest): Promise<void>
+  /** `shell_caption_palette` — report one measured caption palette (the shell's own probe). */
+  shellCaptionPalette(request: CaptionPaletteRequest): Promise<void>
+  /** `policy_presented` — acknowledge one mandatory-policy presentation. */
+  policyPresented(request: PolicyPresentedRequest): Promise<void>
+  /** `policy_retry` — retry the mandatory-policy check. */
+  policyRetry(): Promise<void>
+  /** `policy_update` — re-run the authoritative mandatory update. */
+  policyUpdate(): Promise<void>
+  /** `policy_quit` — quit from the policy surface. */
+  policyQuit(): Promise<void>
+  /** `shell_renderer_console` — submit one bounded renderer diagnostic batch. */
+  shellRendererConsole(request: RendererConsoleRequest): Promise<void>
   /** Subscribe to `dsh://runtime/state`. */
   onRuntimeState(listener: (payload: RuntimeStatus) => void): Promise<Unlisten>
   /** Subscribe to `dsh://locale/changed`. */
@@ -239,8 +333,19 @@ export interface DshDesktopApi {
   onUpdateState(listener: (payload: DesktopUpdatePresentation) => void): Promise<Unlisten>
   /** Subscribe to `dsh://shell/window`. */
   onShellWindow(listener: (payload: DshEventMap['dsh://shell/window']) => void): Promise<Unlisten>
+  /**
+   * Subscribe to `dsh://shell/window-error` — a refused or failed window
+   * presentation request. The failure is a separate channel from
+   * `dsh://shell/window`: it never carries a presentation state, so a consumer
+   * keeps the last state it observed.
+   */
+  onShellWindowError(listener: (payload: ShellWindowErrorEvent) => void): Promise<Unlisten>
   /** Subscribe to `dsh://shell/quit-confirmed`. */
   onShellQuitConfirmed(listener: (payload: DshEventMap['dsh://shell/quit-confirmed']) => void): Promise<Unlisten>
+  /** Subscribe to `dsh://guests/browser-open` — approved guest popups. */
+  onGuestBrowserOpen(listener: (payload: BrowserOpenRequestEvent) => void): Promise<Unlisten>
+  /** Subscribe to `dsh://guests/browser-state` — one guest's observed document state. */
+  onGuestBrowserState(listener: (payload: GuestBrowserState) => void): Promise<Unlisten>
 }
 
 /**
@@ -263,6 +368,9 @@ function createDesktopApi(invoke: TauriInternals['invoke'] | undefined): DshDesk
     shellLocaleSet: request => call<LocaleState>('shell_locale_set', { ...request }),
     shellLocaleApply: request => call<LocaleState>('shell_locale_apply', { ...request }),
     shellWindowSetFullscreen: request => call<void>('shell_window_set_fullscreen', { ...request }),
+    shellWindowChromeAction: request => call<void>('shell_window_chrome_action', { ...request }),
+    shellWindowResizeDragging: request => call<void>('shell_window_resize_dragging', { ...request }),
+    shellWindowToggleDevtools: () => call<void>('shell_window_toggle_devtools'),
     shellThemeSet: request => call<void>('shell_theme_set', { ...request }),
     shellAppearance: () => call<Appearance>('shell_appearance'),
     shellMenuAction: request => call<void>('shell_menu_action', { ...request }),
@@ -292,6 +400,33 @@ function createDesktopApi(invoke: TauriInternals['invoke'] | undefined): DshDesk
     updateStatus: () => call<DesktopUpdatePresentation>('update_status'),
     updateOpen: () => call<void>('update_open'),
     updateCheck: () => call<DesktopUpdatePresentation>('update_check'),
+    // The guest commands take ONE `request` struct (`guests::commands`), unlike
+    // the flat-parameter `shell_*` commands above, so each request travels
+    // nested under `request` — the same wire form `guests.ts` uses.
+    guestBrowserAcquire: request => call<BrowserReservation>('guest_browser_acquire', { request: { ...request } }),
+    guestBrowserRelease: request => call<void>('guest_browser_release', { request: { ...request } }),
+    guestBrowserSetBounds: request => call<void>('guest_browser_set_bounds', { request: { ...request } }),
+    guestBrowserNavigate: request => call<void>('guest_browser_navigate', { request: { ...request } }),
+    guestBrowserCommand: request => call<void>('guest_browser_command', { request: { ...request } }),
+    guestBrowserState: request => call<GuestBrowserState>('guest_browser_state', { request: { ...request } }),
+    guestPlatformOpen: request => call<void>('guest_platform_open', { request: { ...request } }),
+    guestPlatformSetBounds: request => call<void>('guest_platform_set_bounds', { request: { ...request } }),
+    guestPlatformClose: () => call<void>('guest_platform_close'),
+    guestPlatformStatus: () => call<boolean>('guest_platform_status'),
+    shellHostPaths: () => call<HostPaths>('shell_host_paths'),
+    shellHostPathsConsume: () => call<void>('shell_host_paths_consume'),
+    // `shell_caption_menu` takes flat `name`/`x`/`y` parameters.
+    shellCaptionMenu: request => call<void>('shell_caption_menu', { ...request }),
+    // `shell_caption_palette` takes the flat `palette` array parameter.
+    shellCaptionPalette: request => call<void>('shell_caption_palette', { ...request }),
+    // The mandatory-policy surface takes flat parameters (`policy_presented`
+    // carries `sequence`; the other three take none).
+    policyPresented: request => call<void>('policy_presented', { ...request }),
+    policyRetry: () => call<void>('policy_retry'),
+    policyUpdate: () => call<void>('policy_update'),
+    policyQuit: () => call<void>('policy_quit'),
+    // `shell_renderer_console` takes one `lines` parameter.
+    shellRendererConsole: request => call<void>('shell_renderer_console', { ...request }),
     onRuntimeState: listener => on('dsh://runtime/state', listener),
     onLocaleChanged: listener => on('dsh://locale/changed', listener),
     onAppearanceChanged: listener => on('dsh://appearance/changed', listener),
@@ -300,7 +435,10 @@ function createDesktopApi(invoke: TauriInternals['invoke'] | undefined): DshDesk
     onShortcutsInput: listener => on('dsh://shortcuts/input', listener),
     onUpdateState: listener => on('dsh://update/state', listener),
     onShellWindow: listener => on('dsh://shell/window', listener),
+    onShellWindowError: listener => on('dsh://shell/window-error', listener),
     onShellQuitConfirmed: listener => on('dsh://shell/quit-confirmed', listener),
+    onGuestBrowserOpen: listener => on('dsh://guests/browser-open', listener),
+    onGuestBrowserState: listener => on('dsh://guests/browser-state', listener),
   }
 }
 

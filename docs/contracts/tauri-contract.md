@@ -143,6 +143,57 @@ Persistence and semantics (`desktop-shell-features.md` K1–K3):
 
 `ShortcutBinding`, used by `dsh://shortcuts/changed`, is the upstream `NormalizedBinding` plus an `id` field — the accepted effective binding rows. All three request/response types and `ShortcutBinding` are pinned by the shared fixtures in `port/fixtures/protocol/`, and both language sides must round-trip them byte-identically.
 
+### Native guests (`guest_*`)
+
+Backs `dshDesktop.browser` and `dshPlatform`. Type home for the wire payloads is `port/src-tauri/app/src/guests/`; the TypeScript mirror is `port/ui/desktop-bridge/protocol.ts`.
+
+**Invoke form.** Every `guest_*` command is the one family in this contract whose Rust signature takes a **single `request: <Struct>` parameter** (`port/src-tauri/app/src/guests/commands.rs`), so its payload travels nested under `request`. Every other command family (`shell_*`, `settings_*`, `credential_*`, `runtime_*`, `update_*`) declares flat parameters and is invoked flat. This is the easiest thing to get wrong in a hand-written mirror, and it is pinned by `port/ui/desktop-bridge/tests/shell-integration.spec.ts`.
+
+| Command | Request | Response | Notes |
+|---|---|---|---|
+| `guest_browser_acquire` | `{ request: { workspace: string, bounds: GuestBounds } }` | `BrowserReservation { lease, partition }` | `workspace` is the resolved storage identity (`cwd:<path>` or `session:<id>`). Leases are main-issued and opaque; a guest is created hidden until the first `guest_browser_set_bounds`. Refuses `browser_guest_unavailable` when the build has no embeddable guest surface. |
+| `guest_browser_release` | `{ request: { lease: string } }` | `void` | Destroys the guest document; the workspace's storage partition survives. An unknown lease is a no-op. |
+| `guest_browser_set_bounds` | `{ request: { lease: string, bounds: GuestBounds } }` | `void` | Moves the child view. A zero extent **hides** it without destroying it — the Sidebar-hide path. |
+| `guest_browser_navigate` | `{ request: { lease: string, url: string } }` | `void` | The shell re-validates the address against the same policy the native navigation hook applies. |
+| `guest_browser_command` | `{ request: { lease: string, command: GuestNavigationCommand } }` | `void` | `GuestNavigationCommand` is `back` \| `forward` \| `reload` \| `clear-history`. |
+| `guest_browser_state` | `{ request: { lease: string } }` | `GuestBrowserState` | The live child webview's observation. Never inferred from what the client asked for; carries no credential or injected header. |
+| `guest_platform_open` | `{ request: { page: PlatformPage, bounds: GuestBounds } }` | `void` | `PlatformPage` is `usage` \| `top-up`. Refuses `platform_account_unavailable` unless a Platform session is published. |
+| `guest_platform_set_bounds` | `{ request: { bounds: GuestBounds } }` | `void` | One Platform document exists per shell, so no lease is named. |
+| `guest_platform_close` | `void` | `void` | Destroys the Platform document and clears its session. |
+| `guest_platform_status` | `void` | `bool` | Port extension beyond the reference's `PlatformBridge`: whether a credential-bearing Platform document survived a Host restart. Backs `platformViewIsOpen()`. |
+
+`GuestBounds` is `{ x, y, width, height }` in CSS pixels as the renderer measured them; the shell validates and rounds them (`guests::geometry::GuestBounds::parse`).
+
+`GuestBrowserState` is `{ lease, url, title, loading, canGoBack, canGoForward, gone, error }` with `error` either `null` or `{ code, description }`. It is both the `guest_browser_state` response and the `dsh://guests/browser-state` payload, so one type covers both directions.
+
+`BrowserReservation` is `{ lease, partition }` — the upstream `DesktopBrowserReservation` verbatim.
+
+**Namespace rule.** A guest document never receives the desktop bridge. The ACL grants these commands only to the `main` view, and every command additionally refuses a caller whose window label is not `main` or whose committed document URL is not this launch's owned origin (`app::is_owned_application_window`).
+
+### Native file paths
+
+| Command | Request | Response | Notes |
+|---|---|---|---|
+| `shell_host_paths` | `void` | `HostPaths { paths: string[], consumed: bool }` | The absolute paths the shell adopted from the **most recent native OS drop**, in drop order, plus whether the page already imported that batch. A batch replaces its predecessor: a stale path is never attributed to a later `File`. |
+| `shell_host_paths_consume` | `void` | `void` | The page reports that it imported the pending batch, so one drop attaches once. |
+
+The page does not call these to *learn* a path for a `File`: `__DSH_HOST_PATHS__.pathFor(file)` is installed by the shell's initialization script and is the authority for that (`native_paths.rs`). These commands exist for the drop-intake path, where the shell's adopted batch is the only evidence. A base name is not an identity, so a correlation is resolved only when the name is unique on both sides; anything ambiguous yields no path and the file uploads, which is upstream's behaviour for a `File` with no host path.
+
+### Caption menus and palette (Windows)
+
+| Command | Request | Response | Notes |
+|---|---|---|---|
+| `shell_caption_menu` | `{ name: "application" \| "edit", x: number, y: number }` | `void` | Pops one Windows caption menu anchored at the reported client point. `x`/`y` are **CSS** pixels from the button's `getBoundingClientRect()`; the shell scales them by the webview zoom factor before the native popup. Resolves when the menu has been presented, which is what releases the button's `aria-expanded` state. |
+| `shell_caption_palette` | `{ palette: [language: string, fill: string, symbol: string] }` | `void` | The shell-owned probe reports canvas-normalized client colours. Only the invoking main webview in the main window at this launch's application origin is authorized. The command validates the language and colours before applying the fill to the native window/WebView2 background; the DOM caption uses both reported colours. A system-theme launch on a dark OS still uses the light fallback until the first client report; native startup-theme parity is not yet established. |
+
+### Renderer diagnostics
+
+| Command | Request | Response | Notes |
+|---|---|---|---|
+| `shell_renderer_console` | `{ lines: RendererConsoleEntry[] }` | `void` | One bounded batch of main-renderer console lines. `RendererConsoleEntry` is `{ sourceId, line, message }`. The shell refuses a batch over 32 entries, a source id over 4096 characters or a message over 32768 characters rather than truncating it. |
+
+The shell installs the producer itself (`renderer_bridge.rs` `SCRIPT`), which wraps `console.error`, `window.onerror` and `unhandledrejection` and clips every value. It is not a native crash detector; WebView2 process and navigation callbacks are separate (`renderer_native.rs`).
+
 ## Events (Rust → UI)
 
 Event names are namespaced `dsh://`. Payloads are JSON.
@@ -156,8 +207,11 @@ Event names are namespaced `dsh://`. Payloads are JSON.
 | `dsh://shortcuts/recording` | `{ recording: bool }` | Backs `shortcutsRecording`. |
 | `dsh://shortcuts/input` | `DesktopShortcutInput` **verbatim** (`_upstream/packages/client/shortcuts/src/native.ts:6-10`) — `{ revision, kind, frameName, code, control, alt, shift, meta, repeat }` plus upstream's own `kind: 'menu'` arm carrying `commandId: ShortcutCommandId` | Backs `shortcutsInput` and drives `DesktopKeyboardApi.subscribe`. Menu-routed page commands (K10, e.g. Close Page or Window) arrive on the **`kind: 'menu'` arm**, per amendment A10. |
 | `dsh://update/state` | `DesktopUpdatePresentation` | Backs `updatesPresentation`. |
-| `dsh://shell/window` | `{ state: "shown" \| "hidden" \| "focused" \| "blurred" }` | Lets the page react to hide/show (drafts and scroll survive; the page is never reloaded). |
+| `dsh://shell/window` | `{ state: "shown" \| "hidden" \| "focused" \| "blurred" }` | Lets the page react to observed hide/show (drafts and scroll survive; the page is never reloaded). |
+| `dsh://shell/window-error` | `DshError` | Refused/failed close-to-tray hide. Does not establish a hidden window or acknowledge the background-close marker. |
 | `dsh://shell/quit-confirmed` | `{ reason: "user" \| "installer" \| "update" \| "fatal-recovery" \| "os-shutdown" }` | Terminal. |
+| `dsh://guests/browser-open` | `BrowserOpenRequestEvent { lease, url }` | Backs `DesktopBrowserBridge.onOpenRequested`. An approved `window.open` inside a guest, routed to the one listener registered for that lease. Never another tab's. |
+| `dsh://guests/browser-state` | `GuestBrowserState` | One guest's observed document state. Drives the port's `<webview>`-element reproduction: `dom-ready` on the first report, `did-start/stop-loading` on `loading` transitions, `did-navigate` on `url` change, `page-title-updated` on `title` change, `did-fail-load` on a new `error`, `render-process-gone`/`destroyed` on `gone`. |
 
 ## Marker globals the Rust core must install
 
@@ -316,6 +370,24 @@ The invariant that matters is **exactly one producer per global per run**, and t
 
 `port/ui/desktop-bridge/shell-boot.ts` and both `port/ui` READMEs must state this table. The superseded "Rust is authoritative for everything" phrasing contradicted the ruling and was flagged by the app lane; **a comment that contradicts the code is a defect of the same class as code that contradicts the contract.**
 
+### A13 — The port-specific `guest_*`, native-path, caption-menu and renderer-console wire forms are contract members
+
+Ratified when the shared bridge lane folded the port's native guest, native path, caption menu and renderer diagnostic surfaces into the typed mirror. These commands and events existed in the Rust application crate and were reachable only through `invokeUnlisted`; A7 (one type-named fixture per wire form) therefore did not yet cover them.
+
+| Family | Commands / events | Type home |
+|---|---|---|
+| Native guests | `guest_browser_acquire`, `guest_browser_release`, `guest_browser_set_bounds`, `guest_browser_navigate`, `guest_browser_command`, `guest_browser_state`, `guest_platform_open`, `guest_platform_set_bounds`, `guest_platform_close`, `guest_platform_status`; events `dsh://guests/browser-open`, `dsh://guests/browser-state` | `port/src-tauri/app/src/guests/` |
+| Native file paths | `shell_host_paths`, `shell_host_paths_consume` | `port/src-tauri/app/src/native_paths.rs` |
+| Caption menus | `shell_caption_menu` | `port/src-tauri/app/src/menu_action.rs` |
+| Renderer diagnostics | `shell_renderer_console` | `port/src-tauri/app/src/renderer_bridge.rs` |
+
+Two rules follow, and both are load-bearing:
+
+1. **The `guest_*` family is invoked with `{ request: <Struct> }`.** Their Rust signatures take one `request` parameter; every other family declares flat parameters. A caller that flattens a guest request silently sends nothing the shell can deserialize.
+2. **A wire form with no `port/fixtures/protocol/*.json` file is pinned in TypeScript instead.** `port/fixtures/**` is generated and owned by `dsh-core`; until it emits these files, `port/ui/desktop-bridge/tests/protocol.spec.ts` asserts each port-addition wire form against a typed sample in its `PORT_WIRE_SAMPLES` table and reports the missing fixture as `null` in `RESPONSE_FIXTURES`/`EVENT_FIXTURES` rather than omitting the type. A7 is satisfied in the Rust-plus-TypeScript pair once `dsh-core` adds the files; the fixture names to add are `browser-reservation`, `guest-bounds`, `guest-browser-state`, `guest-browser-failure`, `browser-open-request-event`, `host-paths`, `renderer-console-entry`, `caption-menu-request`.
+
+None of these commands is a placeholder: each names a registered command in the invoke handler (`port/src-tauri/app/src/lib.rs`) and a row in `port/src-tauri/app/permissions/bridge.toml`.
+
 ### A12 — The host is authoritative for model credentials (corrects A5's use for onboarding)
 
 Found by an independent review. `dshOnboarding.hasApiKey()` was implemented by asking the **Rust keyring** with coordinates loaded from desktop settings. That is the wrong source for *model* credentials, and it has two failure modes:
@@ -331,6 +403,17 @@ The result is a user-visible bug: an API-key user is misclassified as having no 
 | `credential_*` commands | Remain valid and stay declared, but are for **desktop-owned** secrets written through the OS store. They must **never** gate onboarding. |
 | A5's `AppInfo.credentialRef` | Remains available to *write* a key (the welcome/onboarding save path uses the official provider's configured reference). It is **not** the presence authority. |
 | `dshOnboarding` shape | Unchanged — `{ hasApiKey(): Promise<boolean>; setActive(active: boolean): void }` — so the preserved client is untouched. |
+
+### A13 — 2026-10-10 repair boundary (supersedes earlier status claims)
+
+- **Production guests are unavailable:** native browser/platform admission remains `false,false`. Absence of `dshDesktop.browser` selects the preserved web fallback; dormant adapter/observation tests do not authorize enabling a privileged child view. `guest_browser_state` and `dsh://guests/browser-state` share the same eight required camelCase fields declared above; native qualification is separate.
+- Renderer credential metadata omits the reserved `client-connection` / `browser-session` identity. `credential_has` returns `{ present: false }` for that pair; renderer store/delete refuse `credential_reserved`. Internal gateway access and ordinary desktop credentials are unaffected. DEBUG-only qualification requires an explicit canonical non-nil UUID plus canonical home/user-data strictly beneath the compile-time owned scratch root; an explicit namespace in release is rejected before durable initialization. Redirecting home alone never isolates OS credentials.
+- A stop error is not death proof. Unresolved containment stays owned and `stopping`, readiness is revoked, restart/update are refused. Ordinary exit refuses unresolved teardown; explicit native Quit-anyway consent is a generation-bound one-shot terminal permission, never restart authorization. Callback cancellation/drop authorizes nothing.
+- Acknowledging background close occurs only after observed main-thread hide success. Failed hide emits `dsh://shell/window-error` with `DshError`, not a false `hidden` event. Persistence failure after a successful hide is diagnostic; it does not undo observed hide.
+- Gateway HTML carries a default response CSP (not a Tauri-config inference): same-origin resources, required inline/eval boot compatibility, explicit IPC/blob/data preview allowances, no object/base/form/ancestor embedding. HTTP-header tests do not establish native WebView2 enforcement or complete client resource compatibility.
+- Application lifetime owns and flushes diagnostics after the final shutdown line. Early packaging/namespace refusal is credential-free and does not require `AppState` or a native event loop.
+
+Fresh gate evidence and remaining release/native qualification are recorded in [the repair ledger](../repair-ledger-2026-10-10.md); historical green counts cannot accept changed source bytes.
 
 ## Rules
 

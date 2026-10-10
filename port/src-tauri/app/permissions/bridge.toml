@@ -2,6 +2,21 @@
 identifier = "bridge"
 description = "Allows the preserved client bridge to call only its declared desktop commands."
 commands.allow = [
+  "guest_browser_acquire",
+  "guest_browser_release",
+  "guest_browser_set_bounds",
+  "guest_browser_navigate",
+  "guest_browser_command",
+  "guest_browser_state",
+  "guest_platform_status",
+  "guest_platform_open",
+  "guest_platform_set_bounds",
+  "guest_platform_close",
+  "shell_host_paths",
+  "shell_host_paths_consume",
+  "shell_caption_menu",
+  "shell_caption_palette",
+  "shell_renderer_console",
   "credential_delete",
   "credential_has",
   "credential_list",
@@ -20,6 +35,7 @@ commands.allow = [
   "shell_quit_request",
   "shell_window_set_fullscreen",
   "shell_window_chrome_action",
+  "shell_window_resize_dragging",
   "shell_window_toggle_devtools",
   "settings_get",
   "settings_list",
@@ -39,3 +55,8 @@ commands.allow = [
   "update_open",
   "update_status",
 ]
+
+[[permission]]
+identifier = "policy-surface"
+description = "Allows only the isolated local mandatory-policy presentation and actions."
+commands.allow = ["policy_presented", "policy_retry", "policy_update", "policy_quit"]

@@ -6,20 +6,84 @@
   Reproducible entry point for every artifact this port ships. Stages are
   independent and individually selectable; the default runs the full sequence.
 
+  ORDER IS PART OF THE CONTRACT. `bundle` compiles the shell, and the shell's
+  build script validates every `bundle.resources` source path at build-script
+  time. A resource root that does not exist when `cargo` runs therefore fails the
+  compile with `resource path ... doesn't exist`, which names the symptom and not
+  the cause. The order below is the fix:
+
+      ui    -> renders port/ui/dist                     (a resource root)
+      runtime -> materialises port/runtime-payload/dsh  (a resource root)
+      core  -> compiles; both resource roots now exist
+      verify
+      bundle
+
+  `-Stage all` follows that order. Requesting `core` or `bundle` alone still
+  runs the resource stages first unless `-SkipResourceStages` is passed, because
+  a compile that silently depends on a previously staged tree is exactly the
+  trap this ordering exists to remove.
+
+  Publication is atomic. The runtime stage materialises into a sibling staging
+  directory, validates it in full, and swaps it into place with a directory
+  rename, keeping the previous tree as `<published>.previous` until the stage
+  commits. `port/runtime-payload/dsh` is therefore never observably absent or
+  half-written (findings F-41 and F-46).
+
+  The runtime is self-contained: a pinned Node.js interpreter is staged from an
+  archive whose SHA-256 is declared in `port/installer/node-runtime.json` and
+  verified before extraction. A build never falls back to a system Node.js.
+
   Safety: never sets or inherits DSH_HOME from the caller's profile. Any run that
   launches a dsh process uses a throwaway home under port\.scratch\ and a port
   above 3084, because a live agent harness owns C:\Users\Yoova\.dsh and port 3080.
 
 .PARAMETER Stage
-  ui        build the preserved web client shell
-  core      cargo build + test + clippy for the Rust workspace
-  runtime   stage the supervised dsh runtime payload beside the executable
-  bundle    cargo tauri build (release + NSIS installer)
-  verify    run the interface-fixture parity tests on both language sides
-  all       every stage in order (default)
+  ui                 build the preserved web client shell
+  core               cargo build + test + clippy for the Rust workspace
+  runtime            stage the supervised dsh runtime payload and the pinned Node
+  bundle             cargo tauri build (release + NSIS installer)
+  verify             run the interface-fixture parity tests on both language sides
+  packaging-tests    run the packaging helper regression tests
+  all                every stage in order (default)
 
 .PARAMETER Release
   Build with --release. Implied by the bundle stage.
+
+.PARAMETER SkipResourceStages
+  Do not implicitly run the ui and runtime stages before `core` or `bundle`. Use
+  only when those roots are known to be current; the build then does not verify
+  that they are.
+
+.PARAMETER NodeArchivePath
+  A locally provisioned pinned Node archive. Its SHA-256 must match
+  `port/installer/node-runtime.json`; a mismatch is refused. The `ui` stage uses it
+  (after the digest check and before extraction) whenever the staged payload
+  interpreter is not present yet - the normal state on a fresh checkout, because
+  the `ui` stage runs before the `runtime` stage. Without it, the archive is taken
+  from the `port\.scratch\node-cache` cache; that cache and this parameter are the
+  only two sources, and a system Node.js is never substituted.
+
+.PARAMETER AllowNodeDownload
+  Permit downloading the pinned Node archive from its declared HTTPS URL. When
+  omitted, the archive must already be in the cache or supplied with
+  -NodeArchivePath, and the stage fails with guidance rather than substituting a
+  system Node.js.
+
+.PARAMETER RuntimeQualificationName
+  With -Stage runtime only, create a new scratch-owned output and manifest record
+  under port/.scratch/rq-NAME (with a short rt/ payload parent). Existing qualification roots
+  are refused. This does not replace the normal runtime or installer manifest,
+  rebuild client plugins, run the desktop, install, or publicly publish anything.
+
+.PARAMETER ClientUpdatesQualificationBuildName
+  With a new runtime qualification only, use index.js, client.js and its map from
+  a materialized directory named under port/.scratch. Records their digests and
+  copies them before sealing. Never overwrites the tracked plugin build output.
+
+.PARAMETER UpdatePayloadManifest
+  Overwrite the recorded payload manifest with the freshly built one. Without
+  this switch a payload whose bytes differ from the record fails the stage, which
+  is what makes dependency drift visible instead of silent.
 
 .EXAMPLE
   .\port\scripts\build.ps1 -Stage all -Release
@@ -29,9 +93,22 @@
 #>
 [CmdletBinding()]
 param(
-  [ValidateSet('ui', 'core', 'runtime', 'bundle', 'verify', 'all')]
+  [ValidateSet('ui', 'core', 'runtime', 'bundle', 'verify', 'packaging-tests', 'all')]
   [string]$Stage = 'all',
-  [switch]$Release
+  [switch]$Release,
+  [switch]$SkipResourceStages,
+  [string]$NodeArchivePath,
+  [switch]$AllowNodeDownload,
+  [ValidatePattern('^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$')]
+  [string]$RuntimeQualificationName,
+  [ValidatePattern('^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$')]
+  [string]$ClientUpdatesQualificationBuildName,
+  [switch]$UpdatePayloadManifest,
+  # An explicitly attested interpreter to EXECUTE the runtime staging program with.
+  # Omitted (the normal case), a hash-equal copy of the pinned interpreter is made
+  # in an outside owned root and preflighted. This never changes which bytes ship:
+  # Install-PinnedNodeInto still installs the pinned archive bytes into the payload.
+  [string]$AttestedNodePath
 )
 
 $ErrorActionPreference = 'Stop'
@@ -42,7 +119,60 @@ $RepoRoot = Split-Path -Parent $PortRoot
 $Upstream = Join-Path $RepoRoot '_upstream'
 $UiDir = Join-Path $PortRoot 'ui'
 $TauriDir = Join-Path $PortRoot 'src-tauri'
+$AppDir = Join-Path $TauriDir 'app'
 $Scratch = Join-Path $PortRoot '.scratch'
+$InstallerDir = Join-Path $PortRoot 'installer'
+$PayloadRoot = Join-Path $PortRoot 'runtime-payload'
+$qualificationRoot = $null
+$qualificationClientBuild = $null
+if ($ClientUpdatesQualificationBuildName) {
+  if ($Stage -ne 'runtime' -or -not $RuntimeQualificationName) {
+    throw '-ClientUpdatesQualificationBuildName requires -Stage runtime and a new -RuntimeQualificationName.'
+  }
+  $qualificationClientBuild = Join-Path $Scratch $ClientUpdatesQualificationBuildName
+  foreach ($candidate in @($PortRoot, $Scratch, $qualificationClientBuild)) {
+    $item = Get-Item -LiteralPath $candidate -Force -ErrorAction Stop
+    if (-not $item.PSIsContainer -or ($item.Attributes -band [System.IO.FileAttributes]::ReparsePoint)) {
+      throw "Qualification plugin input is not a materialized owned directory: $candidate"
+    }
+  }
+  foreach ($name in @('index.js', 'client.js', 'client.js.map')) {
+    $item = Get-Item -LiteralPath (Join-Path $qualificationClientBuild $name) -Force -ErrorAction Stop
+    if ($item.PSIsContainer -or ($item.Attributes -band [System.IO.FileAttributes]::ReparsePoint)) {
+      throw "Qualification plugin input is not a materialized file: $name"
+    }
+  }
+}
+if ($RuntimeQualificationName) {
+  if ($Stage -ne 'runtime') {
+    throw '-RuntimeQualificationName is allowed only with -Stage runtime.'
+  }
+  # Only a simple name is accepted, not an arbitrary path. Reject reparse-point
+  # parents and an existing output before any materialization or cleanup runs.
+  foreach ($parent in @($PortRoot, $Scratch)) {
+    if (Test-Path -LiteralPath $parent) {
+      $item = Get-Item -LiteralPath $parent -Force
+      if (-not $item.PSIsContainer -or ($item.Attributes -band [System.IO.FileAttributes]::ReparsePoint)) {
+        throw "Qualification parent is not an owned materialized directory: $parent"
+      }
+    }
+  }
+  $qualificationRoot = Join-Path $Scratch "rq-$RuntimeQualificationName"
+  if (Test-Path -LiteralPath $qualificationRoot) {
+    throw "Refusing to overwrite an existing qualification root: $qualificationRoot"
+  }
+  $null = New-Item -ItemType Directory -Path $Scratch -Force
+  $null = New-Item -ItemType Directory -Path $qualificationRoot -ErrorAction Stop
+  # Keep owned qualification paths short without weakening MAX_PATH checks.
+  $PayloadRoot = Join-Path $qualificationRoot 'rt'
+}
+$PayloadDsh = Join-Path $PayloadRoot 'dsh'
+$PackagingTests = Join-Path $PortRoot 'tests\packaging'
+
+Import-Module (Join-Path $PSScriptRoot 'lib\publish.psm1') -Force
+Import-Module (Join-Path $PSScriptRoot 'lib\payload-manifest.psm1') -Force
+Import-Module (Join-Path $PSScriptRoot 'lib\node-runtime.psm1') -Force
+Import-Module (Join-Path $PSScriptRoot 'lib\runtime-payload.psm1') -Force
 
 function Write-Stage([string]$Message) {
   Write-Host ''
@@ -79,12 +209,24 @@ function Invoke-Checked([string]$File, [string[]]$Arguments, [string]$WorkDir) {
 
 # Isolation: every launched dsh process gets a throwaway home. See
 # docs/verification-report.md finding F-1 for why this is unconditional.
+#
+# The scratch variable is deliberately NOT named `$home`: PowerShell's `$HOME` is
+# a read-only automatic variable, assignments to it fail, and because variable
+# names are case-insensitive the failure is silent -- the caller then exports
+# whatever `$home` already held. That is how the port once ran an installed
+# application with `DSH_HOME=C:\Users\<user>` (finding F-36). The resolved value
+# is asserted to be under the scratch root before it is exported.
 function Use-IsolatedHarnessHome([string]$Purpose) {
-  $home = Join-Path $Scratch "$Purpose-home"
-  New-Item -ItemType Directory -Force -Path $home | Out-Null
-  $env:DSH_HOME = $home
-  $env:DSH_DESKTOP_USER_DATA_DIR = (Join-Path $home 'userdata')
-  Write-Host "    DSH_HOME isolated to $home" -ForegroundColor DarkYellow
+  $isolatedHome = Join-Path $Scratch "$Purpose-home"
+  $null = New-Item -ItemType Directory -Force -Path $isolatedHome
+  $resolved = (Resolve-Path -LiteralPath $isolatedHome).Path
+  $scratchRoot = (Resolve-Path -LiteralPath $Scratch).Path
+  if (-not $resolved.StartsWith($scratchRoot, [System.StringComparison]::OrdinalIgnoreCase)) {
+    throw "Refusing to use an isolated home outside the scratch root: $resolved"
+  }
+  $env:DSH_HOME = $resolved
+  $env:DSH_DESKTOP_USER_DATA_DIR = (Join-Path $resolved 'userdata')
+  Write-Host "    DSH_HOME isolated to $resolved" -ForegroundColor DarkYellow
 }
 
 function Test-Prerequisites {
@@ -96,6 +238,25 @@ function Test-Prerequisites {
     throw "The reference web client has not been built. Run 'pnpm install; pnpm run build' in $Upstream first (see docs/build-and-install.md section 2)."
   }
   Write-Host '    ok' -ForegroundColor Green
+}
+
+function Get-UpstreamCommit {
+  # This script runs with ErrorActionPreference = 'Stop', and a native command
+  # that writes to stderr raises a NativeCommandError under that setting. Scope
+  # the preference down for the call.
+  $previousPreference = $ErrorActionPreference
+  $ErrorActionPreference = 'Continue'
+  try {
+    $hash = (& git -C $Upstream rev-parse HEAD 2>$null | Select-Object -First 1)
+  } catch {
+    $hash = $null
+  } finally {
+    $ErrorActionPreference = $previousPreference
+  }
+  if ([string]::IsNullOrWhiteSpace($hash)) {
+    throw "Could not read the reference checkout's commit with 'git -C $Upstream rev-parse HEAD'. The payload manifest records this identity, so it must be resolvable."
+  }
+  return "$hash".Trim()
 }
 
 function Build-Ui {
@@ -143,10 +304,6 @@ function Build-Ui {
     $env:DSH_CLIENT_VERSION = (Get-Content (Join-Path $Upstream 'package.json') -Raw | ConvertFrom-Json).version
   }
   if (-not $env:DSH_CLIENT_COMMIT_HASH) {
-    # This script runs with ErrorActionPreference = 'Stop', and a native command
-    # that writes to stderr raises a NativeCommandError under that setting -- which
-    # aborted this function before the client build ever ran. Scope the preference
-    # down for the duration of the call and fail with a clear message instead.
     $previousPreference = $ErrorActionPreference
     $ErrorActionPreference = 'Continue'
     try {
@@ -163,7 +320,24 @@ function Build-Ui {
   }
   Write-Host "    official profile: version $env:DSH_CLIENT_VERSION, commit $env:DSH_CLIENT_COMMIT_HASH" -ForegroundColor DarkGray
 
-  Invoke-Checked 'pnpm' @('run', 'build') $UiDir
+  # The UI build runs under the PINNED payload interpreter with a trusted, Medium
+  # esbuild copy, never an arbitrary `pnpm`/`node` from PATH and never the Low image
+  # under `_upstream/.pnpm`: Vite asks esbuild to remove files in the Medium temp, and
+  # a Low esbuild child is denied (the observed `REMOVE Temp/esbuild-... AccessDenied`).
+  #
+  # `-OutDir port\ui\dist` is an EXISTING, non-empty output tree. The helper never
+  # hands it to Vite: it builds into a fresh path inside an owned root outside the
+  # labelled tree and then publishes atomically through `lib/publish.psm1` - the
+  # current `dist` is RETAINED as `dist.previous` (never deleted) and the validated
+  # fresh tree is renamed into place, with rollback if re-validation fails. So the
+  # advertised `-Stage ui` works on a checkout that already has a built shell, and
+  # on a FRESH checkout too: with no staged payload yet (`-Stage ui` runs before
+  # `-Stage runtime`), the interpreter comes from the pinned archive verified and
+  # extracted into the owned root, never from a system Node.js.
+  Import-Module (Join-Path $PackagingTests 'ui-build-qualification.psm1') -Force
+  $uiBuild = Invoke-DshQualifiedUiBuild -PortRoot $PortRoot -OutDir (Join-Path $UiDir 'dist') -RepoRoot $RepoRoot `
+    -StagedNodeExecutable $AttestedNodePath -NodeArchivePath $NodeArchivePath -AllowNodeDownload:$AllowNodeDownload
+  Write-Host "    vite build under node $($uiBuild.NodeVersion) with esbuild $($uiBuild.EsbuildVersion): files=$($uiBuild.Files) assets=$($uiBuild.Assets) bytes=$($uiBuild.Bytes) published=$($uiBuild.Published) previous=$($uiBuild.PreviousPath)" -ForegroundColor DarkGray
 
   # Regenerate the port-owned client plugin from its own source. The compiled
   # files are tracked, so a clean checkout already has them - but the advertised
@@ -171,34 +345,248 @@ function Build-Ui {
   # the plugin would only ever be built by hand (live-review finding 2, build
   # gap). `bundle.mjs` runs the pinned upstream tsdown and then verifies the
   # emitted `__ModuleLoader__` wrapper against the authentic shape.
+  #
+  # It runs under the SAME qualified pinned interpreter as the shell build, with a
+  # per-child TEMP inside the owned root and PATH led by the interpreter's own
+  # directory: `bundle.mjs` re-spawns `process.execPath` for tsdown, so a bare
+  # `node` from PATH would have decided both the bundler and its children.
   $pluginDir = Join-Path $UiDir 'client-updates'
   $pluginBundler = Join-Path $pluginDir 'bundle.mjs'
   if (-not (Test-Path $pluginBundler)) {
     throw "Port client plugin bundler is missing: $pluginBundler"
   }
-  Invoke-Checked 'node' @('bundle.mjs') $pluginDir
+  $null = Invoke-DshQualifiedNodeScript -NodePath $uiBuild.NodePath -TempRoot $uiBuild.TempDir `
+    -ScriptPath $pluginBundler -WorkingDirectory $pluginDir
+
+  # The shell is a `bundle.resources` source. A build that proceeds without it
+  # fails later in the Rust build script with a resource-path error, so the
+  # missing root is reported here, where it can be acted on.
+  $shellIndex = Join-Path $UiDir 'dist\index.html'
+  if (-not (Test-Path $shellIndex)) {
+    throw "The UI stage produced no shell at $shellIndex; the shell is a bundled resource and cannot be absent."
+  }
 }
 
 function Build-Core {
   Write-Stage 'Rust application core and Tauri shell (port/src-tauri)'
   Assert-Tool 'cargo' 'Install Rust via rustup.'
-  $cargoArgs = @('build', '--workspace')
+
+  # Tauri's build script validates `bundle.resources` sources at build-script
+  # time, so both resource roots must exist BEFORE cargo runs. Report a missing
+  # root as the missing stage rather than as a resource-path error (finding F-41).
+  Assert-ResourceRootsForCompile
+
+  # Never repair the source-controlled dependency lock as a side effect of a
+  # product build. The test/lint gates reuse the resolved build dependencies and
+  # must remain offline and strict; a passing cargo build alone is not this gate.
+  $cargoArgs = @('build', '--workspace', '--locked')
   if ($Release) { $cargoArgs += '--release' }
   Invoke-Checked 'cargo' $cargoArgs $TauriDir
-  Invoke-Checked 'cargo' @('test', '--workspace') $TauriDir
-  Invoke-Checked 'cargo' @('clippy', '--workspace', '--all-targets', '--', '-D', 'warnings') $TauriDir
+  Invoke-Checked 'cargo' @('test', '--workspace', '--locked', '--offline') $TauriDir
+  Invoke-Checked 'cargo' @('clippy', '--workspace', '--all-targets', '--locked', '--offline', '--', '-D', 'warnings') $TauriDir
+}
+
+# Report an absent resource root as the stage that produces it.
+function Assert-ResourceRootsForCompile {
+  $shellDir = Join-Path $UiDir 'dist'
+  if (-not (Test-Path (Join-Path $shellDir 'index.html'))) {
+    throw "The bundled UI resource root is absent or incomplete: $shellDir. Run -Stage ui (the all-stage order runs it before core)."
+  }
+  if (-not (Test-Path -LiteralPath (Join-Path $shellDir 'desktop-policy-bootstrap.json') -PathType Leaf)) {
+    throw "The bundled UI policy metadata is absent: $shellDir. Run -Stage ui before compiling."
+  }
+  foreach ($relative in @('adapter.mjs', 'package.json', 'NODE-LICENSE.txt', 'runtime-payload.json', 'desktop-runtime.json')) {
+    if (-not (Test-Path -LiteralPath (Join-Path $PayloadDsh $relative) -PathType Leaf)) {
+      throw "The bundled runtime resource root is absent or unsealed ($relative): $PayloadDsh. Run -Stage runtime (the all-stage order runs it before core)."
+    }
+  }
+  if (-not (Test-Path -LiteralPath (Join-Path $PayloadDsh 'node') -PathType Container)) {
+    throw "The bundled runtime interpreter is absent: $PayloadDsh. Run -Stage runtime before compiling."
+  }
 }
 
 function Stage-Runtime {
-  Write-Stage 'Supervised dsh runtime payload'
+  Write-Stage 'Supervised dsh runtime payload (staged, validated, then published atomically)'
 
-  # Tauri resources land beside the executable; the adapter stays inside dsh/
-  # so Node resolves bare ESM imports through dsh/node_modules.
-  $payload = Join-Path $PortRoot 'runtime-payload'
-  $staging = Join-Path $Scratch 'runtime-staging'
-  if (Test-Path $payload) { Remove-Item $payload -Recurse -Force }
-  if (Test-Path $staging) { Remove-Item $staging -Recurse -Force }
-  $null = New-Item -ItemType Directory -Force -Path $staging
+  # A previously interrupted publication is resolved before anything else, so the
+  # published root is in a known state and the last known-good payload is not
+  # destroyed by a new attempt.
+  $repair = Repair-DshInterruptedPublication -PublishedPath $PayloadDsh `
+    -Required (@(Get-DshPayloadAnchorFiles) + @('adapter.mjs', 'runtime-payload.json', 'desktop-runtime.json'))
+  if ($repair.Action -ne 'none') {
+    Write-Host "    recovered an interrupted publication: $($repair.Detail)" -ForegroundColor DarkYellow
+  }
+
+  # Own a fresh, short SIBLING for the atomic rename. Never erase a prior stage:
+  # failed materializations and successful build inputs remain audit evidence.
+  $stageRoot = Join-Path $PayloadRoot ('dsh.s-' + [guid]::NewGuid().ToString('N').Substring(0, 8))
+  if (Test-Path -LiteralPath $stageRoot) { throw "Runtime staging path already exists: $stageRoot" }
+  $null = New-Item -ItemType Directory -Path $stageRoot
+
+  try {
+    Stage-RuntimeInto -StageRoot $stageRoot
+
+    # Two DIFFERENT trees are validated here, and conflating them was a blocker:
+    # the staging root is the build's workspace (`packed/`, `work/`, `node/`,
+    # `dsh/`, the staging program and the identity record), while the SHIPPED
+    # shape is the inner `dsh/` tree. Asserting the payload set against the
+    # staging root rejects a correct stage outright.
+    # The pnpm work tree is not shipped. Its filesystem paths may exceed the
+    # legacy bundler limit; keep that 260-character limit on the INNER payload
+    # and relocated published tree below, not on discarded workspace inputs.
+    $stageFact = Assert-DshStagedTree -Path $stageRoot -MaxPathLength 32767 `
+      -ExpectedTopLevel (Get-DshStagingTopLevel) `
+      -Required @('node-identity.json', 'stage-runtime.mjs')
+
+    # Validate the PAYLOAD shape before publication, so a bad tree never becomes
+    # the published one. This runs against the staged copy of the payload, which
+    # is why the pre- and post-swap checks compare the same tree shape.
+    $anchors = @(Get-DshPayloadAnchorFiles) + @('adapter.mjs', 'package.json', 'NODE-LICENSE.txt')
+    $requiredDirectories = @(Get-DshPayloadAnchors) + @('node')
+    $stagedPayload = Get-DshStagedPayloadPath -StageRoot $stageRoot
+    $null = Assert-DshStagedTree -Path $stagedPayload -Required $anchors `
+      -RequiredDirectories $requiredDirectories -StrictReparsePoints `
+      -ExpectedTopLevel (Get-DshPayloadTopLevel)
+
+    # The manifest records what shipped, tied to the pinned inputs. A payload
+    # whose bytes differ from the record is drift, and drift fails the build
+    # rather than shipping quietly different bytes.
+    #
+    # The manifest is built over the PAYLOAD tree, not the staging root: the
+    # shipped tree is the only thing whose bytes are being pinned, and inventorying
+    # the staging root would fold the workspace into the record and make every
+    # build differ.
+    $nodeIdentity = Get-StagedNodeIdentity -StageRoot $stageRoot
+    $manifest = New-DshPayloadManifest -Root $stagedPayload `
+      -Inputs (Get-PayloadInputs) `
+      -UpstreamCommit (Get-UpstreamCommit) `
+      -Version (Get-ProductVersion) `
+      -HostProtocolVersion (Get-StagedHostProtocolVersion -StageRoot $stageRoot) `
+      -NodeIdentity $nodeIdentity `
+      -RequiredLicenses @('NODE-LICENSE.txt')
+    # `node.sha256` stays the ARCHIVE digest that `installer/node-runtime.json` pins;
+    # `node.executableSha256` is the observed digest of the interpreter binary the
+    # payload actually ships, carried so the shipped record names its own bytes rather
+    # than only the archive they came from. The sealer reads the executable digest from
+    # node-identity.json, so this field is metadata for inspection, not a second
+    # enforcement point, and it is absent from a legacy identity record rather than
+    # invented. Read through PSObject so a record without it stays valid.
+    $executableDigest = $nodeIdentity.PSObject.Properties['ExecutableSha256']
+    if ($null -ne $executableDigest -and $executableDigest.Value) {
+      $manifest.node | Add-Member -NotePropertyName 'executableSha256' -NotePropertyValue ([string]$executableDigest.Value)
+    }
+    Write-DshPayloadManifest -Manifest $manifest -Path (Join-Path $stagedPayload 'runtime-payload.json')
+
+    # The port manifest excludes both root metadata files; the upstream descriptor
+    # then hashes the completed manifest. No payload writes follow this seal.
+    Invoke-StagedRuntimeSeal -StageRoot $stageRoot -DshRoot $stagedPayload
+    if ($qualificationRoot) {
+      # Preserve the actual observations used by the payload interpreter before
+      # the staging workspace is cleaned. These are evidence, not shipped files.
+      Copy-Item -LiteralPath (Join-Path $stageRoot 'work\runtime-identity.json') `
+        -Destination (Join-Path $qualificationRoot 'stage-identity.json')
+      Copy-Item -LiteralPath (Join-Path $stageRoot 'node-identity.json') `
+        -Destination (Join-Path $qualificationRoot 'node-identity.json')
+    }
+    Assert-PayloadManifestMatches -Manifest $manifest
+    $anchors += @('runtime-payload.json', 'desktop-runtime.json')
+    $fact = Assert-DshStagedTree -Path $stagedPayload -Required $anchors `
+      -RequiredDirectories $requiredDirectories -StrictReparsePoints `
+      -ExpectedTopLevel (Get-DshPayloadTopLevel)
+    Write-Host "    validated: stagingFiles=$($stageFact.FileCount), payloadFiles=$($fact.FileCount), reparsePoints=$($fact.ReparsePointCount), deepestPath=$($fact.DeepestPathLength) chars" -ForegroundColor Green
+
+    $publication = Publish-DshStagedPayload -StageRoot $stageRoot -PublishedPath $PayloadDsh
+    try {
+      # Re-validate the PUBLISHED tree. The staging validation ran against the
+      # staging path; this proves the swap produced the same tree, which is the
+      # claim that matters and is not implied by the first check.
+      $publishedFact = Assert-DshStagedTree -Path $PayloadDsh -Required $anchors `
+        -RequiredDirectories $requiredDirectories -StrictReparsePoints `
+        -ExpectedTopLevel (Get-DshPayloadTopLevel)
+      if ($publishedFact.FileCount -ne $fact.FileCount) {
+        throw "The published payload has $($publishedFact.FileCount) files but the staged tree had $($fact.FileCount); the swap did not preserve the tree."
+      }
+      Invoke-StagedRuntimeSeal -StageRoot $stageRoot -DshRoot $PayloadDsh -VerifyOnly
+      Complete-DshPublishedTree -PublishedPath $PayloadDsh
+    } catch {
+      $restored = Restore-DshPublishedTree -PublishedPath $PayloadDsh
+      if ($restored) {
+        throw "Publication failed and the previous payload was restored: $($_.Exception.Message)"
+      }
+      throw "Publication failed and there was no previous payload to restore: $($_.Exception.Message)"
+    }
+    Write-Host "    published -> $PayloadDsh" -ForegroundColor DarkGray
+  } finally {
+    Write-Host "    preserved runtime build workspace -> $stageRoot" -ForegroundColor DarkGray
+  }
+}
+
+# Materialise the payload into an empty staging directory.
+# Execute the runtime staging program with a TRUSTED interpreter image.
+#
+# The staged interpreter necessarily lives inside the workspace (`$StageRoot\node`),
+# and a file created inside the workspace inherits its Low integrity label. Windows
+# then starts that image with a Low token, and a Low Node cannot open a named pipe or
+# write to the Medium temp it needs -- which is exactly how `-Stage runtime` failed
+# with EPERM/EPIPE. The fix is NOT to relabel anything: a fresh, hash-equal COPY is
+# made in an outside owned root (a new file in an unlabelled directory is Medium),
+# and that copy must pass the real child preflight (process-owned write,
+# process-sentinel, named pipe, watchdog) before it is used.
+#
+# The SHIPPED bytes are untouched: `Install-PinnedNodeInto` still installs the pinned
+# archive bytes into the payload, the payload/sealed trees are never relabelled, and
+# the global toolchain is never replaced.
+function Get-DshTrustedNodeExecutionCopy {
+  # Both the default copy path and the explicit-override path now share ONE
+  # implementation with the SAME checks (byte equality against the archive-pinned
+  # staged interpreter, pinned `--version`, known parent/image evidence, a fresh
+  # owned root+temp and the real write/pipe/sentinel/watchdog child preflight).
+  # This wrapper exists only so the staging call site has a stable name.
+  param(
+    [Parameter(Mandatory)][string]$Executable,
+    [string]$RequestedRoot
+  )
+
+  Import-Module (Join-Path $PackagingTests 'rust-qualification.psm1') -Force
+  return (Resolve-DshTrustedExecutionNode -StagedExecutable $Executable `
+    -PinManifestPath (Join-Path $InstallerDir 'node-runtime.json') -RequestedRoot $RequestedRoot)
+}
+
+# Resolve the interpreter used to RUN the staging program. An explicit attested
+# override must be BYTE-IDENTICAL to the archive-pinned staged interpreter and print
+# the pinned version; otherwise a trusted outside copy is made. Both paths run the
+# real child preflight and return Root/Temp/Preflight.
+function Resolve-DshStagingExecutionNode {
+  param(
+    [Parameter(Mandatory)][string]$StagedExecutable,
+    [string]$AttestedPath
+  )
+
+  Import-Module (Join-Path $PackagingTests 'rust-qualification.psm1') -Force
+  $resolved = Resolve-DshTrustedExecutionNode -StagedExecutable $StagedExecutable `
+    -PinManifestPath (Join-Path $InstallerDir 'node-runtime.json') -AttestedPath $AttestedPath
+  Write-Host "TRUSTED_NODE_EXECUTION=ok source=$($resolved.Source) path=$($resolved.Path) sha256=$($resolved.Sha256) version=$($resolved.Version) root=$($resolved.Root) temp=$($resolved.Temp)"
+  return $resolved
+}
+
+function Stage-RuntimeInto([string]$StageRoot) {
+  $packedRoot = Join-Path $StageRoot 'packed'
+  $packedDsh = Join-Path $packedRoot 'dsh'
+  $packedHost = Join-Path $packedRoot 'host'
+  $packedVendor = Join-Path $packedRoot 'vendor'
+  $packedLandlock = Join-Path $packedRoot 'landlock'
+  $workRoot = Join-Path $StageRoot 'work'
+  foreach ($directory in @($packedDsh, $packedHost, $packedVendor, $packedLandlock, $workRoot)) {
+    $null = New-Item -ItemType Directory -Force -Path $directory
+  }
+
+  # Native dependency lifecycle scripts must use the eventual Host's pinned
+  # Node/ABI, not the build machine's interpreter. Move these same verified
+  # bytes into the payload once materialization finishes.
+  $pinPath = Join-Path $InstallerDir 'node-runtime.json'
+  $stagingNode = Install-DshPinnedNode -ManifestPath $pinPath -TargetName (Get-CurrentNodeTargetName) `
+    -Destination (Join-Path $StageRoot 'node') -CacheRoot (Join-Path $Scratch 'node-archives') `
+    -LicenseDestination $workRoot -ArchivePath $NodeArchivePath -AllowDownload:$AllowNodeDownload
 
   # Pack the same inputs and select the same roots as upstream's
   # prepare-package-set.ts. Its roots are @deepseek-ai/dsh and
@@ -208,164 +596,57 @@ function Stage-Runtime {
   $pnpmVersion = ([string]$packageManager -replace '^pnpm@', '').Split('+')[0]
   $pnpmEntry = Join-Path $env:LOCALAPPDATA "node\corepack\v1\pnpm\$pnpmVersion\bin\pnpm.mjs"
   if (-not (Test-Path $pnpmEntry)) { throw "Pinned pnpm entry point not found: $pnpmEntry" }
-  $oldNpmExecPath = $env:npm_execpath
-  $env:npm_execpath = $pnpmEntry
-  $packedDsh = Join-Path $staging 'packed-dsh'
-  $packedHost = Join-Path $staging 'packed-host'
-  $packedVendor = Join-Path $staging 'packed-vendor'
-  $packedLandlock = Join-Path $staging 'packed-landlock'
-  foreach ($directory in @($packedDsh, $packedHost, $packedVendor, $packedLandlock)) {
-    $null = New-Item -ItemType Directory -Force -Path $directory
-  }
+  $nodeProgram = Join-Path $StageRoot 'stage-runtime.mjs'
+  Write-DshRuntimeStageProgram -Path $nodeProgram | Out-Null
 
-  # The Node helper mirrors upstream prepare-package-set.ts, project-manager.ts
-  # and prepare-dsh.ts, including fs.cpSync so Windows junction semantics match
-  # the measured upstream operation rather than PowerShell/robocopy semantics.
-  $nodeStage = Join-Path $staging 'stage-runtime.mjs'
-  @'
-import { closeSync, copyFileSync, cpSync, existsSync, globSync, mkdirSync, openSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs'
-import { join, relative, resolve } from 'node:path'
-import { pathToFileURL } from 'node:url'
-import { createRequire } from 'node:module'
-import { spawnSync } from 'node:child_process'
-const [upstream, pnpmEntry, packedDsh, packedHost, packedVendor, packedLandlock, packageSet, project, output, adapterSource, probeStdout, probeStderr] = process.argv.slice(2)
-const importUpstream = (file) => import(pathToFileURL(join(upstream, file)).href)
-const { prepareDesktopPackageSet } = await importUpstream('apps/desktop/scripts/prepare-package-set.ts')
-const { createRuntimeProjectMetadata } = await importUpstream('apps/desktop/src/project-manager.ts')
-const { DESKTOP_HOST_PROTOCOL_VERSION } = await importUpstream('apps/desktop/src/host-protocol.ts')
-const { desktopRuntimeFileExclusion } = await importUpstream('apps/desktop/scripts/runtime-file-policy.ts')
-const { selectOfficeEngine } = await importUpstream('scripts/libreoffice-packages.mjs')
-const yaml = createRequire(join(upstream, 'package.json'))('js-yaml')
-const workspace = yaml.load(readFileSync(join(upstream, 'pnpm-workspace.yaml'), 'utf8'))
-const workspacePaths = globSync(workspace.packages.map((pattern) => `${pattern}/package.json`), { cwd: upstream })
-const available = new Map(workspacePaths.map((manifestPath) => {
-  const manifest = JSON.parse(readFileSync(join(upstream, manifestPath), 'utf8'))
-  return [manifest.name, { manifest, directory: manifestPath.replaceAll('\\', '/').slice(0, -'/package.json'.length) }]
-}))
-const roots = ['@deepseek-ai/dsh', '@deepseek-ai/dsh-desktop-host']
-const selected = new Map()
-const compatible = (rules, value) => !rules || (rules.every((rule) => rule.startsWith('!'))
-  ? !rules.includes(`!${value}`)
-  : rules.includes(value) || rules.includes('any'))
-const visit = (name) => {
-  if (selected.has(name)) return
-  const record = available.get(name)
-  if (!record) throw new Error(`workspace package closure omits ${name}`)
-  selected.set(name, record)
-  for (const section of ['dependencies', 'peerDependencies', 'optionalDependencies']) {
-    for (const dependency of Object.keys(record.manifest[section] ?? {})) {
-      const candidate = available.get(dependency)
-      if (!candidate) continue
-      if (section === 'optionalDependencies' &&
-        (!compatible(candidate.manifest.os, process.platform) || !compatible(candidate.manifest.cpu, process.arch))) continue
-      visit(dependency)
-    }
-  }
-}
-for (const name of roots) visit(name)
-console.log(`Workspace closure before packing: ${selected.size} packages`)
-for (const [name, record] of selected) {
-  const destination = record.directory === 'apps/desktop-host' ? packedHost
-    : record.directory.startsWith('vendor/') ? packedVendor
-      : record.directory.startsWith('native/system/packages/') ? packedLandlock : packedDsh
-  console.log(`pnpm pack ${name}`)
-  const result = spawnSync(process.execPath, [pnpmEntry, '--dir', join(upstream, record.directory), 'pack', '--pack-destination', destination], { cwd: upstream, stdio: 'inherit', env: { ...process.env, npm_execpath: pnpmEntry } })
-  if (result.error) throw result.error
-  if (result.status !== 0) throw new Error(`packing ${name} failed with ${String(result.status)}`)
-}
-prepareDesktopPackageSet([packedDsh, packedHost, packedVendor, packedLandlock], packageSet)
-const version = JSON.parse(readFileSync(join(upstream, 'package.json'), 'utf8')).version
-const packageManager = JSON.parse(readFileSync(join(upstream, 'package.json'), 'utf8')).packageManager
-const pnpmVersion = String(packageManager).replace(/^pnpm@/u, '').split('+')[0]
-const release = { schemaVersion: 1, version, hostProtocolVersion: DESKTOP_HOST_PROTOCOL_VERSION, nodeVersion: process.versions.node, pnpmVersion }
-createRuntimeProjectMetadata(project, release)
-const workspaceConfig = readFileSync(join(project, 'pnpm-workspace.yaml'), 'utf8')
-if (!workspaceConfig.includes('nodeLinker: hoisted') || !workspaceConfig.includes('autoInstallPeers: false')) {
-  throw new Error('runtime project is missing upstream hoisted-linker workspace settings')
-}
-const userConfig = join(project, 'isolated.npmrc')
-writeFileSync(userConfig, '')
-const pnpm = (...args) => {
-  console.log(`pnpm ${args.join(' ')}`)
-  const result = spawnSync(process.execPath, [pnpmEntry, `--config.registry=${process.env.npm_config_registry ?? 'https://registry.npmjs.org/'}`, `--config.store-dir=${join(project, 'store')}`, `--config.userconfig=${userConfig}`, ...args], { cwd: project, stdio: 'inherit', env: { ...process.env, npm_execpath: pnpmEntry, NPM_CONFIG_USERCONFIG: userConfig } })
-  if (result.error) throw result.error
-  if (result.status !== 0) throw new Error(`pnpm ${args.join(' ')} failed with ${String(result.status)}`)
-}
-pnpm('install', '--lockfile-only')
-pnpm('install', '--prod', '--frozen-lockfile', '--trust-lockfile')
-const modules = join(project, 'node_modules')
-if (readFileSync(join(project, 'pnpm-workspace.yaml'), 'utf8').includes('nodeLinker: hoisted') === false) {
-  throw new Error('runtime project lost its hoisted-linker setting')
-}
-const pnpmMetadata = join(modules, '.pnpm')
-if (existsSync(pnpmMetadata)) {
-  const entries = readdirSync(pnpmMetadata)
-  if (entries.some((entry) => entry !== 'lock.yaml')) {
-    throw new Error(`hoisted runtime has unexpected .pnpm contents: ${entries.join(', ')}`)
-  }
-  // pnpm 11.7 writes only its lock metadata here in hoisted mode. The upstream
-  // file policy excludes this manager directory, so remove it before copying.
-  rmSync(pnpmMetadata, { recursive: true, force: true })
-}
-if (existsSync(pnpmMetadata)) throw new Error('runtime .pnpm metadata was not removed')
-const target = { platform: process.platform, arch: process.arch }
-const officeManifest = JSON.parse(readFileSync(join(modules, '@deepseek-ai/libreoffice-kit/package.json'), 'utf8'))
-const officeEngine = selectOfficeEngine(officeManifest, target)
-rmSync(output, { recursive: true, force: true })
-mkdirSync(output, { recursive: true })
-const materialized = join(output, 'node_modules')
-cpSync(modules, materialized, {
-  recursive: true,
-  dereference: true,
-  filter: (source) => desktopRuntimeFileExclusion(relative(modules, source), target, officeEngine) === undefined,
-})
-const set = JSON.parse(readFileSync(join(packageSet, 'desktop-packages.json'), 'utf8'))
-writeFileSync(join(output, 'package.json'), `${JSON.stringify({
-  name: '@deepseek-ai/dsh-desktop-runtime', private: true, version,
-  type: 'module', dependencies: Object.fromEntries(set.packages.map((entry) => [entry.name, entry.version])),
-}, null, 2)}\n`)
-copyFileSync(adapterSource, join(output, 'adapter.mjs'))
-const stdoutFd = openSync(probeStdout, 'w')
-const stderrFd = openSync(probeStderr, 'w')
-let probe
-try {
-  probe = spawnSync(process.execPath, [join(output, 'adapter.mjs')], {
-    cwd: output,
-    env: Object.fromEntries(Object.entries(process.env).filter(([key]) =>
-      !['DSH_DESKTOP_CONTROL_SOCKET', 'DSH_DESKTOP_CONTROL_TOKEN'].includes(key))),
-    timeout: 15000,
-    stdio: ['ignore', stdoutFd, stderrFd],
-  })
-} finally {
-  closeSync(stdoutFd)
-  closeSync(stderrFd)
-}
-const probeText = `${readFileSync(probeStdout, 'utf8')}${readFileSync(probeStderr, 'utf8')}`
-console.log(`resolution check (exit ${String(probe.status)}): ${probeText.trim()}`)
-const expectedProbeText = 'dsh desktop adapter: DSH_DESKTOP_CONTROL_SOCKET / DSH_DESKTOP_CONTROL_TOKEN are required'
-if (probe.error || probe.status !== 1 || probeText.trim() !== expectedProbeText ||
-  /ERR_MODULE_NOT_FOUND|ERR_DLOPEN_FAILED|SyntaxError|ECONNREFUSED/u.test(probeText)) {
-  throw new Error(`runtime adapter failed resolution check: ${probe.error?.message ?? probeText}`)
-}
-console.log(`Selected package closure: ${set.packages.length} packages`)
-'@ | Set-Content -Encoding utf8 $nodeStage
   # Upstream uses one directory for both the package set and runtime project:
   # createRuntimeProjectMetadata verifies the package set from projectDir.
-  $packageSet = Join-Path $staging 'runtime-project'
+  $projectName = if ($qualificationRoot) { 'p' } else { 'runtime-project' }
+  $packageSet = Join-Path $workRoot $projectName
   $project = $packageSet
-  $dsh = Join-Path $payload 'dsh'
-  $nodeArgs = @('--import', 'tsx/esm', $nodeStage, $Upstream, $pnpmEntry,
-    $packedDsh, $packedHost, $packedVendor, $packedLandlock, $packageSet, $project, $dsh,
-    (Join-Path $TauriDir 'runtime\adapter.mjs'),
-    (Join-Path $Scratch 'adapter-resolution.stdout'), (Join-Path $Scratch 'adapter-resolution.stderr'))
-  Invoke-Checked 'node' $nodeArgs $Upstream
+  $identityFile = Join-Path $workRoot 'runtime-identity.json'
+  # The materialised tree goes into the staging root, NOT into the published
+  # path: nothing may write to the published path except the swap.
+  $materialized = Join-Path $StageRoot 'dsh'
+  $probeStdout = Join-Path $workRoot 'adapter-resolution.stdout'
+  $probeStderr = Join-Path $workRoot 'adapter-resolution.stderr'
 
-  $anchors = @(
-    'node_modules\@deepseek-ai\dsh\package.json',
-    'node_modules\@deepseek-ai\cordis-plugin-group\package.json',
-    'node_modules\@deepseek-ai\dsh-base\package.json',
-    'node_modules\@deepseek-ai\dsh-web-app\package.json')
-  $missing = @($anchors | Where-Object { -not (Test-Path (Join-Path $dsh $_)) })
+  $nodeArgs = @('--import', 'tsx/esm', $nodeProgram, $Upstream, $pnpmEntry,
+    $packedDsh, $packedHost, $packedVendor, $packedLandlock, $packageSet, $project, $materialized,
+    (Join-Path $TauriDir 'runtime\adapter.mjs'),
+    $probeStdout, $probeStderr, $identityFile)
+  # EXECUTION interpreter: a trusted outside copy (or an explicit attested one), never
+  # the Low-image interpreter staged inside the workspace. The staged bytes stay in
+  # place because they are what ships.
+  $executionNode = Resolve-DshStagingExecutionNode -StagedExecutable $stagingNode.Executable -AttestedPath $AttestedNodePath
+  $oldNpmExecPath = $env:npm_execpath
+  $oldPath = $env:PATH
+  # TEMP/TMP are set per invocation and restored EXACTLY (absent stays absent, empty
+  # stays empty) in the finally. A Medium child needs a Medium temp; leaving the
+  # caller's TEMP pointed at a fixture root was a defect in this script's siblings.
+  $hadTemp = Test-Path -LiteralPath 'Env:TEMP'
+  $hadTmp = Test-Path -LiteralPath 'Env:TMP'
+  $oldTemp = if ($hadTemp) { $env:TEMP } else { $null }
+  $oldTmp = if ($hadTmp) { $env:TMP } else { $null }
+  try {
+    $env:npm_execpath = $pnpmEntry
+    $env:PATH = (Split-Path -Parent $executionNode.Path) + [IO.Path]::PathSeparator + $oldPath
+    if ($executionNode.Temp) {
+      $env:TEMP = $executionNode.Temp
+      $env:TMP = $executionNode.Temp
+      Write-Host "    staging TEMP -> $($executionNode.Temp) (restored on exit)" -ForegroundColor DarkGray
+    }
+    Invoke-Checked $executionNode.Path $nodeArgs $Upstream
+  } finally {
+    $env:npm_execpath = $oldNpmExecPath
+    $env:PATH = $oldPath
+    if ($hadTemp) { $env:TEMP = $oldTemp } else { Remove-Item -LiteralPath 'Env:TEMP' -ErrorAction SilentlyContinue }
+    if ($hadTmp) { $env:TMP = $oldTmp } else { Remove-Item -LiteralPath 'Env:TMP' -ErrorAction SilentlyContinue }
+  }
+
+  if (-not (Test-Path $identityFile)) {
+    throw "The runtime stage produced no identity record at $identityFile; the payload cannot be tied to its inputs."
+  }
 
   # Ship the port-owned packages. Upstream's package set is a dependency closure
   # rooted at @deepseek-ai/dsh and desktop-host, so a port-owned package is NOT in
@@ -381,10 +662,31 @@ console.log(`Selected package closure: ${set.packages.length} packages`)
   # Shipping only the plugin left every fresh profile selecting an unresolved
   # bundle (live-review finding 2). Each entry therefore carries its own file
   # list: a bundle has no compiled `lib`.
-  #
-  # Copied BEFORE the integrity checks so reparse points, path depth and the file
-  # count all cover what actually ships, and so a missing file fails the stage
-  # loudly instead of silently producing an installer without it.
+  Copy-PortPackages -PayloadRoot $materialized
+
+  # Every bundle the desktop profile selects must RESOLVE from the payload, or a
+  # fresh profile quietly composes without that layer. Read the list from the same
+  # constant the profile initializer uses rather than restating it here, so this
+  # check cannot drift from the thing it guards.
+  Assert-ProfileBundlesResolve -PayloadRoot $materialized
+
+  # The pinned Node interpreter travels inside the payload. Its digest is
+  # verified before extraction, and a build never falls back to a system Node
+  # (see lib/node-runtime.psm1).
+  Install-PinnedNodeInto -StageRoot $StageRoot -PayloadRoot $materialized -Identity $stagingNode
+
+  # Node resolves bare specifiers relative to the importing file, so the adapter
+  # must live INSIDE the tree, beside the node_modules it imports from. The
+  # staging program copies it there; the copy is re-asserted here because the
+  # resource mapping `../../runtime-payload/dsh/` -> `dsh/` ships this directory
+  # wholesale and a missing adapter is a non-booting application.
+  $adapter = Join-Path $materialized 'adapter.mjs'
+  if (-not (Test-Path $adapter)) {
+    throw "The staged payload has no adapter.mjs at $adapter; the application cannot start the Host without it."
+  }
+}
+
+function Copy-PortPackages([string]$PayloadRoot) {
   $portPackages = @(
     @{ Source = (Join-Path $UiDir 'desktop-updates-bundle'); Name = '@dsh-port\dsh-desktop-updates-bundle';
       Files = @('package.json', 'cordis.patch.yml') },
@@ -392,24 +694,27 @@ console.log(`Selected package closure: ${set.packages.length} packages`)
       Files = @('package.json', 'cordis.patch.yml', 'lib\index.js', 'lib\client.js', 'lib\client.js.map') }
   )
   foreach ($package in $portPackages) {
-    $packageTarget = Join-Path $dsh (Join-Path 'node_modules' $package.Name)
-    New-Item -ItemType Directory -Force -Path $packageTarget | Out-Null
+    $packageTarget = Join-Path $PayloadRoot (Join-Path 'node_modules' $package.Name)
+    $null = New-Item -ItemType Directory -Force -Path $packageTarget
     foreach ($file in $package.Files) {
       $from = Join-Path $package.Source $file
+      if ($qualificationClientBuild -and $package.Name -eq '@dsh-port\dsh-client-ui-updates' -and $file.StartsWith('lib\')) {
+        $from = Join-Path $qualificationClientBuild (Split-Path $file -Leaf)
+      }
       if (-not (Test-Path $from)) {
         throw "Port package file missing: $from"
       }
       $to = Join-Path $packageTarget $file
-      New-Item -ItemType Directory -Force -Path (Split-Path $to -Parent) | Out-Null
+      $null = New-Item -ItemType Directory -Force -Path (Split-Path $to -Parent)
       Copy-Item $from $to -Force
     }
     Write-Host "    port package -> $packageTarget" -ForegroundColor DarkGray
   }
+  Register-DshPayloadPackages -Root $PayloadRoot `
+    -Names @($portPackages | ForEach-Object { $_.Name -replace '\\', '/' })
+}
 
-  # Every bundle the desktop profile selects must RESOLVE from the payload, or a
-  # fresh profile quietly composes without that layer. Read the list from the same
-  # constant the profile initializer uses rather than restating it here, so this
-  # check cannot drift from the thing it guards.
+function Assert-ProfileBundlesResolve([string]$PayloadRoot) {
   $profileSource = Join-Path $TauriDir 'crates\dsh-core\src\profile.rs'
   $selected = @()
   if (Test-Path $profileSource) {
@@ -424,48 +729,348 @@ console.log(`Selected package closure: ${set.packages.length} packages`)
   }
   $unresolved = @($selected | Where-Object {
       $relative = 'node_modules\' + ($_ -replace '/', '\') + '\package.json'
-      -not (Test-Path (Join-Path $dsh $relative))
+      -not (Test-Path (Join-Path $PayloadRoot $relative))
     })
   if ($unresolved.Count) {
     throw "Runtime payload cannot resolve these desktop profile bundles: $($unresolved -join ', '). A fresh profile would compose without them."
   }
   Write-Host "    profile bundles resolve: $($selected -join ', ')" -ForegroundColor DarkGray
+}
 
-  $reparse = @(Get-ChildItem (Join-Path $dsh 'node_modules') -Recurse -Force -ErrorAction Stop |
-    Where-Object { $_.Attributes -band [IO.FileAttributes]::ReparsePoint })
-  $files = @(Get-ChildItem (Join-Path $dsh 'node_modules') -Recurse -File -Force)
-  $deepest = 0
-  foreach ($file in $files) { if ($file.FullName.Length -gt $deepest) { $deepest = $file.FullName.Length } }
-  foreach ($relative in $anchors) {
-    $entry = Get-Item (Join-Path $dsh $relative) -ErrorAction SilentlyContinue
-    if ($entry -and ($entry.Attributes -band [IO.FileAttributes]::ReparsePoint)) { $missing += "$relative (reparse point)" }
+function Install-PinnedNodeInto([string]$StageRoot, [string]$PayloadRoot, [object]$Identity) {
+  if ($null -eq $Identity) { throw 'Pinned staging interpreter identity is required.' }
+  Copy-Item -LiteralPath (Join-Path (Join-Path $StageRoot 'work') $Identity.License) `
+    -Destination (Join-Path $PayloadRoot $Identity.License) -ErrorAction Stop
+
+  Write-Host "    pinned Node $($identity.NodeVersion) for $($identity.Target) ($($identity.Source))" -ForegroundColor DarkGray
+
+  # TWO DIFFERENT DIGESTS, NEVER CONFLATED.
+  #
+  #   Sha256           the digest of the ARCHIVE the interpreter was extracted from,
+  #                    declared by `installer/node-runtime.json` and already verified
+  #                    by `Install-DshPinnedNode` before extraction.
+  #   ExecutableSha256 the digest of the interpreter BINARY that ships, observed from
+  #                    the bytes that verified extraction chain produced.
+  #
+  # The runtime sealer enforces the second one against the running and payload images
+  # when it is present, and treats its absence as the legacy record. So it is recorded
+  # for NEW records only and is derived from the actual bytes - it is never a second
+  # name for the archive digest, and the archive digest above is never overwritten.
+  $stagedExecutable = $Identity.Executable
+  if (-not (Test-Path -LiteralPath $stagedExecutable -PathType Leaf)) {
+    throw "The verified staged interpreter is absent: $stagedExecutable"
   }
-  # Reject anything unexpected at the payload root. This directory is mapped
-  # WHOLESALE into the installer (`../../runtime-payload/dsh/` -> `dsh/`), so any
-  # stray staged entry ships. A debug probe directory left behind by an
-  # interrupted build did exactly that (finding F-26), and no behavioural check
-  # could see it because the debris is inert while the application still runs.
-  $expectedTopLevel = @('adapter.mjs', 'node_modules', 'package.json')
-  $unexpected = @(Get-ChildItem $dsh -Force -ErrorAction SilentlyContinue |
-    Where-Object { $expectedTopLevel -notcontains $_.Name } | ForEach-Object { $_.Name })
+  $stagedExecutableSha256 = (Get-FileHash -LiteralPath $stagedExecutable -Algorithm SHA256).Hash.ToLowerInvariant()
 
-  if ($unexpected.Count -or $missing.Count -or $reparse.Count -or $deepest -ge 260) {
-    if ($unexpected.Count) {
-      throw "Runtime payload guard failed: unexpected top-level entries would ship: $($unexpected -join ', '). Expected only: $($expectedTopLevel -join ', ')."
+  # The interpreter is carried inside the payload so the installed application
+  # does not depend on a system Node.js. `dsh/node/` is the location the Rust
+  # side resolves; see the integration note in the lane report.
+  $nodeTarget = Join-Path $PayloadRoot 'node'
+  if (Test-Path $nodeTarget) { Remove-Item $nodeTarget -Recurse -Force }
+  Move-Item -LiteralPath $identity.Root -Destination $nodeTarget
+
+  # Read the digest back from the SHIPPED location and refuse a move that changed the
+  # bytes: the sealer hashes the file it finds under the payload, so recording the
+  # staging-location digest would be a promise about a file that no longer exists.
+  $payloadExecutable = Join-Path $nodeTarget $Identity.RelativeExecutable
+  if (-not (Test-Path -LiteralPath $payloadExecutable -PathType Leaf)) {
+    throw "The installed payload interpreter is absent: $payloadExecutable"
+  }
+  $executableSha256 = (Get-FileHash -LiteralPath $payloadExecutable -Algorithm SHA256).Hash.ToLowerInvariant()
+  if ($executableSha256 -ne $stagedExecutableSha256) {
+    throw "The installed payload interpreter is not byte-identical to the verified staged interpreter: $executableSha256 vs $stagedExecutableSha256"
+  }
+
+  # The identity record is read back from the payload, not from the staging
+  # location, so the manifest describes where the interpreter actually is.
+  # `RecordSha` is deliberately NOT emitted: the sealer requires it, when present, to
+  # equal `Sha256`, which here is the archive digest rather than the binary digest.
+  $record = [pscustomobject]@{
+    NodeVersion      = $identity.NodeVersion
+    Target           = $identity.Target
+    Url              = $identity.Url
+    Sha256           = $identity.Sha256
+    ExecutableSha256 = $executableSha256
+    Source           = $identity.Source
+    License          = $identity.License
+    LicenseSpdx      = $identity.LicenseSpdx
+    Executable       = "dsh/node/$($identity.RelativeExecutable -replace '\\', '/')"
+  }
+  Write-Host "    pinned Node identity: archive=$($identity.Sha256) executable=$executableSha256" -ForegroundColor DarkGray
+  Write-DshNodeStagingRecord -StageRoot $StageRoot -Record $record | Out-Null
+}
+
+function Write-DshNodeStagingRecord([string]$StageRoot, $Record) {
+  $path = Join-Path $StageRoot 'node-identity.json'
+  $json = $Record | ConvertTo-Json -Depth 4
+  [System.IO.File]::WriteAllText($path, "$json`n", (New-Object System.Text.UTF8Encoding($false)))
+  return $path
+}
+
+function Get-StagedNodeIdentity([string]$StageRoot) {
+  $path = Join-Path $StageRoot 'node-identity.json'
+  if (-not (Test-Path $path)) {
+    throw "The staged payload has no pinned-Node identity record at $path; refusing to describe a payload whose interpreter is unrecorded."
+  }
+  return (Get-Content $path -Raw | ConvertFrom-Json)
+}
+
+# Resolve (and reuse) the trusted execution interpreter for a given pinned image.
+#
+# The resolver makes a fresh outside copy per call, and the sealer runs twice (seal,
+# then verify-only) over the SAME bundled bytes. Caching by the reference digest keeps
+# that to one copy, and the cached copy's digest is RE-VERIFIED before every reuse so
+# a changed file can never be executed under an old attestation. The cache is keyed by
+# reference digest plus the attested override, so two different images never share an
+# entry.
+$script:TrustedExecutionNodeCache = @{}
+function Resolve-DshTrustedExecutionNodeCached {
+  [CmdletBinding()]
+  param([Parameter(Mandatory)][string]$StagedExecutable, [string]$AttestedPath)
+
+  $digest = (Get-FileHash -LiteralPath $StagedExecutable -Algorithm SHA256).Hash.ToLowerInvariant()
+  $key = "$digest|$AttestedPath"
+  if ($script:TrustedExecutionNodeCache.ContainsKey($key)) {
+    $cached = $script:TrustedExecutionNodeCache[$key]
+    try {
+      $now = (Get-FileHash -LiteralPath $cached.Path -Algorithm SHA256).Hash.ToLowerInvariant()
+      if ($now -eq $cached.Sha256 -and $now -eq $digest) { return $cached }
+    } catch { }
+    $script:TrustedExecutionNodeCache.Remove($key)
+    Write-Host '    note: cached trusted execution copy no longer matches its digest; resolving a fresh one.' -ForegroundColor DarkYellow
+  }
+  $resolved = Resolve-DshStagingExecutionNode -StagedExecutable $StagedExecutable -AttestedPath $AttestedPath
+  $script:TrustedExecutionNodeCache[$key] = $resolved
+  return $resolved
+}
+
+# Invoke the upstream descriptor APIs through the supported source launcher, but
+# only under the materialized, checksum-pinned payload interpreter.
+function Invoke-StagedRuntimeSeal {
+  [CmdletBinding()]
+  param([string]$StageRoot, [string]$DshRoot, [switch]$VerifyOnly)
+
+  $identity = Get-StagedNodeIdentity -StageRoot $StageRoot
+  $targetName = Get-CurrentNodeTargetName
+  $pin = Get-DshPinnedNodeManifest -ManifestPath (Join-Path $InstallerDir 'node-runtime.json')
+  $pinTarget = Get-DshPinnedNodeTarget -Manifest $pin -Target $targetName
+  if ($identity.Target -ne $targetName -or $identity.NodeVersion -ne $pin.nodeVersion -or
+      $identity.Sha256 -ne $pinTarget.sha256) {
+    throw 'Staged Node identity does not match the source-controlled interpreter pin.'
+  }
+  $relativeExecutable = if ($targetName.StartsWith('win-')) { 'node/node.exe' } else { 'node/bin/node' }
+  if ($identity.Executable -cne "dsh/$relativeExecutable") {
+    throw 'Staged Node identity has an unexpected executable location.'
+  }
+  $bundledNode = Join-Path $DshRoot $relativeExecutable
+  $arguments = @('--import', 'tsx/esm', (Join-Path $PSScriptRoot 'lib\seal-runtime.mjs'))
+  if ($VerifyOnly) { $arguments += '--verify' }
+  $arguments += @($Upstream, $DshRoot, (Join-Path $StageRoot 'work\runtime-identity.json'),
+    (Join-Path $StageRoot 'node-identity.json'))
+
+  # NEVER execute the shipped payload interpreter directly: it was created inside the
+  # workspace, so its image is Low-labelled and a Low Node cannot open the pipes or
+  # write the Medium temp that the sealing program needs. The trusted resolver proves
+  # the execution copy is byte-identical to these pinned bytes (which are themselves
+  # tied to the archive digest above), prints the pinned version, and runs the real
+  # write/pipe/sentinel/watchdog preflight. The sealed tree bytes, the identity record
+  # and the manifest hash inputs are untouched: only WHERE the program is executed
+  # from changes.
+  $executionNode = Resolve-DshTrustedExecutionNodeCached -StagedExecutable $bundledNode -AttestedPath $AttestedNodePath
+  $oldNpmExecPath = $env:npm_execpath
+  $oldPath = $env:PATH
+  $hadTemp = Test-Path -LiteralPath 'Env:TEMP'
+  $hadTmp = Test-Path -LiteralPath 'Env:TMP'
+  $oldTemp = if ($hadTemp) { $env:TEMP } else { $null }
+  $oldTmp = if ($hadTmp) { $env:TMP } else { $null }
+  try {
+    $env:PATH = (Split-Path -Parent $executionNode.Path) + [IO.Path]::PathSeparator + $oldPath
+    if ($executionNode.Temp) {
+      $env:TEMP = $executionNode.Temp
+      $env:TMP = $executionNode.Temp
     }
-    throw "Runtime payload guard failed: missingOrLinked=$($missing -join ', '); reparsePoints=$($reparse.Count); deepestPath=$deepest"
+    Invoke-Checked $executionNode.Path $arguments $Upstream
+  } finally {
+    $env:npm_execpath = $oldNpmExecPath
+    $env:PATH = $oldPath
+    if ($hadTemp) { $env:TEMP = $oldTemp } else { Remove-Item -LiteralPath 'Env:TEMP' -ErrorAction SilentlyContinue }
+    if ($hadTmp) { $env:TMP = $oldTmp } else { Remove-Item -LiteralPath 'Env:TMP' -ErrorAction SilentlyContinue }
+  }
+}
+
+# The host protocol version the staged runtime was built against.
+#
+# The staging program writes it into `work/runtime-identity.json` from upstream's
+# own `DESKTOP_HOST_PROTOCOL_VERSION`, and the payload manifest has a
+# `hostProtocolVersion` field - but nothing read the value back, so the field was
+# always null. That is the one field tying the shipped runtime to the Rust control
+# protocol, so it is recorded rather than left blank.
+function Get-StagedHostProtocolVersion([string]$StageRoot) {
+  $path = Join-Path $StageRoot 'work\runtime-identity.json'
+  if (-not (Test-Path $path)) {
+    throw "The runtime stage produced no identity record at $path; the payload cannot be tied to the host control protocol."
+  }
+  $identity = Get-Content $path -Raw | ConvertFrom-Json
+  $version = "$($identity.hostProtocolVersion)"
+  if ([string]::IsNullOrWhiteSpace($version) -or $version -eq '0') {
+    throw "The runtime identity record at $path declares no hostProtocolVersion; refusing to record an untied payload."
+  }
+  return $version
+}
+
+function Get-CurrentNodeTargetName {
+  # `$IsMacOS` is a PowerShell 7 automatic variable and does not exist under
+  # Windows PowerShell 5.1, where `Set-StrictMode -Version Latest` turns any
+  # reference into a terminating "variable has not been set" error. The build
+  # script carries no `#Requires`, so a macOS/Linux run under 5.1 died before
+  # selecting a target. Probe for the variable instead of assuming it.
+  $isMac = $false
+  $isLinux = $false
+  if (Get-Variable -Name IsMacOS -ErrorAction SilentlyContinue) { $isMac = [bool]$IsMacOS }
+  if (Get-Variable -Name IsLinux -ErrorAction SilentlyContinue) { $isLinux = [bool]$IsLinux }
+  if (-not $isMac -and -not $isLinux -and $PSVersionTable.PSVersion.Major -lt 6) {
+    # 5.1 has no platform variables; `$env:OSTYPE` is the available signal.
+    $isMac = ("$env:OSTYPE" -match 'darwin')
+    $isLinux = -not $isMac -and ("$env:OSTYPE" -match 'linux')
   }
 
-  # Node helper has already run the adapter from the materialized payload with
-  # a 15-second timeout, capturing stdout/stderr through file descriptors and
-  # asserting exit 1 plus only the expected missing-control-env diagnostic.
-  Write-Host "    materialized files=$($files.Count), reparsePoints=$($reparse.Count), deepestPath=$deepest chars" -ForegroundColor Green
-  Write-Host "    payload -> $payload" -ForegroundColor DarkGray
+  # A 32-bit PowerShell on 64-bit Windows reports `x86` in
+  # `PROCESSOR_ARCHITECTURE` and the real architecture in
+  # `PROCESSOR_ARCHITEW6432`. Without this fallback the `win-arm64` target is
+  # silently unreachable and the build stages a `win-x64` interpreter that cannot
+  # run. `$env:PROCESSOR_ARCHITECTURE` is the primary signal; the W6432 value only
+  # fills in when the primary is `x86`.
+  $architecture = $env:PROCESSOR_ARCHITECTURE
+  if ($architecture -eq 'x86' -and $env:PROCESSOR_ARCHITEW6432) {
+    $architecture = $env:PROCESSOR_ARCHITEW6432
+  }
+
+  if ($env:OS -eq 'Windows_NT') {
+    if ($architecture -eq 'ARM64') { return 'win-arm64' }
+    return 'win-x64'
+  }
+  if ($isMac) {
+    if ($architecture -eq 'arm64') { return 'darwin-arm64' }
+    return 'darwin-x64'
+  }
+  if ($architecture -eq 'aarch64') { return 'linux-arm64' }
+  return 'linux-x64'
+}
+
+# The pinned explicit inputs. Anything a human chose and the build depends on
+# belongs here, so a manifest difference names the input that moved.
+function Get-PayloadInputs {
+  $inputs = @{}
+
+  $adapter = Join-Path $TauriDir 'runtime\adapter.mjs'
+  if (-not (Test-Path $adapter)) { throw "Runtime adapter is missing: $adapter" }
+  $inputs['runtimeAdapter'] = (Get-FileHash -LiteralPath $adapter -Algorithm SHA256).Hash.ToLowerInvariant()
+
+  $pinPath = Join-Path $InstallerDir 'node-runtime.json'
+  $inputs['nodePin'] = (Get-FileHash -LiteralPath $pinPath -Algorithm SHA256).Hash.ToLowerInvariant()
+
+  $nodeStageProgram = Get-DshRuntimeStageProgram
+  $inputs['stageProgram'] = (Get-DshStringDigest -Value $nodeStageProgram)
+  foreach ($helper in @('seal-runtime.mjs', 'runtime-payload.psm1', 'payload-manifest.psm1')) {
+    $inputs["packagingHelper:$helper"] = (Get-FileHash -LiteralPath (Join-Path $PSScriptRoot "lib\$helper") -Algorithm SHA256).Hash.ToLowerInvariant()
+  }
+
+  $packageManager = (Get-Content (Join-Path $Upstream 'package.json') -Raw | ConvertFrom-Json).packageManager
+  $inputs['upstreamPackageManager'] = [string]$packageManager
+
+  foreach ($portPackage in Get-DshPortPackageInputs `
+      -SourceDirectories @((Join-Path $UiDir 'desktop-updates-bundle'), (Join-Path $UiDir 'client-updates')) `
+      -RelativeFiles @('package.json', 'cordis.patch.yml')) {
+    $inputs["portPackage:$($portPackage.Name)"] = $portPackage.Sha256
+  }
+
+  if ($qualificationClientBuild) {
+    foreach ($name in @('index.js', 'client.js', 'client.js.map')) {
+      $inputs["qualificationClientBuild:$name"] = (Get-FileHash -LiteralPath (Join-Path $qualificationClientBuild $name) -Algorithm SHA256).Hash.ToLowerInvariant()
+    }
+  }
+  return $inputs
+}
+
+function Get-DshStringDigest([string]$Value) {
+  $sha = [System.Security.Cryptography.SHA256]::Create()
+  try {
+    $bytes = [System.Text.Encoding]::UTF8.GetBytes($Value)
+    $hash = $sha.ComputeHash($bytes)
+    return ([System.BitConverter]::ToString($hash) -replace '-', '').ToLowerInvariant()
+  } finally {
+    $sha.Dispose()
+  }
+}
+
+function Get-ProductVersion {
+  return (Get-Content (Join-Path $Upstream 'package.json') -Raw | ConvertFrom-Json).version
+}
+
+function Get-PayloadManifestRecordPath {
+  if ($qualificationRoot) {
+    return (Join-Path $qualificationRoot 'runtime-payload.json')
+  }
+  return (Join-Path $InstallerDir 'runtime-payload.json')
+}
+
+# Fail the build when the payload differs from the recorded one, unless the
+# caller explicitly accepted a new record. Drift is the failure mode this guards:
+# a resolver picking a different transitive version produces a payload that runs
+# but is not the one that was tested.
+function Assert-PayloadManifestMatches($Manifest) {
+  $recordPath = Get-PayloadManifestRecordPath
+  if ($UpdatePayloadManifest) {
+    Write-DshPayloadManifest -Manifest $Manifest -Path $recordPath
+    Write-Host "    payload manifest updated -> $recordPath" -ForegroundColor DarkYellow
+    return
+  }
+  if (-not (Test-Path $recordPath)) {
+    Write-DshPayloadManifest -Manifest $Manifest -Path $recordPath
+    Write-Host "    no recorded payload manifest existed; recorded the current payload -> $recordPath" -ForegroundColor DarkYellow
+    return
+  }
+
+  $expected = Read-DshPayloadManifest -Path $recordPath
+  $comparison = Compare-DshPayloadManifest -Expected $expected -Actual $Manifest
+  if ($comparison.Matches) {
+    Write-Host "    payload matches the recorded manifest ($($Manifest.fileCount) files)" -ForegroundColor Green
+    return
+  }
+
+  $lines = @()
+  $lines += $comparison.Differences
+  foreach ($path in $comparison.AddedFiles) { $lines += "added file: $path" }
+  foreach ($path in $comparison.RemovedFiles) { $lines += "removed file: $path" }
+  foreach ($path in $comparison.ChangedFiles) { $lines += "changed file: $path" }
+  $shown = @($lines | Select-Object -First 25)
+  $more = if ($lines.Count -gt $shown.Count) { "`n  ... and $($lines.Count - $shown.Count) more" } else { '' }
+  throw @"
+The staged runtime payload differs from the recorded manifest at $recordPath.
+This is dependency drift: the same commit would ship different bytes than the
+recorded build.
+
+$($shown -join "`n")$more
+
+If the change is intended, re-run with -UpdatePayloadManifest and review the
+recorded diff.
+"@
 }
 
 function Build-Bundle {
   Write-Stage 'Release bundle and Windows installer (NSIS)'
   Assert-Tool 'cargo' 'Install Rust via rustup.'
+  Assert-ResourceRootsForCompile
+
+  # A bundling build needs exclusivity: the NSIS step needs the just-linked
+  # binary to still be on disk, and a concurrent release build deletes it
+  # (finding F-25). Only bundling needs this; cargo self-serialises the rest.
+  $running = @(Get-Process -ErrorAction SilentlyContinue |
+    Where-Object { $_.ProcessName -in @('cargo', 'cargo-tauri', 'rustc') })
+  if ($running.Count -gt 0) {
+    throw "Another cargo/rustc process is running ($($running.Count) of them): $(($running | ForEach-Object { "$($_.ProcessName)($($_.Id))" }) -join ', '). A bundling build needs the target directory to itself; wait for it to finish."
+  }
+
   Invoke-Checked 'cargo' @('tauri', 'build') $TauriDir
   $nsis = Join-Path $TauriDir 'target\release\bundle\nsis'
   if (Test-Path $nsis) {
@@ -478,19 +1083,105 @@ function Build-Bundle {
 
 function Test-InterfaceFixtures {
   Write-Stage 'Interface fixture parity (Rust + TypeScript round-trip the same bytes)'
-  Invoke-Checked 'cargo' @('test', '--workspace', '--test', 'protocol_fixtures') $TauriDir
+  Invoke-Checked 'cargo' @('test', '--workspace', '--locked', '--offline', '--test', 'protocol_fixtures') $TauriDir
+  # The affected front-end surface: the desktop bridge, the Updates section and the
+  # native guest adapters. The UI test script must include native-guests/tests, or
+  # this stage would go green while the guest adapters were never run (finding 19),
+  # so the declared script is asserted rather than trusted.
+  $uiPackagePath = Join-Path $UiDir 'package.json'
+  if (-not (Test-Path $uiPackagePath)) { throw "The UI package manifest is absent: $uiPackagePath" }
+  $uiPackage = Get-Content $uiPackagePath -Raw | ConvertFrom-Json
+  if ($uiPackage.scripts.test -notmatch 'native-guests/tests') {
+    throw 'The UI test script no longer runs native-guests/tests, so the verify stage would not exercise the native guest adapters.'
+  }
+  if (-not ($uiPackage.scripts.PSObject.Properties.Name -contains 'build:verify')) {
+    throw 'The UI package manifest declares no build:verify script, so a build cannot invoke its affected tests.'
+  }
+  foreach ($project in @('desktop-bridge', 'client-updates', 'native-guests')) {
+    $projectFile = Join-Path $UiDir "$project\tsconfig.json"
+    if (-not (Test-Path $projectFile)) { throw "The UI type project is absent: $projectFile" }
+  }
   Invoke-Checked 'pnpm' @('run', 'test') $UiDir
+  Invoke-Checked 'pnpm' @('run', 'test:types') $UiDir
+}
+
+function Test-Packaging {
+  Write-Stage 'Packaging regression tests (publication, manifest, pinned Node, NSIS hooks)'
+  Assert-Tool 'node' 'Install Node.js 22.19+ or 24+.'
+
+  $suites = @(
+    @{ Name = 'packaging helpers'; Path = (Join-Path $PackagingTests 'lib-modules.ps1') }
+    @{ Name = 'staging and publication guards'; Path = (Join-Path $PackagingTests 'stage-guards.ps1') }
+    @{ Name = 'installer hooks compile'; Path = (Join-Path $PackagingTests 'nsis-hooks-compile.ps1') }
+    @{ Name = 'installer guard messages localized'; Path = (Join-Path $PackagingTests 'nsis-strings-messages.ps1') }
+    @{ Name = 'installer instance guard'; Path = (Join-Path $PackagingTests 'nsis-instance-guard.ps1') }
+    @{ Name = 'runtime materializer policy'; Path = (Join-Path $PackagingTests 'runtime-materializer.test.mjs') }
+    @{ Name = 'final runtime descriptor'; Path = (Join-Path $PackagingTests 'runtime-seal.test.mjs') }
+    @{ Name = 'build order and safety'; Path = (Join-Path $PackagingTests 'build-script.test.mjs') }
+    @{ Name = 'installer hook control flow'; Path = (Join-Path $PackagingTests 'nsis-hook-behavior.ps1') }
+    @{ Name = 'installed qualification safety guards'; Path = (Join-Path $PackagingTests 'verify-installed-guards.ps1') }
+    @{ Name = 'qualification gate contract'; Path = (Join-Path $PackagingTests 'gate-contract.test.mjs') }
+    @{ Name = 'staging execution-node trust'; Path = (Join-Path $PackagingTests 'execution-node-trust.test.mjs') }
+  )
+
+  $failures = @()
+  foreach ($suite in $suites) {
+    if (-not (Test-Path $suite.Path)) {
+      throw "Packaging test suite is missing: $($suite.Path)"
+    }
+    Write-Host "    -- $($suite.Name)" -ForegroundColor DarkGray
+    if ($suite.Path.EndsWith('.mjs')) {
+      Invoke-Checked 'node' @('--import', 'tsx/esm', $suite.Path) $Upstream
+    } else {
+      & powershell -NoProfile -ExecutionPolicy Bypass -File $suite.Path
+    }
+    if ($LASTEXITCODE -ne 0) { $failures += $suite.Name }
+  }
+  if ($failures.Count -gt 0) {
+    throw "Packaging test suites failed: $($failures -join ', ')"
+  }
+  # The seven native/packaging suites are DECLARED by the qualification gate, not
+  # discovered by a glob, so a deleted or renamed suite is a failure here rather
+  # than a quietly smaller green run (finding P1). The gate also refuses to count a
+  # precondition skip (for example an absent makensis) as a pass.
+  $gateLauncher = Join-Path $PortRoot 'tests\run-verification-gate.ps1'
+  if (-not (Test-Path $gateLauncher)) { throw "The qualification gate launcher is absent: $gateLauncher" }
+  foreach ($declared in @('lib-modules.ps1', 'stage-guards.ps1', 'nsis-hooks-compile.ps1',
+                          'nsis-strings-messages.ps1', 'nsis-instance-guard.ps1',
+                          'nsis-hook-behavior.ps1', 'verify-installed-guards.ps1')) {
+    if (-not (Test-Path (Join-Path $PackagingTests $declared))) {
+      throw "Declared packaging suite is missing: $declared"
+    }
+  }
+  Write-Host '    all packaging suites passed' -ForegroundColor Green
 }
 
 Test-Prerequisites
 
+$null = New-Item -ItemType Directory -Force -Path $Scratch
 $doAll = $Stage -eq 'all'
+
+# The clean-build order. `ui` and `runtime` produce the two `bundle.resources`
+# source roots, so they run before any compile that validates those paths.
+$needsResources = $doAll -or $Stage -in @('core', 'bundle')
 if ($doAll -or $Stage -eq 'ui') { Build-Ui }
-if ($doAll -or $Stage -eq 'core') { Build-Core }
+elseif ($needsResources -and -not $SkipResourceStages) {
+  Write-Host ''
+  Write-Host '==> UI resource root required by the requested stage' -ForegroundColor Cyan
+  Build-Ui
+}
 if ($doAll -or $Stage -eq 'runtime') { Stage-Runtime }
+elseif ($needsResources -and -not $SkipResourceStages) {
+  Write-Host ''
+  Write-Host '==> Runtime resource root required by the requested stage' -ForegroundColor Cyan
+  Stage-Runtime
+}
+
+if ($doAll -or $Stage -eq 'core') { Build-Core }
 if ($doAll -or $Stage -eq 'verify') { Test-InterfaceFixtures }
+if ($doAll -or $Stage -eq 'packaging-tests') { Test-Packaging }
 if ($doAll -or $Stage -eq 'bundle') { $Release = $true; Build-Bundle }
 
 Write-Host ''
 Write-Host 'Build complete.' -ForegroundColor Green
-Write-Host 'Signing and update delivery are NOT part of this build; see docs/build-and-install.md section 7.' -ForegroundColor Yellow
+Write-Host 'Signing and update delivery are NOT part of this build; see docs/build-and-install.md section 8.' -ForegroundColor Yellow

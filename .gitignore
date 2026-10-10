@@ -4,10 +4,30 @@ _upstream/
 
 # Build outputs and generated trees
 port/src-tauri/target/
+/.tmp-cargo/
+# Accidental nested build/probe output; retained, never a source root.
+/port/src-tauri/port/
 port/ui/dist/
+# Transactional UI publication backups and nested compile caches are generated.
+port/ui/dist.previous/
+port/ui/dist.previous-*/
+port/ui/native-guests/.tmp/
+port/ui/native-guests/.cache/
+port/ui/client-updates/lib/
 port/ui/node_modules/
 port/runtime-payload/
+# Generated runtime seal inventory, not the checked-in Node pin specification.
+/port/installer/runtime-payload.json
 port/.scratch/
+/.scratch/
+/outputs/
+port/ui/.cache/
+port/ui/.scratch-guests/
+
+# Retained one-off probes, never source inputs (ignore, do not delete)
+/${REPORT}
+/${REPORT}.*
+/probe-*.mjs
 
 # Installers and compiled binaries
 *.exe

@@ -19,7 +19,7 @@ modify the preserved client files.
 
 ## Update channel feeds
 
-The release preference is persisted in the desktop settings store as `updates.channel` (`stable` by default, or `beta`). Stable consults `updates.feed-url`; beta consults only `updates.feed-url-beta` and never falls back to stable. A blank or unset selected feed is reported as no feed configured. Update manifests may include SHA-256 for download verification; this build has no signing-key or signature verification, so a hash does not establish release provenance. The Updates Settings section and Settings-only sidebar More menu are supplied by `@dsh-port/dsh-client-ui-updates` in `client-updates/` through the upstream `settings.section` and `settings.launcher` slots. Its bundle patch disables upstream `ui-settings-account`, whose launcher adds Contact us and Sign in; the port registers a replacement launcher containing only Settings, so the Settings route remains available.
+The release preference is persisted in the desktop settings store as `updates.channel` (`stable` by default, or `beta`). Release authority comes only from packaged [update trust configuration](<../updates-trust.md>), not renderer-controlled feed preferences: HTTPS feeds, permitted origins and trusted Ed25519 keys are validated before delivery. A release requires both SHA-256 integrity and a valid signature bound to version, channel and digest, with artifact verification repeated before installation. Absent or invalid packaged trust configuration disables delivery; no production trust configuration ships yet. Stable and beta remain separate and beta never falls back to stable. The Updates Settings section and Settings-only sidebar More menu are supplied by `@dsh-port/dsh-client-ui-updates` in `client-updates/` through the upstream `settings.section` and `settings.launcher` slots. Its bundle patch disables upstream `ui-settings-account`, whose launcher adds Contact us and Sign in; the port registers a replacement launcher containing only Settings, so the Settings route remains available.
 
 Desktop adds `@dsh-port/dsh-client-ui-updates` to `DESKTOP_PROFILE_BUNDLES`. This intentionally diverges from upstream `PROFILE_TEMPLATES.web.bundles` in `_upstream/packages/boot/app-boot/src/profile.ts`; that split is the F-30 maintenance risk and requires deliberate comparison when upstream changes its Web profile. The port-owned `port-client-preset.ts` imports upstream bundle helpers and reproduces only the bundle configuration the upstream preset cannot apply outside its `_upstream/packages/*/*` workspace. The account-bundle exclusion also deliberately differs from upstream Desktop: `_upstream/apps/desktop/src/project-manager.ts` selects `PROFILE_TEMPLATES.web`, and `_upstream/packages/bundle/web-app/package.json` includes `@deepseek-ai/dsh-client-ui-settings-account`. Review both changes when comparing desktop behavior with upstream.
 
@@ -37,6 +37,8 @@ Equivalent script: `node node_modules/vite/bin/vite.js build` via `pnpm run buil
 (`package.json`). Set `DSH_CLIENT_TITLE` to project a different document title;
 unset it builds the upstream default `DSH Local Build`.
 
+The [shell configuration](<shell/vite.config.ts>) snapshots the public UI defines once for both bundling and [policy bootstrap generation](<shell/policy-bootstrap.mjs>). The emitted [native bootstrap](<dist/desktop-policy-bootstrap.json>) records the exact inlined `DSH_CLIENT_VERSION`, or `null` if unset, and copies only the `dshMandatoryUpdatePolicy` field from the trusted upstream desktop application package, not its version or unrelated fields. Missing policy stays absent; invalid-present policy is retained for native rejection. The [native loader](<../src-tauri/app/src/policy_bootstrap.rs>) refuses configured policy without a valid UI version and authoritative runtime metadata. This asset does not start requests or establish mandatory blocking; final runtime descriptor staging and native lifecycle composition remain open.
+
 **Output path: `port/ui/dist/`** — the packaged web-client shell the Rust
 gateway serves at `/` (shell-owned boot path). Layout:
 
@@ -44,6 +46,7 @@ gateway serves at `/` (shell-owned boot path). Layout:
 port/ui/dist/
   index.html                    upstream head + __DSH_BOOT_READY__ script; module entry ./assets/index-*.js
   favicon.svg favicon-dark.svg manifest.webmanifest
+  desktop-policy-bootstrap.json build-time UI version and application policy field (not runtime identity)
   assets/index-*.js assets/vendor-*.js (+ .map)      the preserved client bundle + the thin bridge
   assets/index-*.css assets/vendor-*.css             all CSS tokens and component styles
   assets/fonts/montserrat-{light,regular,medium}-*.woff2

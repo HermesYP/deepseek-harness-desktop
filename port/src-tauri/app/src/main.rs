@@ -1,3 +1,3 @@
-fn main() {
-    dsh_desktop::run();
+fn main() -> Result<(), tauri::Error> {
+    dsh_desktop::run()
 }

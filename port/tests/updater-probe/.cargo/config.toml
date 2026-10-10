@@ -1,0 +1,17 @@
+# The probe compiles the production `app/src/update_flow.rs` verbatim, so the
+# two places where that file must differ — its application-handle alias and its
+# dialog surface — are selected by a `cfg` flag rather than by editing a copy of
+# the file.
+#
+# A Cargo *feature* would define `feature = "updater_probe"`, which is not the
+# cfg the production text tests. This sets the bare cfg for every target in the
+# probe crate, so the production module sees it exactly as a shipped build would
+# not.
+[build]
+rustflags = ["--cfg", "updater_probe"]
+rustdocflags = ["--cfg", "updater_probe"]
+
+[net]
+# The probe never fetches: every dependency is already in the local registry
+# cache, and the DSH sandbox blocks crate downloads.
+offline = true

@@ -15,8 +15,8 @@ pub mod supervisor;
 pub mod update_tasks;
 
 pub use control::{
-    ControlEndpoint, ControlError, ControlLink, ControlServer, HostEvent, PlatformSession,
-    ShellMessage, UpdateTasksAction, PROTOCOL_GENERATION,
+    ControlEndpoint, ControlError, ControlLink, ControlServer, FrameDecoder, HostEvent,
+    PlatformSession, RawChannel, ShellMessage, UpdateTasksAction, PROTOCOL_GENERATION,
 };
-pub use proc_tree::{process_alive, stop_tree, StopOutcome, TreeContainment};
-pub use supervisor::{HostFatal, HostReady, PackageManager, SpawnPlan, Supervisor};
+pub use proc_tree::{process_alive, stop_tree, StopBudget, StopOutcome, TreeContainment};
+pub use supervisor::{HostFatal, HostReady, PackageManager, SpawnPlan, Supervisor, TeardownStatus};

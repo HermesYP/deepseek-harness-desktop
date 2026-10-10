@@ -1,0 +1,57 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; connect-src ipc: http://ipc.localhost;">
+<title>Mandatory update</title>
+<style>
+:root{color-scheme:light dark;font:16px system-ui,sans-serif}body{margin:0;padding:30px;background:#10151f;color:#eef2f8}main{max-width:520px;margin:auto}h1{font-size:1.5rem}#detail{white-space:pre-wrap;overflow-wrap:anywhere;line-height:1.55;color:#c5ceda}.meta{color:#99a6b8;font-size:.9rem}#error{color:#ff9d9d;min-height:1.5em}button{font:inherit;padding:10px 16px;margin:8px 8px 0 0;border:0;border-radius:8px;cursor:pointer;background:#2b83f6;color:white}button.secondary{background:#394455}button.quit{background:#515b69}:focus-visible{outline:3px solid #8fc1ff;outline-offset:2px}</style>
+</head>
+<body>
+<main aria-live="polite">
+<h1 id="title">Update policy</h1>
+<p id="detail">Waiting for update policy confirmation. You can quit the application.</p>
+<p class="meta"><span id="version-label">Client version</span>: <span id="version">—</span></p>
+<p id="error" role="alert" aria-live="assertive"></p>
+<div><button id="retry" type="button">Retry</button><button id="update" type="button">Update</button><button id="quit" class="quit" type="button">Quit</button></div>
+</main>
+<script>
+(() => {
+  const copy = {
+    en: {title:'An update is required', detail:'This version must be updated before you can continue.', pendingTitle:'Update policy', pendingDetail:'Waiting for update policy confirmation. You can quit the application.', retry:'Retry', update:'Update', quit:'Quit', version:'Client version', failed:'The action could not be completed. Please try again.'},
+    zh: {title:'需要更新', detail:'请先更新此版本，然后再继续使用。', pendingTitle:'更新策略', pendingDetail:'正在等待更新策略确认。您可以退出应用。', retry:'重试', update:'更新', quit:'退出', version:'客户端版本', failed:'操作未能完成，请重试。'}
+  };
+  const $ = id => document.getElementById(id);
+  let text = copy.en;
+  async function render(data) {
+    const locale = data.locale === 'zh' ? 'zh' : 'en';
+    text = copy[locale];
+    document.documentElement.lang = locale;
+    $('title').textContent = (typeof data.title === 'string' && data.title.trim()) ? data.title : (data.blocking ? text.title : text.pendingTitle);
+    $('detail').textContent = (typeof data.detail === 'string' && data.detail.trim()) ? data.detail : (data.blocking ? text.detail : text.pendingDetail);
+    $('update').disabled = !data.blocking;
+    $('version-label').textContent = text.version;
+    $('version').textContent = typeof data.clientVersion === 'string' ? data.clientVersion : '—';
+    $('retry').textContent = text.retry; $('update').textContent = text.update; $('quit').textContent = text.quit;
+    $('error').textContent = data.error ? String(data.error) : '';
+    const invoke = window.__TAURI_INTERNALS__ && window.__TAURI_INTERNALS__.invoke;
+    if (typeof invoke !== 'function') throw new Error('Native policy acknowledgment unavailable');
+    await invoke('policy_presented', { sequence: data.sequence });
+  }
+  window.__DSH_POLICY_RENDER = render;
+  for (const [id, command] of [['retry','policy_retry'],['update','policy_update'],['quit','policy_quit']]) {
+    $(id).addEventListener('click', async () => {
+      $('error').textContent = '';
+      try {
+        const invoke = window.__TAURI_INTERNALS__ && window.__TAURI_INTERNALS__.invoke;
+        if (typeof invoke !== 'function') throw new Error('Native policy action unavailable');
+        await invoke(command);
+      } catch (_) { $('error').textContent = text.failed; }
+    });
+  }
+
+})();
+</script>
+</body>
+</html>

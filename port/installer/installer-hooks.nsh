@@ -27,7 +27,9 @@
 ;
 ;    The repository-owned pinned template removes both stock macro invocations.
 ;    It uses `DSH_INSTALLER_GUARD_RUNNING_INSTANCE` after each pre-hook check,
-;    closing the check gap while retaining the port's bounded wait/refusal policy.
+;    narrowing the window between the two observations while retaining the port's
+;    bounded wait/refusal policy. It does not close that window: the checks are
+;    two separate observations of a non-atomic fact (see `installer-process.nsh`).
 ;    The stock macro remains defined by Tauri's `utils.nsh`, but is unreachable
 ;    from the Install and Uninstall sections in the registered template.
 ;
@@ -103,9 +105,10 @@
 
 ; --- pre-install ------------------------------------------------------------
 ;
-; Runs first, before the registered template's second guard check. The second check
-; closes the gap if a same-name process appears after this hook; both decisions
-; refuse safely instead of entering Tauri's stock process-killing macro.
+; Runs first, before the registered template's second guard check. That second
+; check narrows the window if a same-name process appears after this hook, but it
+; cannot close the window; both decisions refuse safely instead of entering
+; Tauri's stock process-killing macro.
 ;
 ; WHY `Abort` AND NOT `Quit`, AND WHAT WAS ACTUALLY MEASURED.
 ;

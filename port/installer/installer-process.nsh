@@ -44,8 +44,13 @@
 ; cannot prove the running process belongs to `$INSTDIR`. A same-named process in
 ; a DIFFERENT directory therefore also causes a refusal. This conservative
 ; side-by-side refusal is intentional for this milestone; a path-aware native
-; helper is a separate enhancement. Repeated checks are not an atomic installation
-; lease, so a process can still appear after the final check.
+; helper is a separate enhancement.
+;
+; THE SECOND CHECK NARROWS THE WINDOW BUT CANNOT CLOSE IT. The pre-install hook
+; and the registered template's later check are two separate observations of a
+; non-atomic fact, so a same-name process can still appear after the final check
+; and the installation proceeds. They are not an atomic installation lease, and
+; nothing in this tree describes them as one.
 ;
 ; STRUCTURE
 ;
@@ -158,6 +163,7 @@ Var dshNameRunningCount
 Var dshWaitCount
 Var dshWaitTimedOut
 Var dshScanResult
+Var dshScanStackCheck
 Var dshRelaunchArgs
 Var dshRelaunchRequested
 Var dshRelaunchResult
@@ -198,19 +204,47 @@ Var PassiveMode
 
 ; Presence scan. Sets $dshNameRunningCount: 1 present, 0 absent, -1 unreadable.
 ;
-; Contains no `Push`/`Pop` of its own: NSIS keeps a `Call`'s return address on the
-; same stack `Push` uses, and a nested function that pops its own saved registers
-; can consume the caller's return address.
+; THE SENTINEL PROTOCOL, AND WHY A BARE `Pop` IS NOT SAFE.
+;
+; NSIS keeps a `Call`'s return address on the same stack `Push`/`Pop` use, so a
+; function that pops more values than were pushed does not merely read garbage -
+; it consumes the caller's return address, and `FunctionEnd`'s `Return` then
+; jumps to whatever happened to be underneath. A plugin that pushes no result is
+; exactly that case, and the earlier version of this file popped unconditionally.
+;
+; The sentinel is therefore armed before the call and the pop count is fixed:
+;
+;   Push "DSH_PROCESS_SCAN_NO_RESULT"              ; armed before the plugin call
+;   nsis_tauri_utils::FindProcessCurrentUser ...    ; pushes one value, or none
+;   Pop $dshScanResult                             ; that value, OR the sentinel
+;
+; If the plugin pushed nothing, `$dshScanResult` IS the sentinel: it is reported
+; as indeterminate and it is already consumed, so no second pop happens. If the
+; plugin did push a value, the sentinel is still below it; a second pop consumes
+; and verifies it. Every branch pops exactly what it pushed plus what the plugin
+; pushed, so the return address is never reached. A value that is not exactly
+; "0" or "1", or a sentinel that is not intact, stays indeterminate instead of
+; being coerced into an observation.
 Function DshProcessCountByName
+  Push "DSH_PROCESS_SCAN_NO_RESULT"
   nsis_tauri_utils::FindProcessCurrentUser "${DSH_MAIN_BINARY_NAME}.exe"
   Pop $dshScanResult
-  ; 0 means at least one process matched; 1 means none did (tauri-bundler
-  ; utils.nsh:39 branches on `$R0 = 0` meaning "running").
   StrCpy $dshNameRunningCount -1
-  ${If} $dshScanResult = 0
-    StrCpy $dshNameRunningCount 1
-  ${ElseIf} $dshScanResult = 1
-    StrCpy $dshNameRunningCount 0
+  ${If} $dshScanResult == "DSH_PROCESS_SCAN_NO_RESULT"
+    ; No observation was pushed. -1 already means indeterminate, and both callers
+    ; treat that as a refusal.
+  ${Else}
+    ; 0 means at least one process matched; 1 means none did (tauri-bundler
+    ; utils.nsh:39 branches on `$R0 = 0` meaning "running"). The sentinel must
+    ; still be intact below the observation before either reading is trusted.
+    Pop $dshScanStackCheck
+    ${If} $dshScanStackCheck == "DSH_PROCESS_SCAN_NO_RESULT"
+    ${AndIf} $dshScanResult == "0"
+      StrCpy $dshNameRunningCount 1
+    ${ElseIf} $dshScanStackCheck == "DSH_PROCESS_SCAN_NO_RESULT"
+    ${AndIf} $dshScanResult == "1"
+      StrCpy $dshNameRunningCount 0
+    ${EndIf}
   ${EndIf}
 FunctionEnd
 
@@ -342,14 +376,25 @@ FunctionEnd
 
 ; The uninstaller's own copies of the two helpers the guard calls. See the note on
 ; `un.DshInstallerGuardRunningInstance` for why these exist as `un.` twins.
+; The uninstaller's copy of the same sentinel protocol. The two function tables
+; are separate, so neither copy can call the other, and a divergence would mean
+; one of the two paths fails open. Keep this body equivalent to the installer's.
 Function un.DshProcessCountByName
+  Push "DSH_PROCESS_SCAN_NO_RESULT"
   nsis_tauri_utils::FindProcessCurrentUser "${DSH_MAIN_BINARY_NAME}.exe"
   Pop $dshScanResult
   StrCpy $dshNameRunningCount -1
-  ${If} $dshScanResult = 0
-    StrCpy $dshNameRunningCount 1
-  ${ElseIf} $dshScanResult = 1
-    StrCpy $dshNameRunningCount 0
+  ${If} $dshScanResult == "DSH_PROCESS_SCAN_NO_RESULT"
+    ; No observation was pushed; the sentinel is already consumed.
+  ${Else}
+    Pop $dshScanStackCheck
+    ${If} $dshScanStackCheck == "DSH_PROCESS_SCAN_NO_RESULT"
+    ${AndIf} $dshScanResult == "0"
+      StrCpy $dshNameRunningCount 1
+    ${ElseIf} $dshScanStackCheck == "DSH_PROCESS_SCAN_NO_RESULT"
+    ${AndIf} $dshScanResult == "1"
+      StrCpy $dshNameRunningCount 0
+    ${EndIf}
   ${EndIf}
 FunctionEnd
 

@@ -77,8 +77,9 @@ Var WixMode
 Var OldMainBinaryName
 
 ; Shared non-killing guard used at the stock template's later check point. The
-; hooks check first; repeating the check closes the gap without terminating a
-; newly appeared process. `FUNCTION` selects the installer/uninstaller table.
+; hooks check first; repeating the check narrows the window without terminating a
+; newly appeared process, but it cannot close that window. `FUNCTION` selects the
+; installer/uninstaller table.
 !macro DSH_INSTALLER_GUARD_RUNNING_INSTANCE FUNCTION
   Call ${FUNCTION}
   ${If} $dshInstallerError != ""

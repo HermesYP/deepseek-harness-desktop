@@ -3,13 +3,15 @@
   "tauriCliVersion": "2.11.5",
   "tauriBundlerVersion": "2.9.4",
   "tauriCliBundlerRequirement": "tauri-cli 2.11.5 Cargo.toml pins tauri-bundler = 2.9.4",
+  "tauriCliPackageManifestSha256": "f591f8e0738a20b9803f5da6aaff454e13fd76c4a32edd7ebc91ad4f64592ace",
+  "tauriBundlerPackageManifestSha256": "2ab365f5c0ae53d4ca0b595db400507e03ac2517516a8dd7c21980a2c07145f6",
   "upstreamTemplatePath": "tauri-bundler-2.9.4/src/bundle/windows/nsis/installer.nsi",
   "upstreamTemplateSha256": "20f4ecc730defb71f1342eaeaec4021df13be3d843abba0effe88ea5835fa079",
-  "repositoryTemplateSha256": "603530b37d031c5e9e8a5fb8f473cd8c48c869a4b2587e78a99f40620afe0cb7",
+  "repositoryTemplateSha256": "8fd2a57e844129a4ac265c25436ac0c8872c2778b8634ed011139b8bb00d3b5d",
   "reviewedTemplateChanges": [
     "Add a shared non-killing install/uninstall guard macro that reports/refuses with exit code 2.",
     "Replace the stock CheckIfAppIsRunning call in Install with a second bounded port guard check.",
     "Replace the stock CheckIfAppIsRunning call in Uninstall with a second bounded port guard check."
   ],
-  "unsupportedUpgradeBoundary": "The pinned template's normal upgrade page may invoke a pre-existing uninstaller through ExecWait. Previously installed uninstaller bytes are not replaced by this template and may retain a stock name-based killing branch; those legacy upgrade paths remain unsupported until separately qualified."
+  "unsupportedUpgradeBoundary": "The ordinary upgrade path may invoke a pre-existing uninstaller through ExecWait, in both the NSIS and the WiX branches. The new template guards do not protect those previously installed uninstaller bytes, which may retain a stock name-based killing branch, so the ordinary upgrade paths remain unsupported until separately qualified."
 }

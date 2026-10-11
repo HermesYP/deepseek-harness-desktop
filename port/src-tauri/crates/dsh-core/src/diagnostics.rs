@@ -397,9 +397,9 @@ pub fn render_crash_report(input: &CrashReportInput<'_>) -> String {
     .join("\n")
 }
 
-/// Write one report into `directory`, creating it when absent. Failure is
-/// returned to the caller, which shows the recovery dialog without a path
-/// rather than failing over a diagnostic aid.
+/// Write and sync a private temporary file before publishing the final name.
+/// A failed or interrupted write never presents a partial report as complete.
+/// Failure is returned to the recovery dialog without replacing an older report.
 pub fn write_crash_report(
     directory: &Path,
     input: &CrashReportInput<'_>,
@@ -414,15 +414,41 @@ pub fn write_crash_report(
     set_directory_owner_only(directory);
     let path = directory.join(crash_report_file_name(&input.time, input.source));
     let content = render_crash_report(input);
+    publish_crash_report(&path, |file| file.write_all(content.as_bytes()))
+}
+
+fn publish_crash_report(
+    path: &Path,
+    write: impl FnOnce(&mut std::fs::File) -> std::io::Result<()>,
+) -> Result<PathBuf, DshError> {
+    let pending = path.with_file_name(format!(".dsh-crash-{}.pending", uuid::Uuid::new_v4()));
     let mut options = std::fs::OpenOptions::new();
     options.write(true).create_new(true);
     set_file_owner_only(&mut options);
     let mut file = options
-        .open(&path)
+        .open(&pending)
         .map_err(|e| DshError::io("create crash report", Some(path.display().to_string()), &e))?;
-    file.write_all(content.as_bytes())
-        .map_err(|e| DshError::io("write crash report", Some(path.display().to_string()), &e))?;
-    Ok(path)
+    // The guard is armed only after exclusive creation succeeded. It can never
+    // delete an unrelated file on a failed create_new or a final-name collision.
+    let pending_guard = PendingCrashReport(pending);
+    let result = write(&mut file).and_then(|()| file.sync_all());
+    drop(file);
+    result.map_err(|e| DshError::io("write crash report", Some(path.display().to_string()), &e))?;
+    // Same-directory linking publishes complete bytes without overwriting a
+    // previous report. Unsupported filesystems fail explicitly. A kill before
+    // this operation leaves only an unadvertised pending file; after it the
+    // final report already contains synced bytes.
+    std::fs::hard_link(&pending_guard.0, path)
+        .map_err(|e| DshError::io("publish crash report", Some(path.display().to_string()), &e))?;
+    Ok(path.to_path_buf())
+}
+
+struct PendingCrashReport(PathBuf);
+
+impl Drop for PendingCrashReport {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(&self.0);
+    }
 }
 
 /// Delete the oldest reports beyond `retained` and leave every other file in the
@@ -790,6 +816,59 @@ mod tests {
         let end = rendered.find("--- renderer console").expect("section");
         let section = &rendered[start..end];
         assert!(section.chars().count() < HOST_DIAGNOSTIC_MAX_CHARS + 100);
+    }
+
+    #[test]
+    fn crash_report_is_not_visible_until_its_contents_are_complete() {
+        let directory = tempfile::tempdir().expect("owned fixture");
+        let path = directory.path().join("crash-final.log");
+        let published = publish_crash_report(&path, |file| {
+            assert!(
+                !path.exists(),
+                "a reader must not see a partial final report"
+            );
+            file.write_all(b"complete diagnostic")
+        })
+        .expect("publish complete report");
+        assert_eq!(
+            std::fs::read(published).expect("read"),
+            b"complete diagnostic"
+        );
+        assert_eq!(
+            std::fs::read_dir(directory.path()).expect("list").count(),
+            1
+        );
+    }
+
+    #[test]
+    fn failed_crash_report_write_leaves_no_empty_or_partial_report() {
+        let directory = tempfile::tempdir().expect("owned fixture");
+        let path = directory.path().join("crash-final.log");
+        let error = publish_crash_report(&path, |file| {
+            file.write_all(b"partial")?;
+            Err(std::io::Error::other("injected write failure"))
+        })
+        .expect_err("write failure is reported");
+        assert!(matches!(error, DshError::Io { .. }));
+        assert!(!path.exists());
+        assert_eq!(
+            std::fs::read_dir(directory.path()).expect("list").count(),
+            0
+        );
+    }
+
+    #[test]
+    fn crash_report_collision_preserves_the_existing_report() {
+        let directory = tempfile::tempdir().expect("owned fixture");
+        let path = directory.path().join("crash-final.log");
+        std::fs::write(&path, b"original report").expect("seed");
+        publish_crash_report(&path, |file| file.write_all(b"new report"))
+            .expect_err("never overwrite an existing report");
+        assert_eq!(std::fs::read(path).expect("read"), b"original report");
+        assert_eq!(
+            std::fs::read_dir(directory.path()).expect("list").count(),
+            1
+        );
     }
 
     #[test]

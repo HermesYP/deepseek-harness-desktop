@@ -23,14 +23,13 @@
 ;    NAME and then calls `KillProcessCurrentUser`, terminating every match. A
 ;    second installation of the same product in a different directory - a
 ;    side-by-side qualification install, a portable copy, a colleague's extracted
-;    build - is killed even though it shares no files, and an in-flight agent task
-;    is lost after a single confirmation with no chance to refuse.
+;    build - is indistinguishable and an in-flight agent task can be lost.
 ;
-;    The template runs that macro inside the Install and Uninstall sections, so
-;    this file cannot suppress it by defining a macro. What it can do is run
-;    FIRST, resolve the question its own way, and refuse before the template's
-;    check is reached. `installer-process.nsh` documents what that check can and
-;    cannot prove, and how a refusal is reported.
+;    The repository-owned pinned template removes both stock macro invocations.
+;    It uses `DSH_INSTALLER_GUARD_RUNNING_INSTANCE` after each pre-hook check,
+;    closing the check gap while retaining the port's bounded wait/refusal policy.
+;    The stock macro remains defined by Tauri's `utils.nsh`, but is unreachable
+;    from the Install and Uninstall sections in the registered template.
 ;
 ; 2. Reliable `/UPDATE` relaunch, exactly once. Tauri's `.onInstSuccess`
 ;    (installer.nsi:743-754) honours `/R` only for silent or passive installers,
@@ -104,9 +103,9 @@
 
 ; --- pre-install ------------------------------------------------------------
 ;
-; Runs before Tauri copies files and before its own process check, so that check
-; finds nothing and does nothing. Its own decision is to refuse rather than to
-; kill.
+; Runs first, before the registered template's second guard check. The second check
+; closes the gap if a same-name process appears after this hook; both decisions
+; refuse safely instead of entering Tauri's stock process-killing macro.
 ;
 ; WHY `Abort` AND NOT `Quit`, AND WHAT WAS ACTUALLY MEASURED.
 ;
@@ -199,10 +198,9 @@
 
 ; --- uninstall --------------------------------------------------------------
 ;
-; The same path-specific rule Tauri applies at :782, executed first so the
-; template's own name-scoped kill is not reached. `$INSTDIR` in the uninstaller
-; is the directory recorded at install time, so a custom destination stays
-; correct.
+; The same conservative name-based refusal used by the registered template at its
+; later uninstaller check. `$INSTDIR` remains the install destination for removal
+; and relaunch.
 !macro NSIS_HOOK_PREUNINSTALL
   !insertmacro DSH_INSTALLER_INIT
   Call un.DshInstallerGuardRunningInstance

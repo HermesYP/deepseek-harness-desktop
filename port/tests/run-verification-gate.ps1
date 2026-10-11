@@ -256,6 +256,7 @@ if ($Lane -in @('node', 'all')) {
 
     $lanes = @(
         [pscustomobject]@{ Id = 'node-port-tests'; Dir = $TestsDir; Pattern = '*.test.mjs'; WorkDir = $RepoRoot; MinFiles = $MinNodeFiles; MinTests = $MinNodeTests }
+        [pscustomobject]@{ Id = 'node-status-receipts'; Dir = $TestsDir; Pattern = 'status-receipts.test.mjs'; WorkDir = $RepoRoot; MinFiles = 1; MinTests = 6 }
     )
     foreach ($testLane in $lanes) {
         Assert-GateTime $testLane.Id
@@ -284,7 +285,7 @@ if ($Lane -in @('node', 'all')) {
     # failure rather than a smaller run.
     $upstream = Join-Path $RepoRoot '_upstream'
     $packagingWorkDir = if (Test-Path -LiteralPath (Join-Path $upstream 'node_modules\tsx')) { $upstream } else { $RepoRoot }
-    foreach ($name in @('runtime-materializer.test.mjs', 'runtime-seal.test.mjs', 'build-script.test.mjs', 'gate-contract.test.mjs', 'execution-node-trust.test.mjs')) {
+    foreach ($name in @('installer-contract.test.mjs', 'runtime-lock-inputs.test.mjs', 'repair-gate-inventory.test.mjs', 'config-editor-runtime-import.test.mjs', 'runtime-materializer.test.mjs', 'runtime-seal.test.mjs', 'build-script.test.mjs', 'gate-contract.test.mjs', 'execution-node-trust.test.mjs')) {
         Assert-GateTime "packaging suite $name"
         $file = Join-Path $PackagingTests $name
         $laneId = "node-packaging-$($name -replace '\.test\.mjs$', '')"

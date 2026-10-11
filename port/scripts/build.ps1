@@ -93,7 +93,7 @@
 #>
 [CmdletBinding()]
 param(
-  [ValidateSet('ui', 'core', 'runtime', 'bundle', 'verify', 'packaging-tests', 'all')]
+  [ValidateSet('ui', 'core', 'runtime', 'runtime-lock-refresh', 'bundle', 'verify', 'packaging-tests', 'all')]
   [string]$Stage = 'all',
   [switch]$Release,
   [switch]$SkipResourceStages,
@@ -108,7 +108,11 @@ param(
   # Omitted (the normal case), a hash-equal copy of the pinned interpreter is made
   # in an outside owned root and preflighted. This never changes which bytes ship:
   # Install-PinnedNodeInto still installs the pinned archive bytes into the payload.
-  [string]$AttestedNodePath
+  [string]$AttestedNodePath,
+  [ValidatePattern('^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$')]
+  [string]$RuntimeLockCandidateName,
+  [string]$RuntimeLockStageRoot,
+  [string]$RuntimeLockCandidateRoot
 )
 
 $ErrorActionPreference = 'Stop'
@@ -123,6 +127,7 @@ $AppDir = Join-Path $TauriDir 'app'
 $Scratch = Join-Path $PortRoot '.scratch'
 $InstallerDir = Join-Path $PortRoot 'installer'
 $PayloadRoot = Join-Path $PortRoot 'runtime-payload'
+$RuntimeLockInputs = Join-Path $PortRoot 'runtime-locks\windows-x64'
 $qualificationRoot = $null
 $qualificationClientBuild = $null
 if ($ClientUpdatesQualificationBuildName) {
@@ -168,6 +173,16 @@ if ($RuntimeQualificationName) {
 }
 $PayloadDsh = Join-Path $PayloadRoot 'dsh'
 $PackagingTests = Join-Path $PortRoot 'tests\packaging'
+if ($Stage -eq 'runtime-lock-refresh') {
+  if (-not $RuntimeLockCandidateName -or -not $RuntimeLockStageRoot -or -not $RuntimeLockCandidateRoot) {
+    throw '-Stage runtime-lock-refresh requires -RuntimeLockCandidateName, a fresh -RuntimeLockStageRoot, and an outside -RuntimeLockCandidateRoot.'
+  }
+  if ($RuntimeQualificationName -or $ClientUpdatesQualificationBuildName) {
+    throw 'Runtime lock refresh cannot be combined with payload qualification options.'
+  }
+} elseif ($RuntimeLockCandidateName -or $RuntimeLockStageRoot -or $RuntimeLockCandidateRoot) {
+  throw 'Runtime lock candidate parameters are allowed only with -Stage runtime-lock-refresh.'
+}
 
 Import-Module (Join-Path $PSScriptRoot 'lib\publish.psm1') -Force
 Import-Module (Join-Path $PSScriptRoot 'lib\payload-manifest.psm1') -Force
@@ -407,6 +422,10 @@ function Assert-ResourceRootsForCompile {
 
 function Stage-Runtime {
   Write-Stage 'Supervised dsh runtime payload (staged, validated, then published atomically)'
+  $runtimeTarget = Get-CurrentNodeTargetName
+  if ($runtimeTarget -ne 'win-x64') {
+    throw "Runtime target '$runtimeTarget' is explicitly unqualified; reviewed runtime locks currently exist only for win-x64. No payload was published."
+  }
 
   # A previously interrupted publication is resolved before anything else, so the
   # published root is in a known state and the last known-good payload is not
@@ -424,7 +443,7 @@ function Stage-Runtime {
   $null = New-Item -ItemType Directory -Path $stageRoot
 
   try {
-    Stage-RuntimeInto -StageRoot $stageRoot
+    Stage-RuntimeInto -StageRoot $stageRoot -LockMode 'frozen' -LockInputRoot $RuntimeLockInputs -UpstreamCommit (Get-UpstreamCommit)
 
     # Two DIFFERENT trees are validated here, and conflating them was a blocker:
     # the staging root is the build's workspace (`packed/`, `work/`, `node/`,
@@ -458,7 +477,7 @@ function Stage-Runtime {
     # build differ.
     $nodeIdentity = Get-StagedNodeIdentity -StageRoot $stageRoot
     $manifest = New-DshPayloadManifest -Root $stagedPayload `
-      -Inputs (Get-PayloadInputs) `
+      -Inputs (Get-PayloadInputs -StageRoot $stageRoot) `
       -UpstreamCommit (Get-UpstreamCommit) `
       -Version (Get-ProductVersion) `
       -HostProtocolVersion (Get-StagedHostProtocolVersion -StageRoot $stageRoot) `
@@ -521,6 +540,61 @@ function Stage-Runtime {
   }
 }
 
+function Stage-RuntimeLockRefresh {
+  Write-Stage 'Runtime lock refresh (candidate only; no payload publication)'
+  if ((Get-CurrentNodeTargetName) -ne 'win-x64') {
+    throw 'Runtime lock refresh is currently qualified only for win-x64.'
+  }
+  $root = [System.IO.Path]::GetFullPath($RuntimeLockStageRoot)
+  if (-not (Test-Path -LiteralPath $root -PathType Container)) {
+    throw "Runtime lock stage root must be a fresh New-DshQualificationRoot directory: $root"
+  }
+  Import-Module (Join-Path $PackagingTests 'qualification-preflight.psm1') -Force
+  Assert-DshNoLinkedAncestors -Path $root
+  $repoFull = [System.IO.Path]::GetFullPath($RepoRoot).TrimEnd('\', '/') + [System.IO.Path]::DirectorySeparatorChar
+  $comparison = [System.StringComparison]::OrdinalIgnoreCase
+  if ($root.StartsWith($repoFull, $comparison)) {
+    throw "Runtime lock refresh executables must be staged outside the workspace: $root"
+  }
+  if (@(Get-ChildItem -LiteralPath $root -Force).Count -gt 0) {
+    throw "Runtime lock stage root is not fresh and empty; preserving it: $root"
+  }
+
+  $candidateParent = Split-Path -Parent ([System.IO.Path]::GetFullPath($RuntimeLockCandidateRoot))
+  $candidate = [System.IO.Path]::GetFullPath($RuntimeLockCandidateRoot)
+  if (-not (Test-Path -LiteralPath $candidateParent -PathType Container)) {
+    throw "Runtime lock candidate parent must be a fresh owned directory: $candidateParent"
+  }
+  Assert-DshNoLinkedAncestors -Path $candidateParent
+  if (@(Get-ChildItem -LiteralPath $candidateParent -Force).Count -gt 0) {
+    throw "Runtime lock candidate parent is not fresh and empty; preserving it: $candidateParent"
+  }
+  if ($candidate.StartsWith($repoFull, $comparison) -or
+      $candidateParent.StartsWith($repoFull, $comparison)) {
+    throw "Runtime lock candidate outputs must remain outside the workspace: $candidate"
+  }
+  if ((Split-Path -Leaf $candidate) -cne $RuntimeLockCandidateName) {
+    throw "Runtime lock candidate directory leaf must equal its validated name: $candidate"
+  }
+  if (Test-Path -LiteralPath $candidate) {
+    throw "Runtime lock candidate already exists and is preserved: $candidate"
+  }
+  $stageRootPrefix = $root.TrimEnd('\', '/') + [System.IO.Path]::DirectorySeparatorChar
+  $candidateParentPrefix = $candidateParent.TrimEnd('\', '/') + [System.IO.Path]::DirectorySeparatorChar
+  if ([string]::Equals($root, $candidateParent, $comparison) -or
+      $candidate.StartsWith($stageRootPrefix, $comparison) -or
+      $root.StartsWith($candidateParentPrefix, $comparison)) {
+    throw 'Runtime lock candidate output and executable stage must use separate outside roots.'
+  }
+
+  Stage-RuntimeInto -StageRoot $root -LockMode 'refresh' `
+    -UpstreamCommit (Get-UpstreamCommit) -LockCandidateRoot $candidate
+  if (-not (Test-Path -LiteralPath (Join-Path $candidate 'descriptor.json') -PathType Leaf)) {
+    throw "Runtime lock refresh produced no candidate descriptor: $candidate"
+  }
+  Write-Host "RUNTIME_LOCK_CANDIDATE=$candidate" -ForegroundColor Yellow
+}
+
 # Materialise the payload into an empty staging directory.
 # Execute the runtime staging program with a TRUSTED interpreter image.
 #
@@ -569,7 +643,22 @@ function Resolve-DshStagingExecutionNode {
   return $resolved
 }
 
-function Stage-RuntimeInto([string]$StageRoot) {
+function Stage-RuntimeInto(
+  [string]$StageRoot,
+  [ValidateSet('frozen', 'refresh')][string]$LockMode = 'frozen',
+  [string]$LockInputRoot,
+  [string]$UpstreamCommit,
+  [string]$LockCandidateRoot
+) {
+  if ((Get-CurrentNodeTargetName) -ne 'win-x64') {
+    throw 'Runtime lock closure is qualified only for win-x64; refusing an unreviewed target.'
+  }
+  if ($LockMode -eq 'refresh' -and -not $LockCandidateRoot) {
+    throw 'Runtime lock refresh requires a new candidate output path.'
+  }
+  if ($LockMode -eq 'frozen' -and (-not $LockInputRoot -or -not $UpstreamCommit)) {
+    throw 'Frozen runtime staging requires reviewed lock inputs and the exact upstream commit.'
+  }
   $packedRoot = Join-Path $StageRoot 'packed'
   $packedDsh = Join-Path $packedRoot 'dsh'
   $packedHost = Join-Path $packedRoot 'host'
@@ -584,9 +673,16 @@ function Stage-RuntimeInto([string]$StageRoot) {
   # Node/ABI, not the build machine's interpreter. Move these same verified
   # bytes into the payload once materialization finishes.
   $pinPath = Join-Path $InstallerDir 'node-runtime.json'
-  $stagingNode = Install-DshPinnedNode -ManifestPath $pinPath -TargetName (Get-CurrentNodeTargetName) `
-    -Destination (Join-Path $StageRoot 'node') -CacheRoot (Join-Path $Scratch 'node-archives') `
-    -LicenseDestination $workRoot -ArchivePath $NodeArchivePath -AllowDownload:$AllowNodeDownload
+  $pinnedManifest = Get-DshPinnedNodeManifest -ManifestPath $pinPath
+  $pinnedTarget = Get-DshPinnedNodeTarget -Manifest $pinnedManifest -Target 'win-x64'
+  $archiveForStage = $NodeArchivePath
+  if (-not $archiveForStage) {
+    $existingArchive = Join-Path (Join-Path $Scratch 'node-archives') (Split-Path -Leaf ([uri]$pinnedTarget.url).AbsolutePath)
+    if (Test-Path -LiteralPath $existingArchive -PathType Leaf) { $archiveForStage = $existingArchive }
+  }
+  $stagingNode = Install-DshPinnedNode -ManifestPath $pinPath -TargetName 'win-x64' `
+    -Destination (Join-Path $StageRoot 'node') -CacheRoot (Join-Path $workRoot 'node-archives') `
+    -LicenseDestination $workRoot -ArchivePath $archiveForStage -AllowDownload:$AllowNodeDownload
 
   # Pack the same inputs and select the same roots as upstream's
   # prepare-package-set.ts. Its roots are @deepseek-ai/dsh and
@@ -601,7 +697,7 @@ function Stage-RuntimeInto([string]$StageRoot) {
 
   # Upstream uses one directory for both the package set and runtime project:
   # createRuntimeProjectMetadata verifies the package set from projectDir.
-  $projectName = if ($qualificationRoot) { 'p' } else { 'runtime-project' }
+  $projectName = if ($qualificationRoot -or $LockMode -eq 'refresh') { 'p' } else { 'runtime-project' }
   $packageSet = Join-Path $workRoot $projectName
   $project = $packageSet
   $identityFile = Join-Path $workRoot 'runtime-identity.json'
@@ -611,10 +707,17 @@ function Stage-RuntimeInto([string]$StageRoot) {
   $probeStdout = Join-Path $workRoot 'adapter-resolution.stdout'
   $probeStderr = Join-Path $workRoot 'adapter-resolution.stderr'
 
+  # Windows PowerShell omits null native-argument values, which shifts later
+  # positional Node arguments. The unused side of either operation is an explicit
+  # sentinel so the imported helper path remains in its declared slot.
+  $lockInputArg = if ($LockInputRoot) { $LockInputRoot } else { '-' }
+  $lockCandidateArg = if ($LockCandidateRoot) { $LockCandidateRoot } else { '-' }
   $nodeArgs = @('--import', 'tsx/esm', $nodeProgram, $Upstream, $pnpmEntry,
     $packedDsh, $packedHost, $packedVendor, $packedLandlock, $packageSet, $project, $materialized,
     (Join-Path $TauriDir 'runtime\adapter.mjs'),
-    $probeStdout, $probeStderr, $identityFile)
+    $probeStdout, $probeStderr, $identityFile,
+    $LockMode, $lockInputArg, $UpstreamCommit, $lockCandidateArg,
+    (Join-Path $PSScriptRoot 'lib\runtime-locks.mjs'))
   # EXECUTION interpreter: a trusted outside copy (or an explicit attested one), never
   # the Low-image interpreter staged inside the workspace. The staged bytes stay in
   # place because they are what ships.
@@ -646,6 +749,15 @@ function Stage-RuntimeInto([string]$StageRoot) {
 
   if (-not (Test-Path $identityFile)) {
     throw "The runtime stage produced no identity record at $identityFile; the payload cannot be tied to its inputs."
+  }
+  if ($LockMode -eq 'refresh') {
+    $candidateDescriptor = Get-Content -LiteralPath (Join-Path $LockCandidateRoot 'descriptor.json') -Raw | ConvertFrom-Json
+    if ($candidateDescriptor.reviewStatus -ne 'CANDIDATE' -or $candidateDescriptor.target -ne 'win-x64' -or
+        $candidateDescriptor.upstreamCommit -ne $UpstreamCommit) {
+      throw 'Runtime lock refresh output is not a matching unreviewed candidate.'
+    }
+    Write-Host "RUNTIME_LOCK_CANDIDATE=$LockCandidateRoot" -ForegroundColor Yellow
+    return
   }
 
   # Ship the port-owned packages. Upstream's package set is a dependency closure
@@ -959,7 +1071,7 @@ function Get-CurrentNodeTargetName {
 
 # The pinned explicit inputs. Anything a human chose and the build depends on
 # belongs here, so a manifest difference names the input that moved.
-function Get-PayloadInputs {
+function Get-PayloadInputs([string]$StageRoot) {
   $inputs = @{}
 
   $adapter = Join-Path $TauriDir 'runtime\adapter.mjs'
@@ -971,12 +1083,44 @@ function Get-PayloadInputs {
 
   $nodeStageProgram = Get-DshRuntimeStageProgram
   $inputs['stageProgram'] = (Get-DshStringDigest -Value $nodeStageProgram)
-  foreach ($helper in @('seal-runtime.mjs', 'runtime-payload.psm1', 'payload-manifest.psm1')) {
+  foreach ($helper in @('seal-runtime.mjs', 'runtime-locks.mjs', 'runtime-payload.psm1', 'payload-manifest.psm1', 'config-editor-runtime-import.mjs')) {
     $inputs["packagingHelper:$helper"] = (Get-FileHash -LiteralPath (Join-Path $PSScriptRoot "lib\$helper") -Algorithm SHA256).Hash.ToLowerInvariant()
   }
 
   $packageManager = (Get-Content (Join-Path $Upstream 'package.json') -Raw | ConvertFrom-Json).packageManager
   $inputs['upstreamPackageManager'] = [string]$packageManager
+
+  $runtimeIdentityPath = Join-Path $StageRoot 'work\runtime-identity.json'
+  if (-not (Test-Path -LiteralPath $runtimeIdentityPath -PathType Leaf)) {
+    throw "Runtime staging produced no lock identity record: $runtimeIdentityPath"
+  }
+  $runtimeIdentity = Get-Content -LiteralPath $runtimeIdentityPath -Raw | ConvertFrom-Json
+  $lockIdentity = $runtimeIdentity.runtimeLockInputs
+  if ($null -eq $lockIdentity -or $lockIdentity.target -ne 'win-x64' -or
+      $lockIdentity.upstreamCommit -ne (Get-UpstreamCommit) -or
+      $lockIdentity.pnpmVersion -ne ([string]$packageManager -replace '^pnpm@', '').Split('+')[0]) {
+    throw 'Runtime lock input identity does not match the current target, upstream commit, or package-manager pin.'
+  }
+  $lockedFiles = @{
+    'runtimeLock:descriptor' = Join-Path $RuntimeLockInputs 'descriptor.json'
+    'runtimeLock:pnpmLock' = Join-Path $RuntimeLockInputs 'pnpm-lock.yaml'
+    'runtimeLock:workspacePolicy' = Join-Path $RuntimeLockInputs 'pnpm-workspace.yaml'
+  }
+  $expectedLockHashes = @{
+    'runtimeLock:descriptor' = [string]$lockIdentity.descriptorSha256
+    'runtimeLock:pnpmLock' = [string]$lockIdentity.lockSha256
+    'runtimeLock:workspacePolicy' = [string]$lockIdentity.workspacePolicySha256
+  }
+  foreach ($name in $lockedFiles.Keys) {
+    if (-not (Test-Path -LiteralPath $lockedFiles[$name] -PathType Leaf)) {
+      throw "Reviewed runtime lock input disappeared before sealing: $($lockedFiles[$name])"
+    }
+    $actualHash = (Get-FileHash -LiteralPath $lockedFiles[$name] -Algorithm SHA256).Hash.ToLowerInvariant()
+    if ($actualHash -ne $expectedLockHashes[$name]) {
+      throw "Reviewed runtime lock input changed after frozen installation: $($lockedFiles[$name])"
+    }
+    $inputs[$name] = $actualHash
+  }
 
   foreach ($portPackage in Get-DshPortPackageInputs `
       -SourceDirectories @((Join-Path $UiDir 'desktop-updates-bundle'), (Join-Path $UiDir 'client-updates')) `
@@ -1115,7 +1259,11 @@ function Test-Packaging {
     @{ Name = 'installer hooks compile'; Path = (Join-Path $PackagingTests 'nsis-hooks-compile.ps1') }
     @{ Name = 'installer guard messages localized'; Path = (Join-Path $PackagingTests 'nsis-strings-messages.ps1') }
     @{ Name = 'installer instance guard'; Path = (Join-Path $PackagingTests 'nsis-instance-guard.ps1') }
+    @{ Name = 'installer production contract'; Path = (Join-Path $PackagingTests 'installer-contract.test.mjs') }
+    @{ Name = 'repair contract inventory'; Path = (Join-Path $PackagingTests 'repair-gate-inventory.test.mjs') }
     @{ Name = 'runtime materializer policy'; Path = (Join-Path $PackagingTests 'runtime-materializer.test.mjs') }
+    @{ Name = 'config editor runtime const-enum import'; Path = (Join-Path $PackagingTests 'config-editor-runtime-import.test.mjs') }
+    @{ Name = 'reviewed runtime lock inputs'; Path = (Join-Path $PackagingTests 'runtime-lock-inputs.test.mjs') }
     @{ Name = 'final runtime descriptor'; Path = (Join-Path $PackagingTests 'runtime-seal.test.mjs') }
     @{ Name = 'build order and safety'; Path = (Join-Path $PackagingTests 'build-script.test.mjs') }
     @{ Name = 'installer hook control flow'; Path = (Join-Path $PackagingTests 'nsis-hook-behavior.ps1') }
@@ -1158,7 +1306,7 @@ function Test-Packaging {
 
 Test-Prerequisites
 
-$null = New-Item -ItemType Directory -Force -Path $Scratch
+if ($Stage -ne 'runtime-lock-refresh') { $null = New-Item -ItemType Directory -Force -Path $Scratch }
 $doAll = $Stage -eq 'all'
 
 # The clean-build order. `ui` and `runtime` produce the two `bundle.resources`
@@ -1170,7 +1318,8 @@ elseif ($needsResources -and -not $SkipResourceStages) {
   Write-Host '==> UI resource root required by the requested stage' -ForegroundColor Cyan
   Build-Ui
 }
-if ($doAll -or $Stage -eq 'runtime') { Stage-Runtime }
+if ($Stage -eq 'runtime-lock-refresh') { Stage-RuntimeLockRefresh }
+elseif ($doAll -or $Stage -eq 'runtime') { Stage-Runtime }
 elseif ($needsResources -and -not $SkipResourceStages) {
   Write-Host ''
   Write-Host '==> Runtime resource root required by the requested stage' -ForegroundColor Cyan

@@ -36,6 +36,7 @@ const here = dirname(fileURLToPath(import.meta.url))
 const portRoot = join(here, '..', '..')
 const modulePath = join(portRoot, 'scripts', 'lib', 'runtime-payload.psm1')
 const moduleText = readFileSync(modulePath, 'utf8')
+const lockHelperText = readFileSync(join(portRoot, 'scripts', 'lib', 'runtime-locks.mjs'), 'utf8')
 
 /**
  * Extract the embedded staging program.
@@ -57,6 +58,13 @@ const program = stagingProgram()
 test('the staging program is substantial JavaScript and not a stub', () => {
   assert.ok(program.length > 4000, `program is ${program.length} characters`)
   assert.match(program, /^import /m, 'program uses ESM imports')
+})
+
+test('upstream tar inspection receives stage-relative paths on Windows', () => {
+  assert.match(program, /const packageSetStageRoot = join\(packedDsh, '\.\.', '\.\.'\)/)
+  assert.match(program, /process\.chdir\(packageSetStageRoot\)/)
+  assert.match(program, /const packageInputs = \[packedDsh, packedHost, packedVendor, packedLandlock\]\s+\.map\(\(directory\) => relative\(packageSetStageRoot, directory\)\)/)
+  assert.match(program, /prepareDesktopPackageSet\(packageInputs, packageSet\)/)
 })
 
 test('upstream selection, project and file-policy modules are imported, not reimplemented', () => {
@@ -91,13 +99,56 @@ test('a package the closure omits is a hard failure, not a silent gap', () => {
   assert.match(program, /throw new Error\(`workspace package closure omits \$\{name\}`\)/)
 })
 
-test('the install is frozen, integrity-checked and isolated from a developer npmrc', () => {
-  assert.match(program, /pnpm\('install', '--lockfile-only'\)/)
-  assert.match(program, /pnpm\('install', '--prod', '--frozen-lockfile', '--trust-lockfile'\)/)
+test('normal staging validates the reviewed lock before a frozen integrity-checked install', () => {
+  const validate = program.indexOf('lockTools.validateRuntimeLockInputs({')
+  const frozenInstall = program.indexOf("pnpm('install', '--prod', '--frozen-lockfile', '--trust-lockfile')")
+  const refresh = program.indexOf("if (lockMode === 'refresh')")
+  const lockOnly = program.indexOf("pnpm('install', '--lockfile-only')")
+  const publication = program.indexOf('rmSync(output, { recursive: true, force: true })')
+  assert.ok(refresh >= 0 && refresh < lockOnly && lockOnly < validate,
+    'lockfile-only resolution exists only in the explicit refresh branch')
+  assert.ok(validate < frozenInstall && frozenInstall < publication,
+    'reviewed input validation and the frozen install precede payload materialization')
+  assert.doesNotMatch(program.slice(validate, publication), /--lockfile-only/,
+    'normal staging never resolves a replacement lockfile')
+  assert.match(program, /--frozen-lockfile', '--trust-lockfile/,
+    'normal installs are frozen and tarball integrity remains enforced')
+  assert.match(program, /runtime lock inputs:|runtimeLockIdentity/)
   // An empty user config stops a developer's ~/.npmrc redirecting the registry or
   // injecting a token into a build that ships.
   assert.match(program, /writeFileSync\(userConfig, ''\)/)
   assert.match(program, /NPM_CONFIG_USERCONFIG: userConfig/)
+})
+
+test('normal installs pin the registry and refuse ambient policy overrides', () => {
+  assert.match(program, /`--config\.registry=https:\/\/registry\.npmjs\.org\//)
+  assert.doesNotMatch(program, /process\.env\.npm_config_registry/)
+  assert.match(program, /ambient pnpm policy override refused/)
+  assert.match(program, /registry|userconfig|store_dir/)
+})
+
+test('the upstream native allow-list is preserved and unknown build scripts are rejected', () => {
+  for (const expected of [
+    'node-pty', 'koffi', 'fs-ext', '@deepseek-ai/dsh-subprocess-local',
+    '@google/genai', 'protobufjs', 'node-addon-require-builtin',
+  ]) assert.ok(lockHelperText.includes(expected), `helper enforces upstream build policy field ${expected}`)
+  assert.match(lockHelperText, /must set strictDepBuilds: true/)
+  assert.match(program, /strictDepBuilds: true/)
+  for (const expected of ['node-pty', 'koffi', 'fs-ext']) {
+    assert.match(lockHelperText, new RegExp(`\\['${expected}'\\, true\\]`))
+  }
+  assert.match(program, /ambient pnpm policy override refused/)
+  assert.doesNotMatch(program, /--ignore-scripts/)
+})
+
+test('the explicit refresh operation emits candidate inputs without blessing or publishing them', () => {
+  assert.match(program, /writeRuntimeLockCandidate/)
+  assert.match(lockHelperText, /reviewStatus: 'CANDIDATE'/)
+  assert.match(program, /RUNTIME_LOCK_CANDIDATE=/)
+  const refreshBlock = program.slice(program.indexOf("if (lockMode === 'refresh')"), program.indexOf('const policyOverrideKeys'))
+  assert.match(refreshBlock, /pnpm\('install', '--lockfile-only'\)/)
+  assert.doesNotMatch(refreshBlock, /rmSync\(output/)
+  assert.match(program, /runtimeLockInputs: runtimeLockIdentity/)
 })
 
 test('the pinned pnpm entry point is passed in rather than resolved from PATH', () => {

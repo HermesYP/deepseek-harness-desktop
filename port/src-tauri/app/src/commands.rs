@@ -376,7 +376,9 @@ pub async fn runtime_boot_ready(
         authenticated_url: state.gateway.authenticated_url(),
     };
     crate::policy_composition::require_state(&state)?;
-    crate::dev_handoff::write_boot_payload(&payload)?;
+    crate::dsh_debug_handoff! {
+        crate::dev_handoff::write_boot_payload(&payload)?;
+    };
     Ok(payload)
 }
 

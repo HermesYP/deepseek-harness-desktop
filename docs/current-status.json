@@ -1,0 +1,145 @@
+{
+  "schemaVersion": 1,
+  "generatedAt": "2026-10-10T22:26:56.194782+05:30",
+  "reviewedBaseline": "bd4641e1c58928add9f0adddf5e9afe8fbd201ea",
+  "rows": [
+    {
+      "gateId": "source-checks",
+      "title": "Source checks",
+      "evidenceKind": "source",
+      "scope": "Current-source locked Rust/probe tests, strict Clippy and declared all-lane checks; historical counts do not accept changed inputs",
+      "sourceCommit": null,
+      "sourceInputsSHA256": null,
+      "artifactSHA256": null,
+      "requiredChecks": [
+        "locked-workspace",
+        "locked-probe",
+        "strict-clippy",
+        "declared-all-lanes"
+      ],
+      "deferredReason": null,
+      "receipt": null
+    },
+    {
+      "gateId": "ui-build",
+      "title": "UI build",
+      "evidenceKind": "ui-build",
+      "scope": "Fresh preserved UI output and inventory hash; no renderer activation inferred",
+      "sourceCommit": null,
+      "sourceInputsSHA256": null,
+      "artifactSHA256": null,
+      "requiredChecks": [
+        "ui-build",
+        "ui-types",
+        "ui-tests"
+      ],
+      "deferredReason": null,
+      "receipt": null
+    },
+    {
+      "gateId": "bundled-host",
+      "title": "Bundled Host",
+      "evidenceKind": "host",
+      "scope": "New sealed payload, bundled interpreter and dependencies, composition and actual readiness",
+      "sourceCommit": null,
+      "sourceInputsSHA256": null,
+      "artifactSHA256": null,
+      "requiredChecks": [
+        "packaged-interpreter",
+        "dependency-seal",
+        "profile-composition",
+        "host-ready"
+      ],
+      "deferredReason": null,
+      "receipt": null
+    },
+    {
+      "gateId": "native-app",
+      "title": "Native app",
+      "evidenceKind": "native",
+      "scope": "Rebuilt DEBUG image, readiness, Host replacement, graceful quit and application-menu route",
+      "sourceCommit": null,
+      "sourceInputsSHA256": null,
+      "artifactSHA256": null,
+      "requiredChecks": [
+        "ready",
+        "host-replacement",
+        "graceful-quit",
+        "application-menu-update"
+      ],
+      "deferredReason": null,
+      "receipt": null
+    },
+    {
+      "gateId": "installer-contract",
+      "title": "Updater / installer contract",
+      "evidenceKind": "installer-contract",
+      "scope": "Production argv, expanded non-killing template and owned wait/refusal/race/one-relaunch fixtures; not a real upgrade",
+      "sourceCommit": null,
+      "sourceInputsSHA256": null,
+      "artifactSHA256": null,
+      "requiredChecks": [
+        "production-argv",
+        "expanded-template",
+        "wait-and-relaunch",
+        "bounded-refusal",
+        "install-race",
+        "uninstall-race"
+      ],
+      "deferredReason": null,
+      "receipt": null
+    },
+    {
+      "gateId": "installed-release",
+      "title": "Clean install / upgrade / uninstall",
+      "evidenceKind": "installed-release",
+      "scope": "Exact release bytes, production identity without overlap, no system Node; separate installed-artifact gate",
+      "sourceCommit": null,
+      "sourceInputsSHA256": null,
+      "artifactSHA256": null,
+      "requiredChecks": [
+        "clean-install",
+        "upgrade",
+        "uninstall",
+        "without-system-node"
+      ],
+      "deferredReason": null,
+      "receipt": null
+    },
+    {
+      "gateId": "settings-updates",
+      "title": "Settings Updates activation",
+      "evidenceKind": "native",
+      "scope": "Existing application-menu update route and More > Settings fallback remain intentional",
+      "sourceCommit": null,
+      "sourceInputsSHA256": null,
+      "artifactSHA256": null,
+      "requiredChecks": [
+        "offline-profile",
+        "staged-resolution",
+        "browser-activation"
+      ],
+      "deferredReason": "Separate deferred feature; do not disable account Settings",
+      "receipt": null
+    },
+    {
+      "gateId": "guest-admission",
+      "title": "Native guest admission",
+      "evidenceKind": "native",
+      "scope": "Interception, failure-close, permissions, download/popup isolation, DPI/zoom and teardown remain unqualified; protocol fixtures retained",
+      "sourceCommit": null,
+      "sourceInputsSHA256": null,
+      "artifactSHA256": null,
+      "requiredChecks": [
+        "interception",
+        "failure-close",
+        "permissions",
+        "isolation",
+        "placement",
+        "teardown"
+      ],
+      "deferredReason": "Admission remains disabled pending exact product receipts",
+      "receipt": null
+    }
+  ]
+}

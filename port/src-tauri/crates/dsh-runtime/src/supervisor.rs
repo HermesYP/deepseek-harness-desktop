@@ -7,8 +7,9 @@
 //! script, then `runtimeDir projectDir primaryRuntime [pnpm nodeBin]`; `cwd` is
 //! the project (desktop profile) directory; the environment is the caller
 //! environment verbatim plus `ELECTRON_RUN_AS_NODE=1`; stdio is
-//! `ignore/inherit/capture` — stderr is retained as a bounded 64 Ki-character
-//! tail and stdout is forwarded. The Node IPC slot is replaced by the NDJSON
+//! `ignore/pipe/pipe` — stderr is retained as a bounded 64 Ki-character
+//! tail, stdout is optionally forwarded, and both streams can be observed
+//! independently of a terminal. The Node IPC slot is replaced by the NDJSON
 //! control socket (`control.rs`).
 //!
 //! State machine: `starting → ready → stopping → stopped`, with `failed` as the
@@ -56,6 +57,7 @@ use crate::control::{
     ControlEndpoint, ControlError, ControlLink, ControlServer, HostEvent, ShellMessage,
     UpdateTasksAction, SHUTDOWN_SEND_TIMEOUT,
 };
+use crate::output::{drain_output, HostOutputStream, OutputObserver};
 use crate::proc_tree::{
     process_alive, stop_tree, StopBudget, TreeContainment, TreeError, GRACEFUL_STOP_TIMEOUT,
 };
@@ -229,6 +231,7 @@ pub struct Supervisor {
     /// Serializes complete start/stop/restart transactions.
     lifecycle: Mutex<()>,
     on_failure: Option<FailureCallback>,
+    output_observer: Option<OutputObserver>,
 }
 
 impl Supervisor {
@@ -262,7 +265,14 @@ impl Supervisor {
             })),
             lifecycle: Mutex::new(()),
             on_failure: on_failure.map(|f| -> FailureCallback { Arc::from(f) }),
+            output_observer: None,
         }
+    }
+
+    /// Observe complete Host lines, independently of optional terminal output.
+    pub fn with_output_observer(mut self, observer: OutputObserver) -> Self {
+        self.output_observer = Some(observer);
+        self
     }
 
     /// Subscribe to runtime status transitions (mapped to `dsh://runtime/state`).
@@ -331,12 +341,8 @@ impl Supervisor {
             .envs(&self.plan.env)
             .envs(endpoint.child_environment())
             .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::piped());
-        if self.plan.forward_stdout {
-            command.stdout(std::process::Stdio::inherit());
-        } else {
-            command.stdout(std::process::Stdio::null());
-        }
         #[cfg(unix)]
         std::os::unix::process::CommandExt::process_group(&mut command, 0);
         let mut child = command.spawn().map_err(|e| {
@@ -357,29 +363,25 @@ impl Supervisor {
                 return Err(DshError::runtime_unavailable("starting", error.to_string()));
             }
         };
-        // Bounded stderr capture (64 Ki chars; host-process.ts:204).
+        if let Some(stdout_pipe) = child.stdout.take() {
+            tokio::spawn(drain_output(
+                stdout_pipe,
+                HostOutputStream::Stdout,
+                None,
+                self.output_observer.clone(),
+                self.plan.forward_stdout,
+            ));
+        }
+        // Preserve the stderr tail, and also observe complete diagnostic lines.
         let stderr = self.slot.lock().await.stderr.clone();
         if let Some(stderr_pipe) = child.stderr.take() {
-            tokio::spawn(async move {
-                use tokio::io::AsyncReadExt;
-                let mut pipe = stderr_pipe;
-                let mut buffer = [0u8; 8192];
-                loop {
-                    match pipe.read(&mut buffer).await {
-                        Ok(0) | Err(_) => break,
-                        Ok(count) => {
-                            if let Ok(text) = std::str::from_utf8(&buffer[..count]) {
-                                stderr.lock().await.push(text);
-                            } else {
-                                stderr
-                                    .lock()
-                                    .await
-                                    .push(&String::from_utf8_lossy(&buffer[..count]));
-                            }
-                        }
-                    }
-                }
-            });
+            tokio::spawn(drain_output(
+                stderr_pipe,
+                HostOutputStream::Stderr,
+                Some(stderr),
+                self.output_observer.clone(),
+                false,
+            ));
         }
         // Publish ownership before the first await that can stall. The monitor
         // takes the Child handle but the slot retains the containment guard, so

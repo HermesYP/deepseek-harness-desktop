@@ -34,6 +34,7 @@
         "languages": ["SimpChinese", "English"],
         "displayLanguageSelector": true,
         "startMenuFolder": "DeepSeek Harness",
+        "template": "../../installer/installer-template.nsi",
         "installerHooks": "../../installer/installer-hooks.nsh",
         "customLanguageFiles": {
           "SimpChinese": "../../installer/installer-strings.nsh"

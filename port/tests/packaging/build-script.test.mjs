@@ -324,6 +324,45 @@ test('packaging verification includes installed qualification safety guards as a
   assert.match(packaging, /Packaging test suite is missing:/)
 })
 
+test('runtime staging refuses unqualified targets and seals reviewed lock identities', () => {
+  const stage = code.slice(code.indexOf('function Stage-Runtime {'), code.indexOf('function Stage-RuntimeLockRefresh'))
+  assert.match(stage, /Get-CurrentNodeTargetName/)
+  assert.match(stage, /explicitly unqualified/)
+  assert.ok(stage.indexOf('explicitly unqualified') < stage.indexOf('Repair-DshInterruptedPublication'),
+    'target refusal happens before any publication recovery')
+  assert.match(stage, /Stage-RuntimeInto -StageRoot \$stageRoot -LockMode 'frozen' -LockInputRoot \$RuntimeLockInputs -UpstreamCommit/)
+  assert.match(stage, /Get-PayloadInputs -StageRoot \$stageRoot/)
+  const inputs = code.slice(code.indexOf('function Get-PayloadInputs'), code.indexOf('function Get-DshStringDigest'))
+  for (const key of ['runtimeLock:descriptor', 'runtimeLock:pnpmLock', 'runtimeLock:workspacePolicy']) {
+    assert.ok(inputs.includes(key), `payload manifest binds ${key}`)
+  }
+  assert.match(inputs, /changed after frozen installation/)
+  assert.match(code, /windows-x64/)
+})
+
+test('nullable lock arguments keep the Node staging argv positions stable', () => {
+  const staging = code.slice(code.indexOf('function Stage-RuntimeInto'), code.indexOf('function Copy-PortPackages'))
+  assert.match(staging, /\$lockInputArg = if \(\$LockInputRoot\) \{ \$LockInputRoot \} else \{ '-' \}/)
+  assert.match(staging, /\$lockCandidateArg = if \(\$LockCandidateRoot\) \{ \$LockCandidateRoot \} else \{ '-' \}/)
+  assert.match(staging, /\$LockMode, \$lockInputArg, \$UpstreamCommit, \$lockCandidateArg,/)
+})
+
+test('the maintenance command uses a fresh outside root and never activates its candidate', () => {
+  const refresh = readFileSync(join(portRoot, 'scripts', 'refresh-runtime-lock.ps1'), 'utf8')
+  assert.match(refresh, /New-DshQualificationRoot -Prefix 'runtime-lock-candidate'/)
+  assert.match(refresh, /'-RuntimeLockCandidateRoot', \$CandidateRoot/)
+  assert.match(refresh, /New-DshQualificationRoot -Prefix 'runtime-lock'/)
+  assert.match(refresh, /-Stage', 'runtime-lock-refresh'/)
+  assert.match(refresh, /reviewStatus -ne 'CANDIDATE'/)
+  assert.match(refresh, /input inventory diff/)
+  assert.match(refresh, /never updates port\/runtime-locks\/windows-x64/)
+  assert.match(refresh, /\$CandidateRoot = Join-Path \$CandidateBase \$CandidateName/)
+  assert.match(refresh, /RUNTIME_LOCK_DIFF=/)
+  assert.match(code, /function Stage-RuntimeLockRefresh/)
+  assert.match(code, /LockMode 'refresh'/)
+  assert.match(code, /RUNTIME_LOCK_CANDIDATE=/)
+})
+
 test('signing and update delivery are not implied by a successful build', () => {
   assert.match(script, /Signing and update delivery are NOT part of this build/)
 })
@@ -402,7 +441,7 @@ test('runtime qualification isolates payload, manifest and interpreter observati
   assert.match(code, /\[ValidatePattern\('\^\[A-Za-z0-9\]\[A-Za-z0-9_\-\]\{0,63\}\$'\)\]/)
   assert.match(code, /\$qualificationRoot = Join-Path \$Scratch "rq-\$RuntimeQualificationName"/)
   assert.match(code, /\$PayloadRoot = Join-Path \$qualificationRoot 'rt'/)
-  assert.match(code, /\$projectName = if \(\$qualificationRoot\) \{ 'p' \} else \{ 'runtime-project' \}/)
+  assert.match(code, /\$projectName = if \(\$qualificationRoot -or \$LockMode -eq 'refresh'\) \{ 'p' \} else \{ 'runtime-project' \}/)
   const record = code.slice(code.indexOf('function Get-PayloadManifestRecordPath'), code.indexOf('function Assert-PayloadManifestMatches'))
   assert.match(record, /if \(\$qualificationRoot\)/)
   assert.match(record, /return \(Join-Path \$qualificationRoot 'runtime-payload.json'\)/)

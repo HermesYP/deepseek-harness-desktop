@@ -4,6 +4,10 @@ A faithful desktop port of [DeepSeek Harness](https://github.com/deepseek-ai/dee
 
 Upstream reference: commit **`477b4f420553e8a52c2fbccc464d7561b239c443`** (`master`, `2026-09-24T21:39:59+08:00`, version `0.1.7-rc.2`), pinned checkout at [`../_upstream/`](../_upstream).
 
+## Current acceptance first
+
+Read [current status](../STATUS.md) and [the active repair checkpoint](repair-checkpoint-2026-10-10.md) before the historical documents below. [The implementation plan](port-fix-plan-2026-10-10.md) describes requested repairs, not executed acceptance. The [source review](commit-review-2026-10-10.md), [earlier repair ledger](repair-ledger-2026-10-10.md) and [verification report](verification-report.md) retain observations only for their recorded inputs and image hashes.
+
 ## Read in this order
 
 | # | Document | What it is |
@@ -34,6 +38,6 @@ Upstream reference: commit **`477b4f420553e8a52c2fbccc464d7561b239c443`** (`mast
 
 ## One-paragraph summary
 
-> **Implementation status.** The reference work, analysis, contracts, preserved UI and verification evidence in this repository are complete and evidenced. The **Rust application core and Tauri shell are still being implemented** at the time of writing: `dsh-core` and `dsh-runtime` exist, while `app/` and `dsh-gateway/` do not yet, and no `#[tauri::command]` handler is compiled. Read [`verification-report.md`](verification-report.md) §4 for current build/test status before assuming anything in `port/` works. See finding R-01.
+> **Implementation status.** The Rust `app/`, `dsh-core`, `dsh-runtime` and `dsh-gateway` sources exist and compiled command handlers have scoped source/build evidence in the review and repair ledgers. That evidence does not establish native guest admission, current-image parity or release installation. [Current status](../STATUS.md) records open gates separately; the old R-01 finding remains historical in the verification report. Settings Updates activation is deferred, while the application-menu route and More > Settings fallback remain intentional.
 
 The intended split: the desktop shell and application core are Rust — window lifecycle, tray, application menus, native dialogs, clipboard, external-link handling, quit inspection and confirmation, crash reporting and recovery, single-instance, shortcut arbitration, update presentation, the directory picker, persistent settings, OS-backed credential storage, the runtime supervisor with process-tree containment, and an authenticated HTTP + WebSocket gateway. The web client UI and the dsh agent runtime deliberately remain TypeScript — ADR 0002 explains each exception and the result is **not** claimed as fully Rust. No signed release and no update delivery are claimed. Real model calls were not made and nothing is simulated in their place.

@@ -21,9 +21,9 @@
 #     omitted, including the LibreOffice engine selection.
 #
 # No step here reaches the network on its own behalf and no step substitutes a
-# different package manager, linker or registry: `--frozen-lockfile
-# --trust-lockfile` against the lockfile generated from the pinned package set
-# is what makes the closure reproducible.
+# different package manager, linker or registry: normal staging consumes the
+# port-owned reviewed lock unchanged with `--frozen-lockfile --trust-lockfile`.
+# The separate refresh path emits an unreviewed candidate and never blesses it.
 #
 # TWO TREES, TWO CONTRACTS.
 #
@@ -55,9 +55,12 @@ import { spawnSync } from 'node:child_process'
 const [
   upstream, pnpmEntry, packedDsh, packedHost, packedVendor, packedLandlock,
   packageSet, project, output, adapterSource, probeStdout, probeStderr, identityFile,
+  lockMode, lockInputRoot, upstreamCommit, lockCandidateRoot, lockHelper,
 ] = process.argv.slice(2)
 
 const importUpstream = (file) => import(pathToFileURL(join(upstream, file)).href)
+const lockTools = await import(pathToFileURL(lockHelper).href)
+const { repairConfigEditorRuntimeImport } = await import(new URL('./config-editor-runtime-import.mjs', pathToFileURL(lockHelper)).href)
 const { prepareDesktopPackageSet } = await importUpstream('apps/desktop/scripts/prepare-package-set.ts')
 const { createRuntimeProjectMetadata } = await importUpstream('apps/desktop/src/project-manager.ts')
 const { DESKTOP_HOST_PROTOCOL_VERSION } = await importUpstream('apps/desktop/src/host-protocol.ts')
@@ -115,7 +118,11 @@ for (const [name, record] of selected) {
   if (result.error) throw result.error
   if (result.status !== 0) throw new Error(`packing ${name} failed with ${String(result.status)}`)
 }
-prepareDesktopPackageSet([packedDsh, packedHost, packedVendor, packedLandlock], packageSet)
+const packageSetStageRoot = join(packedDsh, '..', '..')
+process.chdir(packageSetStageRoot)
+const packageInputs = [packedDsh, packedHost, packedVendor, packedLandlock]
+  .map((directory) => relative(packageSetStageRoot, directory))
+prepareDesktopPackageSet(packageInputs, packageSet)
 
 // --- isolated runtime project ----------------------------------------------
 const rootManifest = JSON.parse(readFileSync(join(upstream, 'package.json'), 'utf8'))
@@ -123,10 +130,17 @@ const version = rootManifest.version
 const pnpmVersion = String(rootManifest.packageManager).replace(/^pnpm@/u, '').split('+')[0]
 const release = { schemaVersion: 1, version, hostProtocolVersion: DESKTOP_HOST_PROTOCOL_VERSION, nodeVersion: process.versions.node, pnpmVersion }
 createRuntimeProjectMetadata(project, release)
-const workspaceConfig = readFileSync(join(project, 'pnpm-workspace.yaml'), 'utf8')
-if (!workspaceConfig.includes('nodeLinker: hoisted') || !workspaceConfig.includes('autoInstallPeers: false')) {
-  throw new Error('runtime project is missing upstream hoisted-linker workspace settings')
+let workspaceConfig = readFileSync(join(project, 'pnpm-workspace.yaml'), 'utf8')
+if (!workspaceConfig.includes('nodeLinker: hoisted') || !workspaceConfig.includes('autoInstallPeers: false') ||
+  !workspaceConfig.includes('allowBuilds:')) {
+  throw new Error('runtime project is missing upstream linker settings or its generated allowBuilds policy')
 }
+if (/^strictDepBuilds:/mu.test(workspaceConfig)) {
+  throw new Error('upstream metadata unexpectedly supplied strictDepBuilds; review the imported build policy')
+}
+// Preserve every upstream allowBuilds entry and add strict unknown-script refusal.
+workspaceConfig = `${workspaceConfig.trimEnd()}\nstrictDepBuilds: true\n`
+writeFileSync(join(project, 'pnpm-workspace.yaml'), workspaceConfig)
 
 // --- install ----------------------------------------------------------------
 // The user config is emptied so a developer's `~/.npmrc` cannot redirect the
@@ -137,7 +151,7 @@ const pnpm = (...args) => {
   console.log(`pnpm ${args.join(' ')}`)
   const result = spawnSync(process.execPath, [
     pnpmEntry,
-    `--config.registry=${process.env.npm_config_registry ?? 'https://registry.npmjs.org/'}`,
+    `--config.registry=https://registry.npmjs.org/`,
     `--config.store-dir=${join(project, 'store')}`,
     `--config.userconfig=${userConfig}`,
     ...args,
@@ -145,7 +159,30 @@ const pnpm = (...args) => {
   if (result.error) throw result.error
   if (result.status !== 0) throw new Error(`pnpm ${args.join(' ')} failed with ${String(result.status)}`)
 }
-pnpm('install', '--lockfile-only')
+
+if (!['frozen', 'refresh'].includes(lockMode)) throw new Error(`unknown runtime lock operation: ${String(lockMode)}`)
+const lockTarget = process.platform === 'win32' && process.arch === 'x64' ? 'win-x64' : `${process.platform}-${process.arch}`
+if (lockMode === 'refresh') {
+  // This is the only lockfile-writing operation. It is restricted to the explicit
+  // maintenance command and writes a CANDIDATE descriptor, never a reviewed lock.
+  pnpm('install', '--lockfile-only')
+  const candidate = lockTools.writeRuntimeLockCandidate({
+    projectRoot: project, candidateRoot: lockCandidateRoot, target: lockTarget,
+    upstreamCommit, pnpmVersion,
+  })
+  writeFileSync(identityFile, `${JSON.stringify({ schemaVersion: 1, lockMode, runtimeLockCandidate: candidate }, null, 2)}\n`)
+  console.log(`RUNTIME_LOCK_CANDIDATE=${lockCandidateRoot}`)
+  process.exit(0)
+}
+
+const policyOverrideKeys = Object.keys(process.env).filter((key) =>
+  /^(?:npm|pnpm)_config_(?:allow_builds|strict_dep_builds|ignore_scripts|node_linker|auto_install_peers|registry|userconfig|store_dir)$/iu.test(key))
+if (policyOverrideKeys.length > 0) {
+  throw new Error(`ambient pnpm policy override refused: ${policyOverrideKeys.sort().join(', ')}`)
+}
+const runtimeLockIdentity = lockTools.validateRuntimeLockInputs({
+  inputRoot: lockInputRoot, projectRoot: project, target: lockTarget, upstreamCommit, pnpmVersion,
+})
 pnpm('install', '--prod', '--frozen-lockfile', '--trust-lockfile')
 
 // --- hoisted-shape assertions ----------------------------------------------
@@ -190,6 +227,14 @@ cpSync(modules, materialized, {
 })
 
 const set = JSON.parse(readFileSync(join(packageSet, 'desktop-packages.json'), 'utf8'))
+// Standalone overlay compilation can preserve an erased const-enum value import.
+// Keep ACTIVE lifecycle admission and refuse unknown shapes/framework versions.
+// Apply before either payload manifest is generated; never rewrite a sealed tree.
+const editorPath = join(materialized, '@deepseek-ai/dsh-config-editor/lib/index.js')
+const cordisVersion = JSON.parse(readFileSync(join(materialized, '@deepseek-ai/cordis/package.json'), 'utf8')).version
+const editorRepair = repairConfigEditorRuntimeImport(readFileSync(editorPath, 'utf8'), cordisVersion)
+if (editorRepair.changed) writeFileSync(editorPath, editorRepair.source)
+console.log(`ConfigEditor const-enum import repair: ${editorRepair.changed ? 'applied' : 'not required'}`)
 writeFileSync(join(output, 'package.json'), `${JSON.stringify({
   name: '@deepseek-ai/dsh-desktop-runtime', private: true, version,
   type: 'module', dependencies: Object.fromEntries(set.packages.map((entry) => [entry.name, entry.version])),
@@ -249,6 +294,7 @@ writeFileSync(identityFile, `${JSON.stringify({
   officeEngine,
   platform: target.platform,
   arch: target.arch,
+  runtimeLockInputs: runtimeLockIdentity,
 }, null, 2)}\n`)
 console.log(`Selected package closure: ${set.packages.length} packages; Office engine: ${officeEngine}`)
 '@

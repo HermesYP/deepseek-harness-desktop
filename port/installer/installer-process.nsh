@@ -1,13 +1,13 @@
-; Path-specific running-instance detection for the Desktop installer.
+; Conservative name-based running-instance detection for the Desktop installer.
 ;
 ; WHY THIS EXISTS
 ;
-; Tauri's stock `CheckIfAppIsRunning` (tauri-bundler 2.9.4 utils.nsh:22-71) calls
-; `nsis_tauri_utils::KillProcessCurrentUser`, which matches by IMAGE NAME and then
-; terminates. Two installations of the same product in different directories
-; cannot be told apart, so installing over one kills the other and an in-flight
-; agent task in an unrelated copy is lost. It also kills unconditionally after a
-; single confirmation, with no chance to refuse.
+; Tauri's upstream stock template invokes `CheckIfAppIsRunning` (tauri-bundler
+; 2.9.4 utils.nsh:22-71), which calls `nsis_tauri_utils::KillProcessCurrentUser`
+; and terminates same-name processes. The repository-owned template removes both
+; invocations and uses this bounded refusal guard instead. Because this plugin
+; only observes by image name, another installation of the same product in a
+; different directory is conservatively refused too; no process is terminated.
 ;
 ; Upstream solves this in a compiled plugin
 ; (`_upstream/apps/desktop/installer/window-frame.cpp:56-84`,
@@ -41,12 +41,11 @@
 ; do; killing by image name can terminate an unrelated installation's work.
 ;
 ; THE LIMIT, STATED PLAINLY: presence is established by image name and the guard
-; cannot prove the running process belongs to `$INSTDIR`. A same-named process
-; in a DIFFERENT directory therefore also causes a refusal. That is strictly
-; better than the stock behaviour (which kills it) but it is not the
-; path-specific check the brief asks for, and it is recorded as outstanding.
-; Closing it requires upstream's native helper or an equivalent; the lane report
-; states the integration the lead must add.
+; cannot prove the running process belongs to `$INSTDIR`. A same-named process in
+; a DIFFERENT directory therefore also causes a refusal. This conservative
+; side-by-side refusal is intentional for this milestone; a path-aware native
+; helper is a separate enhancement. Repeated checks are not an atomic installation
+; lease, so a process can still appear after the final check.
 ;
 ; STRUCTURE
 ;

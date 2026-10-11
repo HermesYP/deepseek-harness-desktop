@@ -6,7 +6,7 @@ Reference: upstream commit `477b4f420553e8a52c2fbccc464d7561b239c443`, version `
 
 ## Current repair checkpoint (2026-10-10)
 
-[The current repair ledger](<repair-ledger-2026-10-10.md>) is authoritative for changed-source and rebuilt-artifact acceptance. Preservation happened before edits; the original historical gates below remain unchanged. No source pass, disabled-feature fallback, SDK stub or DEBUG account observation can accept production native-guest admission or a disposable clean-machine release installation. Fresh gate commands, counts, failures and deliberate skips will be linked there as they settle.
+[Current status](../STATUS.md) and [the active repair checkpoint](repair-checkpoint-2026-10-10.md) identify the latest repair's open source, artifact and installed gates. [The implementation plan](port-fix-plan-2026-10-10.md) is not execution evidence. [The earlier repair ledger](repair-ledger-2026-10-10.md) and [source review](commit-review-2026-10-10.md) retain scoped evidence for their recorded sources and hashes only. Preservation happened before edits; the original historical gates below remain unchanged, including P6/P9 failures and observations. No source pass, disabled-feature fallback, SDK stub, DEBUG account observation or successful installer spawn can accept production native guests or installed release behavior. Settings Updates activation remains deferred; the application-menu route and More > Settings fallback are intentional.
 
 ## Historical remediation checkpoint (2026-10-02)
 

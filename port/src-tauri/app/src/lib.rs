@@ -21,7 +21,10 @@ use tauri::{Emitter, Manager};
 mod chrome;
 mod commands;
 mod credential_backend;
+#[cfg(debug_assertions)]
 mod dev_handoff;
+#[path = "dev_handoff_boundary.rs"]
+mod dev_handoff_boundary;
 mod directory_picker;
 mod fatal;
 #[path = "guests.rs"]
@@ -274,7 +277,14 @@ pub fn run() -> Result<(), tauri::Error> {
         .manage(startup_failure.clone())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_clipboard_manager::init())
-        .plugin(tauri_plugin_opener::init());
+        // The shell routes links through shell_open_external, with the owned
+        // origin and normal-policy checks. The plugin's automatic click script
+        // invokes a separate command outside that capability inventory.
+        .plugin(
+            tauri_plugin_opener::Builder::new()
+                .open_js_links_on_click(false)
+                .build(),
+        );
     // The plugin's singleton names use only the static application identifier.
     // An explicitly requested qualification namespace must never activate an
     // installed instance, including before setup rejects an invalid namespace.
@@ -893,7 +903,10 @@ fn setup(app: &mut tauri::App) -> Result<(), dsh_core::error::DshError> {
                 fatal::report_fatal(&app, &message).await.ok();
             });
         })),
-    ));
+    ).with_output_observer(Arc::new(|stream, line| {
+        let output = renderer_diagnostics::sanitize_field(&renderer_diagnostics::redact(line));
+        tracing::info!(host_stream = stream.as_str(), host_output = %output, "Host diagnostic output");
+    })));
     let policy_input = policy_bootstrap::load_packaged_policy_paths(
         &shell_dir.join("desktop-policy-bootstrap.json"),
         &runtime_dir,
@@ -932,11 +945,13 @@ fn setup(app: &mut tauri::App) -> Result<(), dsh_core::error::DshError> {
         );
     }
     app.manage(owned_origin.clone());
-    // Development-only assembled-app acceptance handoff; unset by default and
-    // never logged. A handoff failure is a startup diagnostic, not a panic.
-    if let Err(error) = dev_handoff::write_gateway_url(&gateway) {
-        return record_startup_failure(app, &error);
-    }
+    // Development-only assembled-app acceptance handoff; the shared macro
+    // removes the call and failure path entirely from Release.
+    crate::dsh_debug_handoff! {
+        if let Err(error) = dev_handoff::write_gateway_url(&gateway) {
+            return record_startup_failure(app, &error);
+        }
+    };
 
     let shortcuts = ShortcutPersistence::new(
         Box::new(state::shortcut_storage(&paths)),

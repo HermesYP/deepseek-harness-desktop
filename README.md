@@ -22,7 +22,7 @@ its authorship.
 
 ## Status
 
-The desktop port is under active Windows repair. [The current repair ledger](<docs/repair-ledger-2026-10-10.md>) separates changed-source gates, rebuilt DEBUG account acceptance and clean-machine release qualification. [The verification report](<docs/verification-report.md>) retains historical successes **and failures**; its earlier installed/UI counts do not accept current bytes.
+Start with [current status](STATUS.md) and [the active repair checkpoint](docs/repair-checkpoint-2026-10-10.md). They separate current source checks, exact artifact observations and installed release qualification. [The implementation plan](docs/port-fix-plan-2026-10-10.md) is not execution evidence. [The earlier repair ledger](docs/repair-ledger-2026-10-10.md), [source review](docs/commit-review-2026-10-10.md) and [verification report](docs/verification-report.md) retain historical successes **and failures**; their counts and images do not automatically accept newer bytes.
 
 - Rust owns the Tauri shell, credential boundary, gateway and Host supervision; the preserved client and agent runtime remain TypeScript/Node, not Rust.
 - Packaging pins Node **22.20.0** through [the runtime manifest](<port/installer/node-runtime.json>), not an arbitrary system-Node fallback. Installation with system Node absent still requires disposable clean-machine qualification.

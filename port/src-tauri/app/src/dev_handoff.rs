@@ -26,6 +26,7 @@ use dsh_core::protocol::{BootPayload, IndexInjection};
 use dsh_gateway::GatewayHandle;
 
 /// Write the process-local authenticated gateway URL only when explicitly requested.
+#[cfg(debug_assertions)]
 pub fn write_gateway_url(gateway: &GatewayHandle) -> Result<(), DshError> {
     let Some(path) = std::env::var_os("DSH_DESKTOP_DEV_URL_FILE") else {
         return Ok(());
@@ -38,6 +39,7 @@ pub fn write_gateway_url(gateway: &GatewayHandle) -> Result<(), DshError> {
 /// Write boot inputs for the assembled acceptance harness, but only when the
 /// authenticated-URL handoff is explicitly enabled. This file excludes the
 /// token-bearing `authenticatedUrl` field.
+#[cfg(debug_assertions)]
 pub fn write_boot_payload(payload: &BootPayload) -> Result<(), DshError> {
     let Some(url_file) = std::env::var_os("DSH_DESKTOP_DEV_URL_FILE") else {
         return Ok(());

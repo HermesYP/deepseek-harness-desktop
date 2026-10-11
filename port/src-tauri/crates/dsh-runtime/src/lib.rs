@@ -9,6 +9,7 @@
 //! request/response plumbing with their 2 s / 10 s deadlines.
 
 pub mod control;
+pub mod output;
 pub mod proc_tree;
 pub mod quit_inspection;
 pub mod supervisor;

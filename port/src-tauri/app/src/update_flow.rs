@@ -2742,6 +2742,11 @@ async fn install(app: &DesktopApp, confirmed_version: Option<String>) -> Result<
     }
 }
 
+#[cfg(any(windows, test))]
+fn windows_update_installer_arguments() -> [&'static str; 3] {
+    ["/S", "/UPDATE", "/R"]
+}
+
 /// An admitted install's captured identity and its held install gate.
 struct InstallAdmission {
     candidate: UpdateCandidate,
@@ -3015,7 +3020,10 @@ async fn install_owned(
     // lookup, and the bytes were verified immediately before this point.
     // Launch the installer and leave the exit to the update reason.
     #[cfg(windows)]
-    let launch_result = std::process::Command::new(&artifact).arg("/S").spawn();
+    let launch_result = {
+        let mut command = std::process::Command::new(&artifact);
+        command.args(windows_update_installer_arguments()).spawn()
+    };
     #[cfg(not(windows))]
     let launch_result = std::process::Command::new(&artifact).spawn();
     if let Err(io_error) = launch_result {
@@ -3187,6 +3195,14 @@ pub async fn invalidate_for_channel_change(app: &DesktopApp) {
 mod tests {
     use super::*;
     use crate::update_security::{load_trust_config, ChannelFeed};
+
+    #[test]
+    fn windows_update_installer_arguments_match_the_tauri_contract() {
+        assert_eq!(
+            windows_update_installer_arguments(),
+            ["/S", "/UPDATE", "/R"]
+        );
+    }
 
     fn trust_outcome_loaded() -> TrustConfigOutcome {
         TrustConfigOutcome::Loaded(ReleaseTrustConfig {

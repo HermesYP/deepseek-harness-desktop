@@ -454,7 +454,11 @@ $results -join "\`n"
       'an output path outside the owned root is refused')
     assert.match(result.output, /^ABSENTROOT=The owned build root is absent/m,
       'an owned root is never created implicitly from the workspace')
-    assert.match(result.output, /^LOWROOT=.*(traverses a reparse point|is Low integrity|inside the labelled upstream tree)/m,
+    // The fence refuses a reparse-point build root before it can compare roots at
+    // all, and `_upstream` is a directory junction in a linked worktree. That is
+    // still this probe's required outcome (the root is refused), so the fence's
+    // own refusal message belongs in the accepted set.
+    assert.match(result.output, /^LOWROOT=.*(traverses a reparse point|is a reparse point|is Low integrity|inside the labelled upstream tree)/m,
       'a workspace/upstream root is refused as a build root')
     assert.match(result.output, /^ABSENTPARENT=The UI output parent directory is absent/m,
       'a publication target whose parent is absent is refused')

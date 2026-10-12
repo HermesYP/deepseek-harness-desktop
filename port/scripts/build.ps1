@@ -782,6 +782,11 @@ function Stage-RuntimeInto(
   # check cannot drift from the thing it guards.
   Assert-ProfileBundlesResolve -PayloadRoot $materialized
 
+  # Package presence alone cannot prove an inserted row will reach the loader.
+  # Measure composition with production app-boot before publishing this stage.
+  $compositionProbe = Join-Path $PSScriptRoot 'lib\verify-updates-composition.mjs'
+  Invoke-Checked $executionNode.Path @($compositionProbe, $materialized, (Join-Path $TauriDir 'crates\dsh-core\src\profile.rs')) $PortRoot
+
   # The pinned Node interpreter travels inside the payload. Its digest is
   # verified before extraction, and a build never falls back to a system Node
   # (see lib/node-runtime.psm1).
@@ -1083,10 +1088,13 @@ function Get-PayloadInputs([string]$StageRoot) {
 
   $nodeStageProgram = Get-DshRuntimeStageProgram
   $inputs['stageProgram'] = (Get-DshStringDigest -Value $nodeStageProgram)
-  foreach ($helper in @('seal-runtime.mjs', 'runtime-locks.mjs', 'runtime-payload.psm1', 'payload-manifest.psm1', 'config-editor-runtime-import.mjs', 'account-profile-runtime.mjs')) {
+  foreach ($helper in @('seal-runtime.mjs', 'runtime-locks.mjs', 'runtime-payload.psm1', 'payload-manifest.psm1', 'config-editor-runtime-import.mjs', 'account-profile-runtime.mjs', 'account-login-runtime.mjs', 'account-data-runtime.mjs')) {
     $inputs["packagingHelper:$helper"] = (Get-FileHash -LiteralPath (Join-Path $PSScriptRoot "lib\$helper") -Algorithm SHA256).Hash.ToLowerInvariant()
   }
   $inputs['accountProfileCache'] = (Get-FileHash -LiteralPath (Join-Path $TauriDir 'runtime\account-profile-cache.mjs') -Algorithm SHA256).Hash.ToLowerInvariant()
+  $inputs['desktopLogin'] = (Get-FileHash -LiteralPath (Join-Path $TauriDir 'runtime\desktop-login.mjs') -Algorithm SHA256).Hash.ToLowerInvariant()
+  $inputs['accountData'] = (Get-FileHash -LiteralPath (Join-Path $TauriDir 'runtime\account-data.mjs') -Algorithm SHA256).Hash.ToLowerInvariant()
+  $inputs['accountDataClient'] = (Get-FileHash -LiteralPath (Join-Path $UiDir 'account-data\client-state.mjs') -Algorithm SHA256).Hash.ToLowerInvariant()
 
   $packageManager = (Get-Content (Join-Path $Upstream 'package.json') -Raw | ConvertFrom-Json).packageManager
   $inputs['upstreamPackageManager'] = [string]$packageManager
@@ -1128,6 +1136,7 @@ function Get-PayloadInputs([string]$StageRoot) {
       -RelativeFiles @('package.json', 'cordis.patch.yml')) {
     $inputs["portPackage:$($portPackage.Name)"] = $portPackage.Sha256
   }
+  $inputs['updatesComposition:producer'] = (Get-FileHash -LiteralPath (Join-Path $PSScriptRoot 'lib\verify-updates-composition.mjs') -Algorithm SHA256).Hash.ToLowerInvariant()
 
   if ($qualificationClientBuild) {
     foreach ($name in @('index.js', 'client.js', 'client.js.map')) {

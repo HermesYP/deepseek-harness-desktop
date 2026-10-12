@@ -9,5 +9,6 @@
  */
 import '../../desktop-bridge/shell-boot.ts'
 import './external-links.ts'
+import './account-browser.ts'
 import './script-preload.ts'
 import './web-main.ts'

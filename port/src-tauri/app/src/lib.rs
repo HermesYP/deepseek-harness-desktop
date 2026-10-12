@@ -262,6 +262,7 @@ pub fn run() -> Result<(), tauri::Error> {
         commands::credential_store,
         commands::credential_delete,
         commands::update_status,
+        commands::update_configuration,
         commands::update_open,
         commands::update_check,
         commands::shell_shortcuts_get,

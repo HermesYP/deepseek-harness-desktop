@@ -1,10 +1,10 @@
 # `@dsh-port/dsh-client-ui-updates`
 
-This port-owned Host/Client package is included in the runtime payload but is not activated by the default Desktop composition. The desktop bundle layer is temporarily a no-op: upstream account Settings remains enabled, and Settings has no Updates section. The native application-menu update route is independent and retained.
+The port-owned desktop bundle inserts this Host/Client plugin into the default Desktop composition. Its client contributes the Updates section through the preserved Settings slots. Account stays enabled and retains the single Settings launcher. The native application-menu update route remains available.
 
-When explicitly activated, this package's Client contributes to `settings.section` and `settings.launcher` through upstream Cordis slots without modifying the pinned client. Its own `cordis.patch.yml` disables the upstream account plugin; it does not write or replace the user's profile patch. Do not reactivate the replacement launcher until actual renderer acceptance is established.
+The row uses an `insert` list; a bare id/name patch cannot create it. This client package's own bundle patch is a compatibility no-op for older profiles, and it never disables Account. `apply(ctx)` returns outside a Tauri renderer and registers no competing launcher. User profile files are unchanged.
 
-The Updates page reads `updates.channel` (`stable` by default), selects only `updates.feed-url` for stable and only `updates.feed-url-beta` for beta, and reports a missing selected feed without fallback. SHA-256 checks are reported only when the manifest supplies a digest; the port does not claim signing-key or signature verification.
+The Updates page calls native `update_configuration` for its effective channel, packaged feed, allowed channel choices and delivery availability. Renderer feed settings provide no authority. A packaged channel pin overrides an old saved preference in both presentation and checks. Missing/malformed sources, missing channels and absent signing keys have separate explanations; checks are disabled until delivery is available. A configuration read failure offers Retry. An idle startup snapshot does not claim a check has run.
 
 `bundle.mjs` invokes the pinned upstream `tsdown` toolchain. `port-client-preset.ts` reuses upstream's module-table externals, build-environment helper, and requested-external validation; it supplies the wrapper and file layout that `clientBundle()` cannot derive for a package outside `_upstream/packages/*/*`. The emitted loader wrapper is checked against an upstream-built plugin before runtime staging.
 
@@ -14,5 +14,6 @@ Checks, channel changes, and open/install actions own separate tokens; a complet
 
 ## Known Limitations and Deferred Work
 
-- The default desktop bundle remains listed to repair profiles that already reference it, but its no-op patch restores account Settings, Contact us, and Sign in. Updates rendering and native/installed behavior remain unqualified; source tests and bundled JavaScript do not establish activation.
+- The explicit `port/tests/fixtures/updates-host.mjs <staged-runtime>` fixture loads the production profile, checks Account retention, fetches the graph-advertised revision-tagged bundle, and mounts its served factory through real Cordis with the actual snapshot-store engine. Its native invoke, slot/locale adapters and React server-render projection are fixture boundaries. This proves composition, serving and plugin registration; it does not qualify a native WebView2 view or an installed upgrade.
+- Delivery remains disabled when `updates.json` is absent. Production release hosting/signing, authoritative v2 freshness/target/rollback enforcement, key rotation/revocation and exact install/upgrade acceptance are separate open work. Do not ship the public qualification signing key.
 - The runtime payload builder must copy `package.json`, `cordis.patch.yml`, `lib/index.js`, and `lib/client.js` into `node_modules/@dsh-port/dsh-client-ui-updates`; `lib/client.js.map` is included for browser diagnostics.

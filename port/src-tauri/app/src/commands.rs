@@ -856,6 +856,13 @@ pub async fn update_status(
 }
 
 #[tauri::command]
+pub async fn update_configuration(
+    app: tauri::AppHandle,
+) -> Result<crate::update_security::UpdateConfiguration, DshError> {
+    crate::update_flow::configuration(&app).await
+}
+
+#[tauri::command]
 pub async fn update_open(app: tauri::AppHandle) -> Result<(), DshError> {
     crate::update_flow::open_confirmation(&app).await
 }

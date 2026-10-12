@@ -3,8 +3,7 @@ import { createSnapshotStore } from '@deepseek-ai/dsh-client-store'
 import type {} from '@deepseek-ai/dsh-client-ui-settings/client'
 import type {} from '@deepseek-ai/dsh-client-locale/client'
 import type {} from '@deepseek-ai/dsh-client-ui-renderer/client'
-import { desktop } from '../../../desktop-bridge/index.ts'
-import type { SettingsMap } from '../../../desktop-bridge/protocol.ts'
+import { desktop, tryDesktop } from '../../../desktop-bridge/index.ts'
 import { en, zh } from './locales.ts'
 import {
   adoptUpdate,
@@ -21,8 +20,8 @@ import {
   startupStamp,
 } from './state.ts'
 import { UpdatesSection } from './UpdatesSection.tsx'
-import { SettingsOnlyLauncher } from './SettingsOnlyLauncher.tsx'
 import type { ReleaseChannel, UpdatesSectionInjected, UpdatesSectionState } from './types.ts'
+import type { UpdatesSettingsRead } from './state.ts'
 import type { UpdateLocaleKey } from './locales.ts'
 
 declare module '@deepseek-ai/dsh-client-ui-slots' {
@@ -33,34 +32,49 @@ declare module '@deepseek-ai/dsh-client-ui-slots' {
 
 const NS = 'settings.updates'
 const CHANNEL_KEY = 'updates.channel'
-const FEEDS = { stable: 'updates.feed-url', beta: 'updates.feed-url-beta' } as const
 
 /** Cordis services used by the updater section. */
 export const inject = ['locale', 'slots']
 
 /** Register the desktop updater section in the preserved Settings shell. */
 export function apply(ctx: Context): void {
+  if (tryDesktop() === undefined) return
   const t = ctx.locale.bind(NS)
   ctx.effect(() => ctx.locale.register(NS, { en, zh }), 'dsh-port-ui-updates: locale')
 
   const store = createSnapshotStore<UpdatesSectionState>(initialTransitionState())
+  let active = true
+  let configurationRead = 0
 
   /**
    * Read the persisted channel and feed selection.
    * @returns The channel, its configured feed, and the installed version.
    */
-  const readSettings = async (): Promise<{ channel: ReleaseChannel; feed: string | null; appVersion: string }> => {
-    const [info, settings] = await Promise.all([desktop.shellAppInfo(), desktop.settingsList()])
-    const channel = selectedChannel(settings)
-    return { channel, feed: selectedFeed(settings, channel), appVersion: info.version }
+  const readSettings = async (): Promise<Required<UpdatesSettingsRead>> => {
+    const [info, configuration] = await Promise.all([desktop.shellAppInfo(), desktop.updateConfiguration()])
+    return { channel: configuration.channel, feed: configuration.feedUrl, configuration, appVersion: info.version }
+  }
+
+  const retryConfiguration = async (): Promise<void> => {
+    const read = ++configurationRead
+    const stamp = startupStamp(store.getSnapshot())
+    try {
+      const configuration = await readSettings()
+      if (active && configurationRead === read) store.update(state => Object.assign(state, applyStartupSettings(state, configuration, stamp)))
+    } catch (error) {
+      if (active && configurationRead === read && store.getSnapshot().generation === stamp.generation) {
+        store.update(state => { state.error = 'configuration'; state.configuration = null })
+      }
+      console.error('dsh-port-ui-updates: configuration read failed', error)
+    }
   }
 
   ctx.effect(() => {
-    let active = true
     let unlisten: (() => void) | undefined
     // The shell owns the update phase; every published presentation is adopted
     // verbatim, which is what makes `Later` preserve a downloaded `ready`.
     void desktop.onUpdateState(update => {
+      if (!active) return
       store.update(state => Object.assign(state, adoptUpdate(state, update)))
     }).then(dispose => {
       if (active) unlisten = dispose
@@ -73,10 +87,7 @@ export function apply(ctx: Context): void {
     void desktop.updateStatus().then(update => {
       if (active) store.update(state => Object.assign(state, applyStartupStatus(state, update, stamp)))
     }).catch(error => { console.error('dsh-port-ui-updates: status failed', error) })
-    void readSettings().then(read => {
-      if (!active) return
-      store.update(state => Object.assign(state, applyStartupSettings(state, read, stamp)))
-    }).catch(error => { console.error('dsh-port-ui-updates: initial read failed', error) })
+    void retryConfiguration()
     return () => {
       active = false
       unlisten?.()
@@ -87,6 +98,7 @@ export function apply(ctx: Context): void {
    * Check the packaged feed. Refused while another operation owns the section.
    */
   const check = async (): Promise<void> => {
+    if (store.getSnapshot().configuration?.disabledReason != null) return
     const begun = beginCheck(store.getSnapshot())
     if (begun === null) return
     store.update(state => Object.assign(state, begun.state))
@@ -130,6 +142,8 @@ export function apply(ctx: Context): void {
    * answered for, so its result is discarded.
    */
   const selectChannel = async (channel: ReleaseChannel): Promise<void> => {
+    const configuration = store.getSnapshot().configuration
+    if (configuration !== null && (configuration.pinnedChannel !== null || !configuration.availableChannels.includes(channel))) return
     const previousChannel = store.getSnapshot().channel
     const begun = beginChannelChange(store.getSnapshot(), channel)
     if (begun === null) return
@@ -146,9 +160,9 @@ export function apply(ctx: Context): void {
     }
     store.update(state => Object.assign(state, commitChannelChange(state, token)))
     try {
-      const { feed } = await readSettings()
+      const { feed, configuration } = await readSettings()
       store.update(state => Object.assign(state, completeChannelChange(state, token, {
-        commit: 'saved', feed, previousChannel,
+        commit: 'saved', feed, configuration, previousChannel,
       })))
     } catch (error) {
       console.error('dsh-port-ui-updates: channel refresh failed', error)
@@ -158,7 +172,7 @@ export function apply(ctx: Context): void {
     }
   }
 
-  const injected = (): UpdatesSectionInjected => ({ hooks: { updates: store }, check, open, selectChannel })
+  const injected = (): UpdatesSectionInjected => ({ hooks: { updates: store }, check, open, selectChannel, retryConfiguration })
   ctx.slots.inject('settings.section', () => ctx.slots.register({
     name: 'settings.section',
     id: 'updates',
@@ -167,20 +181,4 @@ export function apply(ctx: Context): void {
     locale: NS,
     inject: injected,
   }, UpdatesSection))
-  ctx.slots.inject('settings.launcher', () => ctx.slots.register({
-    name: 'settings.launcher',
-    priority: 100,
-    locale: NS,
-  }, SettingsOnlyLauncher))
-}
-
-/** The persisted channel, defaulting to `stable` for a missing or unknown value. */
-export function selectedChannel(settings: SettingsMap): ReleaseChannel {
-  return settings[CHANNEL_KEY] === 'beta' ? 'beta' : 'stable'
-}
-
-/** The feed configured for `channel`, or `null` when none is set. */
-export function selectedFeed(settings: SettingsMap, channel: ReleaseChannel): string | null {
-  const value = settings[FEEDS[channel]]
-  return typeof value === 'string' && value.trim().length > 0 ? value : null
 }

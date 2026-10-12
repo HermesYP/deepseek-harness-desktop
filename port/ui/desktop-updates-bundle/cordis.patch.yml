@@ -1,28 +1,5 @@
-# Port-owned desktop bundle layer — NO-OP by decision (interim fallback).
-#
-# The bundle stays in DESKTOP_PROFILE_BUNDLES so that EVERY profile which lists
-# it — including already-provisioned owned profiles that retain unknown or
-# extraneous bundle entries — is repaired by this source change alone. Removing
-# the bundle from the required list would not repair profiles that already list
-# it.
-#
-# An empty top-level list composes nothing, so this layer now:
-#   * does NOT disable `ui-settings-account`, so the upstream account plugin owns
-#     `settings.launcher` again. `settings.launcher` is declared `kind: 'single'`
-#     by dsh-client-ui-settings-general, so exactly ONE launcher contribution
-#     must exist; restoring the account row also removes the competing port
-#     `SettingsOnlyLauncher`.
-#   * does NOT insert `dsh-port-ui-updates`, so there is no Updates section in
-#     Settings.
-#
-# The application-menu update route is untouched and retained: it is independent
-# of the account plugin and of the Settings section
-# (`port/src-tauri/app/src/lib.rs:1030`, `MenuActionId::CheckForUpdates`).
-#
-# Original operations are preserved at
-# outputs/port-remediation-2026-10-02/renderer-2f7530f8-f47a-4753-830b-ece35ff1170f/
-#   cordis.patch.yml.ORIGINAL-7138c674  (sha256 7138c6743309d6eaeb119ad8a2041f3af3016bbd2cd1290273963ec8aba88904)
-#
-# Disclosure on this fallback: signed-out More shows "Contact us" and "Sign in"
-# again, and the replacement Settings launcher is absent by design and unproven.
-[]
+# Add Updates alongside Account. The account plugin retains the single Settings
+# launcher. A bare id/name patch cannot create a row; use the loader's insert.
+- insert:
+    - id: dsh-port-ui-updates
+      name: '@dsh-port/dsh-client-ui-updates'

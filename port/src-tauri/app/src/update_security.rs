@@ -102,6 +102,82 @@ pub enum TrustConfigOutcome {
     Invalid(String),
 }
 
+/// Renderer-readable projection of packaged delivery authority. It contains no
+/// keys and cannot authorize a feed or widen the native transport policy.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UpdateConfiguration {
+    pub channel: String,
+    pub feed_url: Option<String>,
+    pub available_channels: Vec<String>,
+    pub pinned_channel: Option<String>,
+    pub disabled_reason: Option<&'static str>,
+}
+
+/// Select the same effective channel for presentation and execution. A packaged
+/// channel pin takes precedence over an old renderer-persisted preference.
+pub fn effective_channel(outcome: &TrustConfigOutcome, requested: &str) -> &'static str {
+    let selected = match outcome {
+        TrustConfigOutcome::Loaded(config) => config.pinned_channel.as_deref().unwrap_or(requested),
+        _ => requested,
+    };
+    if selected == "beta" {
+        "beta"
+    } else {
+        "stable"
+    }
+}
+
+/// Explain a disabled delivery path before the UI offers a network action.
+pub fn present_configuration(outcome: &TrustConfigOutcome, requested: &str) -> UpdateConfiguration {
+    let channel = effective_channel(outcome, requested);
+    let mut result = UpdateConfiguration {
+        channel: channel.into(),
+        feed_url: None,
+        available_channels: Vec::new(),
+        pinned_channel: None,
+        disabled_reason: None,
+    };
+    let config = match outcome {
+        TrustConfigOutcome::Absent => {
+            result.disabled_reason = Some("missing-source");
+            return result;
+        }
+        TrustConfigOutcome::Invalid(_) => {
+            result.disabled_reason = Some("invalid-source");
+            return result;
+        }
+        TrustConfigOutcome::Loaded(config) => config,
+    };
+    result.pinned_channel.clone_from(&config.pinned_channel);
+    for (name, feed) in [("stable", &config.stable), ("beta", &config.beta)] {
+        if feed
+            .as_ref()
+            .is_some_and(|feed| !feed.trusted_keys.is_empty())
+            && config
+                .pinned_channel
+                .as_deref()
+                .is_none_or(|pinned| pinned == name)
+        {
+            result.available_channels.push(name.into());
+        }
+    }
+    match if channel == "beta" {
+        &config.beta
+    } else {
+        &config.stable
+    } {
+        None => result.disabled_reason = Some("missing-channel"),
+        Some(feed) => {
+            result.feed_url = Some(feed.feed_url.clone());
+            if feed.trusted_keys.is_empty() {
+                result.disabled_reason = Some("missing-key");
+            }
+        }
+    }
+    result
+}
+
 impl TrustConfigOutcome {
     /// The loaded configuration, when this outcome carries packaged authority.
     ///
@@ -117,6 +193,77 @@ impl TrustConfigOutcome {
             Self::Loaded(config) => Some(config),
             Self::Absent | Self::Invalid(_) => None,
         }
+    }
+}
+
+#[cfg(test)]
+mod configuration_tests {
+    use super::*;
+
+    fn source() -> ReleaseTrustConfig {
+        ReleaseTrustConfig {
+            config_version: 1,
+            pinned_channel: None,
+            stable: Some(ChannelFeed {
+                feed_url: "https://release.example/stable.json".into(),
+                allowed_origins: vec!["release.example".into()],
+                trusted_keys: vec!["11".repeat(32)],
+            }),
+            beta: None,
+        }
+    }
+
+    #[test]
+    fn disabled_configuration_is_classified_without_exposing_invalid_source_details() {
+        for (outcome, reason) in [
+            (TrustConfigOutcome::Absent, "missing-source"),
+            (
+                TrustConfigOutcome::Invalid("private path and contents".into()),
+                "invalid-source",
+            ),
+        ] {
+            let view = present_configuration(&outcome, "stable");
+            assert_eq!(view.disabled_reason, Some(reason));
+            assert_eq!(view.feed_url, None);
+            assert!(view.available_channels.is_empty());
+            assert!(!serde_json::to_string(&view).unwrap().contains("private"));
+        }
+    }
+
+    #[test]
+    fn configured_channels_require_keys_and_never_fall_back_to_another_feed() {
+        let mut config = source();
+        let view = present_configuration(&TrustConfigOutcome::Loaded(config.clone()), "beta");
+        assert_eq!(view.channel, "beta");
+        assert_eq!(view.feed_url, None);
+        assert_eq!(view.disabled_reason, Some("missing-channel"));
+        assert_eq!(view.available_channels, ["stable"]);
+        config.stable.as_mut().unwrap().trusted_keys.clear();
+        let view = present_configuration(&TrustConfigOutcome::Loaded(config), "stable");
+        assert_eq!(
+            view.feed_url.as_deref(),
+            Some("https://release.example/stable.json")
+        );
+        assert_eq!(view.disabled_reason, Some("missing-key"));
+        assert!(view.available_channels.is_empty());
+    }
+
+    #[test]
+    fn packaged_pin_overrides_an_old_preference_for_presentation_and_execution() {
+        let mut config = source();
+        config.pinned_channel = Some("stable".into());
+        let outcome = TrustConfigOutcome::Loaded(config);
+        let view = present_configuration(&outcome, "beta");
+        assert_eq!(effective_channel(&outcome, "beta"), "stable");
+        assert_eq!(view.channel, "stable");
+        assert_eq!(view.disabled_reason, None);
+        assert_eq!(view.available_channels, ["stable"]);
+        assert_eq!(
+            serde_json::to_value(view).unwrap(),
+            serde_json::json!({
+                "channel":"stable", "feedUrl":"https://release.example/stable.json", "availableChannels":["stable"], "pinnedChannel":"stable", "disabledReason":null
+            })
+        );
     }
 }
 

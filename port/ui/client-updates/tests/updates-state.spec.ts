@@ -40,6 +40,13 @@ function initial(update: DesktopUpdatePresentation = { phase: 'idle' }): Updates
   return { ...initialTransitionState(), update, feed: STABLE_FEED }
 }
 
+it('an idle startup snapshot does not claim that an update check occurred', () => {
+  const state = initial()
+  const adopted = applyStartupStatus(state, { phase: 'idle' }, startupStamp(state))
+  expect(adopted.checked).toBe(false)
+  expect(adoptUpdate(adopted, { phase: 'idle' }).checked).toBe(true)
+})
+
 /** The state after a channel save the shell both wrote and read back. */
 function saved(
   state: UpdatesTransitionState,

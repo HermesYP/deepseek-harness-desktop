@@ -20,4 +20,5 @@ export interface UpdatesSectionInjected {
   readonly check: () => Promise<void>
   readonly open: () => Promise<void>
   readonly selectChannel: (channel: ReleaseChannel) => Promise<void>
+  readonly retryConfiguration: () => Promise<void>
 }

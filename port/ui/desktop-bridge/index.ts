@@ -21,7 +21,7 @@ import type {
   BrowserCommandRequest, BrowserLeaseRequest, BrowserNavigateRequest, BrowserOpenRequestEvent,
   BrowserReservation, CaptionMenuRequest, CaptionPaletteRequest, ClipboardText, ClipboardWriteRequest,
   CredentialLookupRequest, CredentialPresence, CredentialRef, CredentialStoreRequest,
-  DesktopUpdatePresentation, DshCommandMap, DshCommandName, DshError, DshEventMap, DshEventName,
+  DesktopUpdateConfiguration, DesktopUpdatePresentation, DshCommandMap, DshCommandName, DshError, DshEventMap, DshEventName,
   DshRequestCommandName, GuestBrowserState, GuestBoundsRequest, HostPaths, LocaleApplyRequest,
   LocaleSetRequest, LocaleState, MenuActionRequest, OnboardingSetActiveRequest, OpenExternalRequest,
   PickedDirectory, PickDirectoryRequest, PlatformOpenRequest, PolicyPresentedRequest, QuitInspection,
@@ -275,6 +275,8 @@ export interface DshDesktopApi {
   shellPickDirectory(request: PickDirectoryRequest): Promise<PickedDirectory>
   /** `update_status` */
   updateStatus(): Promise<DesktopUpdatePresentation>
+  /** `update_configuration` — effective packaged source and delivery availability. */
+  updateConfiguration(): Promise<DesktopUpdateConfiguration>
   /** `update_open` */
   updateOpen(): Promise<void>
   /** `update_check` */
@@ -398,6 +400,7 @@ function createDesktopApi(invoke: TauriInternals['invoke'] | undefined): DshDesk
     credentialDelete: request => call<void>('credential_delete', { ...request }),
     shellPickDirectory: request => call<PickedDirectory>('shell_pick_directory', { ...request }),
     updateStatus: () => call<DesktopUpdatePresentation>('update_status'),
+    updateConfiguration: () => call<DesktopUpdateConfiguration>('update_configuration'),
     updateOpen: () => call<void>('update_open'),
     updateCheck: () => call<DesktopUpdatePresentation>('update_check'),
     // The guest commands take ONE `request` struct (`guests::commands`), unlike

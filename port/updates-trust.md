@@ -7,6 +7,12 @@ that makes release delivery possible; it is read by
 
 ## Why it is not a setting
 
+The Settings Updates section reads the native `update_configuration` projection:
+effective `channel`, `feedUrl`, `availableChannels`, `pinnedChannel`, and
+`disabledReason`. It cannot write trust material. A packaged channel pin overrides
+a saved channel preference in both checks and presentation. A fresh idle snapshot
+means no check has been observed; it does not establish that the app is up to date.
+
 The release feed used to come from the renderer-writable settings store
 (`updates.feed-url`, `updates.feed-url-beta`). A page document can write
 settings, so that made the renderer able to choose which artifact the shell would
@@ -112,12 +118,8 @@ artifact bytes. All three bindings are asserted by tests in
 
 ## Generating keys and signatures
 
-Verification is implemented in-tree (RFC 8032 Ed25519 over the reference
-formulation) because the workspace has no network-fetched crypto crate
-available. Verification is checked against the RFC 8032 §7.1 published vectors
-and against fixtures produced by an independent implementation
-(`cryptography`/`pynacl`), so a bug in the local arithmetic cannot certify
-itself.
+Verification uses the maintained `ring` Ed25519 implementation. Published RFC
+8032 vectors and independently generated fixtures pin the verification behavior.
 
 Signing is **not** implemented in-tree. Sign releases with any RFC 8032
 Ed25519 tool over the canonical message above. `app/tests/fixtures/` contains
@@ -129,6 +131,13 @@ python port/src-tauri/app/tests/fixtures/generate-update-signatures.py
 
 **Never commit a private signing key.** Only public keys belong in
 `updates.json`.
+
+The active production path still uses the v1 signed message above. The v2
+target/freshness/rollback contract is currently a tested, non-authoritative
+prototype in `update_security.rs`; production admission does not enforce it.
+Key rotation/revocation and a production feed are not enabled by this UI repair.
+Finish that admission work and qualify a real updater-to-installer run before
+enabling production delivery.
 
 ## Qualification-only configuration
 

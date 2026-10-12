@@ -3,7 +3,7 @@
   "version": "0.1.7-rc.2",
   "private": true,
   "type": "module",
-  "description": "Port-owned desktop bundle layer: composes the Updates settings section and disables the web-oriented account surface.",
+  "description": "Port-owned desktop bundle layer: adds Updates to Settings alongside Account.",
   "dsh": {
     "bundle": {
       "patch": [

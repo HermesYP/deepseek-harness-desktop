@@ -8,25 +8,30 @@ export type UpdatesSectionProps = PropsRuntime<'settings.section'>
   & InjectFace<UpdatesSectionInjected>
 
 /** Render feed selection and updater state for the Settings page. */
-export function UpdatesSection({ useUpdates, check, open, selectChannel, t }: UpdatesSectionProps) {
+export function UpdatesSection({ useUpdates, check, open, selectChannel, retryConfiguration, t }: UpdatesSectionProps) {
   const state = useUpdates(value => value)
   const result = updateResult(state, t)
+  const configuration = state.configuration
+  const delivery = configuration !== null && configuration.disabledReason === null
+  const reason = configuration?.disabledReason
 
   return (
     <div>
       <p><strong>{t('currentVersion')}:</strong> {state.appVersion || t('unknownVersion')}</p>
-      <fieldset disabled={!canChangeChannel(state)}>
+      <fieldset disabled={configuration === null || configuration.availableChannels.length === 0 || !canChangeChannel(state)}>
         <legend>{t('releaseChannel')}</legend>
-        <label><input type="radio" name="dsh-update-channel" value="stable" checked={state.channel === 'stable'} onChange={() => { void selectChannel('stable') }} /> {t('stable')}</label>
-        <label><input type="radio" name="dsh-update-channel" value="beta" checked={state.channel === 'beta'} onChange={() => { void selectChannel('beta') }} /> {t('beta')}</label>
+        <label><input type="radio" name="dsh-update-channel" value="stable" disabled={!configuration?.availableChannels.includes('stable')} checked={state.channel === 'stable'} onChange={() => { void selectChannel('stable') }} /> {t('stable')}</label>
+        <label><input type="radio" name="dsh-update-channel" value="beta" disabled={!configuration?.availableChannels.includes('beta')} checked={state.channel === 'beta'} onChange={() => { void selectChannel('beta') }} /> {t('beta')}</label>
       </fieldset>
       <p><strong>{t('configuredFeed')}:</strong> {state.feed ?? t('noFeed')}</p>
+      {reason != null && <p role="status">{t(reason === 'missing-key' ? 'missingKey' : reason === 'invalid-source' ? 'invalidSource' : reason === 'missing-channel' ? 'missingChannel' : 'missingSource')}</p>}
       <p><strong>{t('lastCheck')}:</strong> {result}</p>
       <p>{t('securityNote')}</p>
-      {state.error !== null && <p role="alert">{t(state.error === 'channel' ? 'channelSaveFailed' : 'actionFailed')}</p>}
+      {state.error !== null && <p role="alert">{t(state.error === 'configuration' ? 'configurationFailed' : state.error === 'channel' ? 'channelSaveFailed' : 'actionFailed')}</p>}
       <div>
-        <button type="button" disabled={!canCheck(state)} onClick={() => { void check() }}>{t('check')}</button>
-        {hasCandidate(state) && <button type="button" disabled={!canOpen(state)} onClick={() => { void open() }}>{t('installOpen')}</button>}
+        {state.error === 'configuration' && <button type="button" onClick={() => { void retryConfiguration() }}>{t('retryConfiguration')}</button>}
+        <button type="button" disabled={!delivery || !canCheck(state)} onClick={() => { void check() }}>{t('check')}</button>
+        {hasCandidate(state) && <button type="button" disabled={!delivery || !canOpen(state)} onClick={() => { void open() }}>{t('installOpen')}</button>}
       </div>
     </div>
   )

@@ -1260,6 +1260,7 @@ function Test-Packaging {
     @{ Name = 'installer guard messages localized'; Path = (Join-Path $PackagingTests 'nsis-strings-messages.ps1') }
     @{ Name = 'installer instance guard'; Path = (Join-Path $PackagingTests 'nsis-instance-guard.ps1') }
     @{ Name = 'installer production contract'; Path = (Join-Path $PackagingTests 'installer-contract.test.mjs') }
+    @{ Name = 'installer template regressions'; Path = (Join-Path $PackagingTests 'installer-regressions.test.mjs') }
     @{ Name = 'repair contract inventory'; Path = (Join-Path $PackagingTests 'repair-gate-inventory.test.mjs') }
     @{ Name = 'runtime materializer policy'; Path = (Join-Path $PackagingTests 'runtime-materializer.test.mjs') }
     @{ Name = 'config editor runtime const-enum import'; Path = (Join-Path $PackagingTests 'config-editor-runtime-import.test.mjs') }

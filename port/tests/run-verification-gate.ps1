@@ -285,7 +285,7 @@ if ($Lane -in @('node', 'all')) {
     # failure rather than a smaller run.
     $upstream = Join-Path $RepoRoot '_upstream'
     $packagingWorkDir = if (Test-Path -LiteralPath (Join-Path $upstream 'node_modules\tsx')) { $upstream } else { $RepoRoot }
-    foreach ($name in @('installer-contract.test.mjs', 'runtime-lock-inputs.test.mjs', 'repair-gate-inventory.test.mjs', 'config-editor-runtime-import.test.mjs', 'runtime-materializer.test.mjs', 'runtime-seal.test.mjs', 'build-script.test.mjs', 'gate-contract.test.mjs', 'execution-node-trust.test.mjs')) {
+    foreach ($name in @('installer-contract.test.mjs', 'installer-regressions.test.mjs', 'runtime-lock-inputs.test.mjs', 'repair-gate-inventory.test.mjs', 'config-editor-runtime-import.test.mjs', 'runtime-materializer.test.mjs', 'runtime-seal.test.mjs', 'build-script.test.mjs', 'gate-contract.test.mjs', 'execution-node-trust.test.mjs')) {
         Assert-GateTime "packaging suite $name"
         $file = Join-Path $PackagingTests $name
         $laneId = "node-packaging-$($name -replace '\.test\.mjs$', '')"

@@ -25,7 +25,11 @@ const sourcePaths = [
 const input = Object.fromEntries(sourcePaths.map((relative) => [relative, readFileSync(path.join(repoRoot, relative), 'utf8')]));
 const config = JSON.parse(input['port/src-tauri/app/tauri.conf.json']);
 assert.equal(config.bundle.windows.nsis.template, '../../installer/installer-template.nsi', 'fixture source must be the Tauri-registered repository template');
-const templateRelative = path.relative(path.join(repoRoot, 'port/src-tauri/app'), path.join(repoRoot, config.bundle.windows.nsis.template));
+// `bundle.windows.nsis.template` is relative to the Tauri app directory, not to
+// the repository root. Joining it onto the repository root resolved five levels
+// above the checkout, so this fixture could never reach its own source list and
+// never produced a receipt. Resolve it from the directory Tauri resolves it from.
+const templateRelative = path.relative(repoRoot, path.resolve(repoRoot, 'port/src-tauri/app', config.bundle.windows.nsis.template));
 assert.equal(templateRelative.split(path.sep).join('/'), 'port/installer/installer-template.nsi', 'registered template resolves to the source used by this fixture');
 
 function sourceLines(relative) {
@@ -142,9 +146,14 @@ processModule = processModule.replace(
   'nsis_tauri_utils::FindProcessCurrentUser "${DSH_MAIN_BINARY_NAME}.exe"',
   'Call un.DshFixtureFindProcessCurrentUser',
 );
-assert.equal((processModule.match(/nsis_tauri_utils::FindProcessCurrentUser/g) ?? []).length, 0, 'both observation calls are replaced by explicit deterministic fixture substitutes');
+// Comments legitimately name the plugin (this tree's own measurement notes do),
+// so only executable lines are counted. What must be substituted is every
+// reachable observation call, not every mention of the name; counting comments
+// made this assertion fail even when both real calls were replaced.
+const codeOnly = (source) => source.split(/\r?\n/).filter((line) => !line.trimStart().startsWith(';')).join('\n');
+assert.equal((codeOnly(processModule).match(/nsis_tauri_utils::FindProcessCurrentUser/g) ?? []).length, 0, 'both observation calls are replaced by explicit deterministic fixture substitutes');
 processModule = processModule.replace(/nsis_tauri_utils::RunAsUser[^\r\n]*/g, 'Call DshFixtureRunAsUser');
-assert.equal((processModule.match(/nsis_tauri_utils::RunAsUser/g) ?? []).length, 0, 'the relaunch plugin is replaced with a count-only non-launching fixture substitute');
+assert.equal((codeOnly(processModule).match(/nsis_tauri_utils::RunAsUser/g) ?? []).length, 0, 'the relaunch plugin is replaced with a count-only non-launching fixture substitute');
 writeFileSync(path.join(fixtureDir, 'installer-process.nsh'), processModule, { flag: 'wx' });
 
 const fragmentIndex = Object.fromEntries(Object.entries(sourceBlocks).map(([name, block]) => [name, {
@@ -174,44 +183,49 @@ Var dshFixtureMode
 Var dshFixtureInstallScanCount
 Var dshFixtureUninstallScanCount
 Var dshFixtureLaunchCount
+; Tauri's real template declares this at installer.nsi:73-77, but the included
+; installer-process.nsh declares only UpdateMode and PassiveMode. The harvested
+; .onInit mode parser reads it, and an undeclared variable made \${GetOptions}
+; expand to a bare "Pop" ("Usage: Pop $(user_var: output)").
+Var NoShortcutMode
 
 ; Test-only observation substitute. The barrier modes return absent on the hook's
 ; first observation and present on the registered template's following guard.
 ; Missing modes return no stack value; malformed modes push a non-contract string.
 Function DshFixtureFindProcessCurrentUser
   IntOp $dshFixtureInstallScanCount $dshFixtureInstallScanCount + 1
-  \\$\{If} $dshFixtureMode == "missing-install"
+  \${If} $dshFixtureMode == "missing-install"
     Return
-  \\$\{ElseIf} $dshFixtureMode == "malformed-install"
+  \${ElseIf} $dshFixtureMode == "malformed-install"
     Push "00"
-  \\$\{ElseIf} $dshFixtureMode == "install-barrier"
-    \\$\{If} $dshFixtureInstallScanCount = 1
+  \${ElseIf} $dshFixtureMode == "install-barrier"
+    \${If} $dshFixtureInstallScanCount = 1
       Push "1"
-    \\$\{Else}
+    \${Else}
       DetailPrint "DSH_FIXTURE_BARRIER install after first check"
       Push "0"
-    \\$\{EndIf}
-  \\$\{Else}
+    \${EndIf}
+  \${Else}
     Push "1"
-  \\$\{EndIf}
+  \${EndIf}
 FunctionEnd
 
 Function un.DshFixtureFindProcessCurrentUser
   IntOp $dshFixtureUninstallScanCount $dshFixtureUninstallScanCount + 1
-  \\$\{If} $dshFixtureMode == "missing-uninstall"
+  \${If} $dshFixtureMode == "missing-uninstall"
     Return
-  \\$\{ElseIf} $dshFixtureMode == "malformed-uninstall"
+  \${ElseIf} $dshFixtureMode == "malformed-uninstall"
     Push "00"
-  \\$\{ElseIf} $dshFixtureMode == "uninstall-barrier"
-    \\$\{If} $dshFixtureUninstallScanCount = 1
+  \${ElseIf} $dshFixtureMode == "uninstall-barrier"
+    \${If} $dshFixtureUninstallScanCount = 1
       Push "1"
-    \\$\{Else}
+    \${Else}
       DetailPrint "DSH_FIXTURE_BARRIER uninstall after first check"
       Push "0"
-    \\$\{EndIf}
-  \\$\{Else}
+    \${EndIf}
+  \${Else}
     Push "1"
-  \\$\{EndIf}
+  \${EndIf}
 FunctionEnd
 
 Function DshFixtureRunAsUser
@@ -222,24 +236,24 @@ FunctionEnd
 
 Function .onInit
 ${sourceBlocks.installModeParser.text}
-  \\$\{GetOptions} $CMDLINE "/FIXTURE" $dshFixtureMode
-  \\$\{IfNot} \\$\{Errors}
+  \${GetOptions} $CMDLINE "/FIXTURE" $dshFixtureMode
+  \${IfNot} \${Errors}
     StrCpy $0 $dshFixtureMode 1
-    \\$\{If} $0 == "="
+    \${If} $0 == "="
       StrCpy $dshFixtureMode $dshFixtureMode "" 1
-    \\$\{EndIf}
-  \\$\{EndIf}
+    \${EndIf}
+  \${EndIf}
 FunctionEnd
 
 Function un.onInit
 ${sourceBlocks.uninstallModeParser.text}
-  \\$\{GetOptions} $CMDLINE "/FIXTURE" $dshFixtureMode
-  \\$\{IfNot} \\$\{Errors}
+  \${GetOptions} $CMDLINE "/FIXTURE" $dshFixtureMode
+  \${IfNot} \${Errors}
     StrCpy $0 $dshFixtureMode 1
-    \\$\{If} $0 == "="
+    \${If} $0 == "="
       StrCpy $dshFixtureMode $dshFixtureMode "" 1
-    \\$\{EndIf}
-  \\$\{EndIf}
+    \${EndIf}
+  \${EndIf}
 FunctionEnd
 
 ${sourceBlocks.finishRunPage.text}

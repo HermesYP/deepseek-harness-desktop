@@ -157,14 +157,30 @@ report anything, and an instrument that cannot compile cannot qualify a template
 | --- | --- | --- |
 | D7 | The derived-template fixture resolved the registered template path from the repository root instead of from the Tauri app directory, so it aborted before compiling and never produced a receipt | [nsis-template-derived-fixture.mjs:32](<../port/tests/packaging/nsis-template-derived-fixture.mjs#L32>) |
 | D8 | The same fixture over-escaped every NSIS macro (`\${If}` for `${If}`), omitted the `NoShortcutMode` declaration that its harvested `.onInit` parser reads, and counted comment mentions of the plugin in a check meant to find executable calls | [nsis-template-derived-fixture.mjs:153](<../port/tests/packaging/nsis-template-derived-fixture.mjs#L153>), [:190](<../port/tests/packaging/nsis-template-derived-fixture.mjs#L190>) |
+| D9 | `gate-contract.test.mjs`'s upstream build-root probe accepted only three of the fence's refusals, so the fence's own earlier, stronger reparse-point refusal failed the probe even though the root was refused | [gate-contract.test.mjs:457](<../port/tests/packaging/gate-contract.test.mjs#L457>) |
 
 Session results after those fixes, under pinned Node 22.20.0 where named: `installer-regressions.test.mjs`
 6/6, `installer-contract.test.mjs` 6/6, `repair-gate-inventory.test.mjs` 1/1, `build-script.test.mjs`
 34/34; native suites `installer-hooks-compile` PASS 14 checks, `installer-instance-guard` PASS 9 checks,
 `installer-hook-behavior` PASS 12 checks, `installer-strings-messages` PASS 14 checks; the
 derived-template fixture compiles and its GREEN phase passes; the updater probe still reports 206 passed,
-0 failed. `gate-contract.test.mjs` reports 19/25 both before and after, so its six behavioural failures
-are pre-existing and out of scope here. None of this has a receipt file, so all of it is a session
+0 failed.
+
+The **all-lane gate** then ran in this worktree, provisioned with the gitignored build outputs the gate
+attests (payload copied from the primary checkout, UI toolchain linked):
+
+```
+GATE_SUMMARY passes=24 skips=1 failures=0 root=...\gate-3dc25821
+```
+
+Exit code 3 is this script's "skips, no failures" result, not a failure. The single skip is
+`installer-instance-guard`: a live `dsh-desktop.exe` on this host makes its no-instance precondition
+false, and the suite refuses rather than killing it; with no such process running the same suite reported
+PASS 9 checks. Three earlier failures in the unprovisioned worktree were provisioning gaps rather than
+defects: `node-port-tests` (a cold-cache adapter timeout in a freshly copied 446 MB payload, clean on a
+warm re-run), the whole UI lane (no linked toolchain), and D9. `gate-contract.test.mjs` reports 25/25
+once the toolchain is linked, so the six behavioural failures seen before provisioning were
+environmental, not pre-existing product defects. No receipt file records any of this, so it is a session
 observation and not acceptance.
 
 ## The safety rule

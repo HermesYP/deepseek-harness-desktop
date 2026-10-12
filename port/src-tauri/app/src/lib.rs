@@ -541,16 +541,29 @@ fn resolve_desktop_node(
             &error,
         )
     })?;
-    let identity: serde_json::Value = serde_json::from_str(&manifest).map_err(|error| {
+    // The manifest contains thousands of file inventory rows. Startup only
+    // needs Node identity; ignore the inventory instead of allocating a generic
+    // JSON tree for every row before the Host can be spawned.
+    #[derive(serde::Deserialize)]
+    struct RuntimeIdentity {
+        node: Option<NodeIdentity>,
+    }
+    #[derive(serde::Deserialize)]
+    struct NodeIdentity {
+        version: Option<String>,
+        target: Option<String>,
+    }
+    let identity: RuntimeIdentity = serde_json::from_str(&manifest).map_err(|error| {
         dsh_core::error::DshError::other("runtime_identity_invalid", error.to_string())
     })?;
-    let node = identity.get("node");
-    let version = node
-        .and_then(|value| value.get("version"))
-        .and_then(serde_json::Value::as_str);
-    let target = node
-        .and_then(|value| value.get("target"))
-        .and_then(serde_json::Value::as_str);
+    let version = identity
+        .node
+        .as_ref()
+        .and_then(|node| node.version.as_deref());
+    let target = identity
+        .node
+        .as_ref()
+        .and_then(|node| node.target.as_deref());
     let expected_target = desktop_node_target(std::env::consts::OS, std::env::consts::ARCH)
         .ok_or_else(|| {
             dsh_core::error::DshError::other(
@@ -810,6 +823,19 @@ fn setup(app: &mut tauri::App) -> Result<(), dsh_core::error::DshError> {
     // The application, not a setup stack frame, owns the asynchronous writer:
     // the managed guard flushes it during exit.
     app.manage(DiagnosticsLifetime(std::sync::Mutex::new(Some(log_guard))));
+    // Record the paths selected for this run, so copied portable assets cannot
+    // be mistaken for the bytes actually loaded by a development executable.
+    // Both files are packaged inputs; no profile data or launch tokens appear.
+    for (component, file) in [
+        ("ui-index", shell_dir.join("index.html")),
+        ("host-adapter", adapter.clone()),
+    ] {
+        if let Ok(bytes) = std::fs::read(&file) {
+            use sha2::{Digest, Sha256};
+            let sha256 = format!("{:x}", Sha256::digest(bytes));
+            tracing::info!(component, path = %file.display(), %sha256, "selected startup artifact");
+        }
+    }
     dsh_core::diagnostics::prune_crash_reports(
         &paths.logs,
         dsh_core::diagnostics::CRASH_REPORTS_RETAINED,

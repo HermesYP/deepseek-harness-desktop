@@ -18,9 +18,30 @@
 //! refuses before any network request, and [`verify_release`] refuses when the
 //! projection carries no signature or no trusted key. Nothing here treats an
 //! unsigned or hash-only manifest as installable.
+//!
+//! 4. **The v2 release contract** ([`SignedReleaseV2`], [`verify_release_v2`]) —
+//!    the same signature discipline over a message that also binds the product,
+//!    platform, architecture, and artifact class the bytes are for, an
+//!    authenticated metadata sequence for anti-rollback, and an expiry for
+//!    freshness.
+//!
+//! The v2 contract is additive and is **not authoritative yet**. [`verify_release`]
+//! (v1) is unchanged and is still the only verifier any caller uses, including
+//! `update_flow.rs`; no packaged build presents a v2 document to anything, and no
+//! feed is enabled by its tests. The whole v2 surface is compiled for tests and
+//! the headless probe only, so the shipped library carries no unused verification
+//! code and "not authoritative" is enforced by the compiler rather than promised
+//! in prose. Making v2 the verifier is the next increment, and it must change
+//! publishing and verification together. Refusing an unrecognized schema, in
+//! either direction, is a refusal rather than a fallback to the weaker contract.
 
 use std::collections::BTreeSet;
+// Compiled wherever the v2 contract is; see `signed_release_v2`.
+#[cfg(any(test, updater_probe))]
+use std::io::Write;
 
+#[cfg(any(test, updater_probe))]
+use crate::mandatory_update::{PolicyArch, PolicyPlatform};
 use dsh_core::protocol::SettingValue;
 use serde::{Deserialize, Serialize};
 use url::Url;
@@ -381,6 +402,60 @@ pub enum VerifyFailure {
     MalformedSignature,
     /// The signature does not verify against the signed message.
     InvalidSignature,
+    /// The document's schema marker is not the v2 marker this build reads.
+    ///
+    /// This is the arm a v1 message produces when it is presented where v2 is
+    /// required. It is a refusal on purpose: an unrecognized schema is never
+    /// retried with an older, weaker verifier, and an older schema is never
+    /// silently accepted because a newer one failed.
+    #[cfg(any(test, updater_probe))]
+    UnsupportedSchema { found: String },
+    /// The document is not the canonical v2 line structure: a wrong, missing,
+    /// duplicated, or extra field, a value outside the token alphabet, an
+    /// unparseable number, or an expiry that cannot be an instant. `reason` is
+    /// bounded and names the offending field.
+    #[cfg(any(test, updater_probe))]
+    MalformedReleaseDocument { reason: String },
+    /// The artifact kind token is not one this contract defines.
+    #[cfg(any(test, updater_probe))]
+    UnsupportedArtifactKind { found: String },
+    /// The signed document authorizes a different product.
+    #[cfg(any(test, updater_probe))]
+    WrongProduct { expected: String, found: String },
+    /// The signed document authorizes a different platform.
+    #[cfg(any(test, updater_probe))]
+    WrongPlatform { expected: String, found: String },
+    /// The signed document authorizes a different CPU architecture.
+    #[cfg(any(test, updater_probe))]
+    WrongArchitecture { expected: String, found: String },
+    /// The signed document authorizes a different class of artifact.
+    #[cfg(any(test, updater_probe))]
+    WrongArtifactKind {
+        expected: ReleaseArtifactKind,
+        found: ReleaseArtifactKind,
+    },
+    /// The metadata's expiry has passed beyond the bounded clock tolerance.
+    ///
+    /// Stale metadata is reported as stale. It says nothing about installation
+    /// having succeeded, and expiry cannot force a blocked network to deliver
+    /// anything.
+    #[cfg(any(test, updater_probe))]
+    MetadataExpired {
+        expiry_unix_ms: i64,
+        now_unix_ms: i64,
+    },
+    /// The metadata sequence is at or below the highest already admitted.
+    #[cfg(any(test, updater_probe))]
+    MetadataSequenceTooLow {
+        floor_sequence: u64,
+        found_sequence: u64,
+    },
+    /// The caller could not supply a plausible wall-clock instant.
+    ///
+    /// Refusing is the only safe answer: an unavailable clock must not read as
+    /// "nothing has expired".
+    #[cfg(any(test, updater_probe))]
+    ClockUnavailable { now_unix_ms: i64 },
 }
 
 impl std::fmt::Display for VerifyFailure {
@@ -410,6 +485,63 @@ impl std::fmt::Display for VerifyFailure {
             Self::InvalidSignature => write!(
                 formatter,
                 "the release signature does not verify for this version, channel, and artifact digest"
+            ),
+            #[cfg(any(test, updater_probe))]
+            Self::UnsupportedSchema { found } => write!(
+                formatter,
+                "the release metadata schema `{found}` is not `{RELEASE_V2_SCHEMA_MARKER}`, so it cannot be read; a different schema is never accepted in place of the one this build verifies"
+            ),
+            #[cfg(any(test, updater_probe))]
+            Self::MalformedReleaseDocument { reason } => {
+                write!(formatter, "the release metadata is not canonical: {reason}")
+            }
+            #[cfg(any(test, updater_probe))]
+            Self::UnsupportedArtifactKind { found } => write!(
+                formatter,
+                "artifact kind `{found}` is not one this build can install"
+            ),
+            #[cfg(any(test, updater_probe))]
+            Self::WrongProduct { expected, found } => write!(
+                formatter,
+                "the release is signed for product `{found}`, not `{expected}`"
+            ),
+            #[cfg(any(test, updater_probe))]
+            Self::WrongPlatform { expected, found } => write!(
+                formatter,
+                "the release is signed for platform `{found}`, not `{expected}`"
+            ),
+            #[cfg(any(test, updater_probe))]
+            Self::WrongArchitecture { expected, found } => write!(
+                formatter,
+                "the release is signed for architecture `{found}`, not `{expected}`"
+            ),
+            #[cfg(any(test, updater_probe))]
+            Self::WrongArtifactKind { expected, found } => write!(
+                formatter,
+                "the release authorizes a `{}` artifact, not a `{}`",
+                found.as_str(),
+                expected.as_str()
+            ),
+            #[cfg(any(test, updater_probe))]
+            Self::MetadataExpired {
+                expiry_unix_ms,
+                now_unix_ms,
+            } => write!(
+                formatter,
+                "the release metadata expired at {expiry_unix_ms} (Unix ms) and the clock now reads {now_unix_ms}, beyond the tolerated skew; the manifest is stale and must not be installed"
+            ),
+            #[cfg(any(test, updater_probe))]
+            Self::MetadataSequenceTooLow {
+                floor_sequence,
+                found_sequence,
+            } => write!(
+                formatter,
+                "the release metadata sequence {found_sequence} is not newer than the {floor_sequence} this installation already admitted, so it is a rollback"
+            ),
+            #[cfg(any(test, updater_probe))]
+            Self::ClockUnavailable { now_unix_ms } => write!(
+                formatter,
+                "no usable clock is available (the caller reported {now_unix_ms} ms since the Unix epoch), so release freshness cannot be established and the release is refused"
             ),
         }
     }
@@ -525,6 +657,829 @@ pub fn ed25519_verify(public_key: &[u8; 32], message: &[u8], signature: &[u8; 64
         .verify(message, signature)
         .is_ok()
 }
+
+// ---------------------------------------------------------------------------
+// The v2 signed release contract: target binding, freshness, anti-rollback
+// ---------------------------------------------------------------------------
+//
+// WHY THIS SECTION EXISTS, AND WHY IT IS NOT AUTHORITATIVE YET.
+//
+// The v1 message ([`SignedRelease`]) binds a version, a channel, and an artifact
+// digest. It does not say which product, platform, architecture, or class of
+// artifact those bytes are for, when the metadata stops being current, or how one
+// manifest orders against the last one this installation admitted. A signature
+// over v1 is therefore replayable onto the same digest presented as a different
+// target, and a manifest never becomes stale.
+//
+// [`SignedReleaseV2`] adds exactly those bindings. It is defined and tested here
+// and it is deliberately **not authoritative**: [`verify_release`] is unchanged,
+// every caller (including `update_flow.rs`) still admits releases through v1, and
+// no packaged build presents a v2 document to anything. Making v2 the verifier is
+// the next increment, and it must publish and verify together
+// (`port-fix-plan-2026-10-10.md` milestone 4, change 6).
+//
+// Refusing an unknown schema is a refusal, never a downgrade: an unrecognized
+// marker is [`VerifyFailure::UnsupportedSchema`], and no path in this module
+// retries a v2 document with the weaker v1 message.
+
+/// The v2 signed release contract, compiled for tests and the headless probe.
+///
+/// WHY THIS IS GATED. The contract is defined and tested here before anything
+/// admits a release through it. Verification surface that nothing in the shipped
+/// shell consumes would be dead code in the production library, which this
+/// workspace denies as a warning, and silencing that with an `allow` would hide
+/// the very fact worth stating. The gate instead makes "v2 is not authoritative
+/// yet" something the compiler enforces rather than a sentence in a comment. The
+/// increment that admits releases through v2 removes the gate and the wiring
+/// together, so they cannot drift apart; until then the shipped enum keeps
+/// exactly the v1 vocabulary it had.
+#[cfg(any(test, updater_probe))]
+mod signed_release_v2 {
+    use super::*;
+
+    /// The first line of a canonical v2 signed message.
+    ///
+    /// The marker *is* the schema negotiation. A verifier that does not recognize it
+    /// refuses, so a later schema can never be read as v2 by accident, and a v2
+    /// document can never be read as the weaker v1.
+    pub const RELEASE_V2_SCHEMA_MARKER: &str = "dsh-desktop-release/v2";
+
+    /// The product every release of this application signs as.
+    ///
+    /// A stable identifier rather than a display name: the shell's binary is
+    /// `dsh-desktop` (`port/src-tauri/app/Cargo.toml`), so a signature over this
+    /// value cannot be replayed onto a different product that happens to share a
+    /// version, a channel, and a digest.
+    pub const RELEASE_PRODUCT_ID: &str = "dsh-desktop";
+
+    /// Bounded leeway for a local clock that runs behind the publisher's.
+    ///
+    /// A device whose clock is a few minutes slow would otherwise refuse metadata
+    /// that is still current. The leeway is small and one-sided: metadata is accepted
+    /// until `expiry + this` and no further, so it can never turn an expired manifest
+    /// into a permanently valid one. It is a tolerance on reading a local clock, not
+    /// a claim that the clock is trustworthy.
+    pub const RELEASE_METADATA_CLOCK_SKEW_MS: i64 = 5 * 60 * 1000;
+
+    /// The earliest instant this contract treats as a usable clock.
+    ///
+    /// 2020-09-13T12:26:40Z, which precedes every release this product has published.
+    /// A caller that cannot obtain a plausible wall-clock instant - no clock, a
+    /// failed read, an unset field - must pass a value below this floor, and the
+    /// verifier refuses with [`VerifyFailure::ClockUnavailable`]. "I do not know what
+    /// time it is" must never be answered with "then nothing has expired".
+    pub const RELEASE_METADATA_CLOCK_FLOOR_UNIX_MS: i64 = 1_600_000_000_000;
+
+    /// The only schema version a [`ReleaseFloor`] document is read or written as.
+    pub const RELEASE_FLOOR_SCHEMA_VERSION: u32 = 1;
+
+    /// Largest floor document accepted, so a corrupt or hostile file is never read
+    /// into memory without a bound.
+    ///
+    /// Public within the gated module so the suite exercises the bound itself
+    /// rather than a copy of its value.
+    pub const RELEASE_FLOOR_MAX_BYTES: u64 = 4096;
+
+    /// Longest fragment of input this module repeats back inside an error.
+    ///
+    /// Refusals reach logs, dialogs, and evidence summaries, so an error must not
+    /// carry a whole attacker-supplied document with it.
+    const RELEASE_ERROR_FRAGMENT_CHARS: usize = 64;
+
+    /// A bounded, printable rendering of attacker-supplied input for an error value.
+    ///
+    /// Control characters are replaced rather than passed through: error text is
+    /// written to line-oriented logs, and a document must not be able to forge log
+    /// lines through a refusal.
+    fn bounded_fragment(value: &str) -> String {
+        value
+            .chars()
+            .take(RELEASE_ERROR_FRAGMENT_CHARS)
+            .map(|character| {
+                if character.is_ascii_graphic() || character == ' ' {
+                    character
+                } else {
+                    '.'
+                }
+            })
+            .collect()
+    }
+
+    /// Whether `value` is a canonical field value: non-empty ASCII alphanumerics plus
+    /// `.`, `-`, `_` and `+`.
+    ///
+    /// The permitted set covers every token this contract names - `dsh-desktop`,
+    /// `desktop-win`, `x64`, `installer`, `runtime-payload`, a SemVer version, a
+    /// channel, a hex digest, and the two decimal numbers - and excludes every byte
+    /// that could disturb the line structure. A value can therefore never contain a
+    /// newline, a carriage return, a space, or a second `=`, which is what makes the
+    /// signed document unambiguous without an escaping rule.
+    ///
+    /// Production surface as well as test surface: the suite asserts that every
+    /// token [`ReleaseTarget`] can emit is itself canonical, so a token added later
+    /// cannot be one the parser would refuse.
+    pub fn is_canonical_release_value(value: &str) -> bool {
+        !value.is_empty()
+            && value.bytes().all(|byte| {
+                byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'-' | b'_' | b'+')
+            })
+    }
+
+    /// Which class of artifact a signed release authorizes.
+    ///
+    /// v1 cannot express this: one digest and one version describe the combined
+    /// installer, and nothing stops those same fields from being presented where a
+    /// runtime payload is expected. Naming the kind inside the signed message makes
+    /// "this signature authorizes this class of artifact" a property of the
+    /// signature instead of a convention at the call site.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub enum ReleaseArtifactKind {
+        /// The combined native installer: the shell plus its bundled runtime.
+        Installer,
+        /// A runtime payload delivered on its own, once that channel exists.
+        RuntimePayload,
+    }
+
+    impl ReleaseArtifactKind {
+        /// The canonical token this kind contributes to the signed message.
+        pub fn as_str(self) -> &'static str {
+            match self {
+                Self::Installer => "installer",
+                Self::RuntimePayload => "runtime-payload",
+            }
+        }
+
+        /// Parse a canonical token; an unknown token is `None`.
+        ///
+        /// `None` becomes a refusal at the document parser rather than a default, so
+        /// a kind this contract does not define is never read as "some v2 kind".
+        pub fn parse(value: &str) -> Option<Self> {
+            match value {
+                "installer" => Some(Self::Installer),
+                "runtime-payload" => Some(Self::RuntimePayload),
+                _ => None,
+            }
+        }
+    }
+
+    /// The exact bytes a v2 release signature covers.
+    ///
+    /// Canonical form, with the field names, their order, and the trailing newline
+    /// pinned by test:
+    ///
+    /// ```text
+    /// dsh-desktop-release/v2
+    /// product=<product>
+    /// platform=<platform>
+    /// arch=<architecture>
+    /// kind=<artifact kind>
+    /// version=<release version>
+    /// channel=<channel>
+    /// sha256=<64 lowercase ASCII hex>
+    /// sequence=<metadata sequence, decimal u64>
+    /// expiry=<expiry, Unix milliseconds, decimal i64>
+    /// ```
+    ///
+    /// Nothing is trimmed and no field is normalized, so the document a publisher
+    /// signs is byte-for-byte the document a verifier reads: a changed byte either
+    /// breaks the line structure (a refusal) or changes [`Self::message`] (a
+    /// signature failure). The digest is required in lowercase canonical form rather
+    /// than case-folded at verification time, for the same reason.
+    ///
+    /// The artifact URL is deliberately absent, as in v1, so a mirror move needs no
+    /// re-signing; the feed's allow list still constrains the host.
+    #[derive(Debug, Clone, PartialEq, Eq)]
+    pub struct SignedReleaseV2 {
+        /// Product identifier; must equal [`RELEASE_PRODUCT_ID`] for this product.
+        pub product: String,
+        /// Platform token, canonicalized by [`ReleaseTarget::platform_token`].
+        pub platform: String,
+        /// Architecture token, canonicalized by [`ReleaseTarget::arch_token`].
+        pub arch: String,
+        /// The class of artifact this signature authorizes.
+        pub artifact_kind: ReleaseArtifactKind,
+        /// SemVer of the release the signature authorizes.
+        pub version: String,
+        /// Release channel the signature is bound to.
+        pub channel: String,
+        /// SHA-256 of the artifact bytes, 64 lowercase ASCII hex characters.
+        pub sha256: String,
+        /// Authenticated metadata sequence, used for anti-rollback. A later manifest
+        /// must carry a strictly greater value than the persisted floor.
+        pub metadata_sequence: u64,
+        /// Unix milliseconds after which this metadata is stale.
+        pub expiry_unix_ms: i64,
+    }
+
+    /// The canonical line count of a v2 document: the marker, nine fields, and the
+    /// empty element a trailing newline produces when the text is split.
+    const RELEASE_V2_LINE_COUNT: usize = 11;
+
+    /// The nine v2 field names, in the order the signature covers them.
+    const RELEASE_V2_FIELD_KEYS: [&str; 9] = [
+        "product", "platform", "arch", "kind", "version", "channel", "sha256", "sequence", "expiry",
+    ];
+
+    impl SignedReleaseV2 {
+        /// The canonical message these values sign, and the exact bytes a verifier
+        /// must see.
+        ///
+        /// The v1 doc comment called its message "newline-free" while the format uses
+        /// newlines as separators; what that meant, and what holds here, is that no
+        /// *field value* can contain a line separator. [`Self::parse`] enforces that
+        /// alphabet, so the line structure cannot be forged from a value.
+        pub fn message(&self) -> String {
+            format!(
+            "dsh-desktop-release/v2\nproduct={product}\nplatform={platform}\narch={arch}\nkind={kind}\nversion={version}\nchannel={channel}\nsha256={sha256}\nsequence={sequence}\nexpiry={expiry}\n",
+            product = self.product,
+            platform = self.platform,
+            arch = self.arch,
+            kind = self.artifact_kind.as_str(),
+            version = self.version,
+            channel = self.channel,
+            sha256 = self.sha256,
+            sequence = self.metadata_sequence,
+            expiry = self.expiry_unix_ms,
+        )
+        }
+
+        /// Parse one canonical v2 document.
+        ///
+        /// The structure is checked positionally: the marker line, then exactly the
+        /// nine [`RELEASE_V2_FIELD_KEYS`] in order, then the empty tail a trailing
+        /// newline leaves. A reordered field, an extra or duplicated field, a blank
+        /// line, or a final line without a newline is therefore a refusal rather than
+        /// a normalization - which is what keeps [`Self::message`] equal to the input
+        /// bytes, so the signature check is over exactly what the publisher signed.
+        ///
+        /// A document whose marker is not [`RELEASE_V2_SCHEMA_MARKER`] - including a
+        /// v1 message - is [`VerifyFailure::UnsupportedSchema`]; it is never retried
+        /// with an older schema.
+        pub fn parse(document: &str) -> Result<Self, VerifyFailure> {
+            let lines: Vec<&str> = document.split('\n').collect();
+            let marker = lines.first().copied().unwrap_or_default();
+            if marker != RELEASE_V2_SCHEMA_MARKER {
+                return Err(VerifyFailure::UnsupportedSchema {
+                    found: bounded_fragment(marker),
+                });
+            }
+            if lines.len() != RELEASE_V2_LINE_COUNT || !lines[RELEASE_V2_LINE_COUNT - 1].is_empty()
+            {
+                return Err(VerifyFailure::MalformedReleaseDocument {
+                    reason: "the document is not the canonical v2 line structure".to_string(),
+                });
+            }
+            let mut values = [""; 9];
+            for (index, key) in RELEASE_V2_FIELD_KEYS.iter().enumerate() {
+                let line = lines[index + 1];
+                let Some((found_key, value)) = line.split_once('=') else {
+                    return Err(VerifyFailure::MalformedReleaseDocument {
+                        reason: format!("line {} is not a `key=value` field", index + 2),
+                    });
+                };
+                if found_key != *key {
+                    return Err(VerifyFailure::MalformedReleaseDocument {
+                        reason: format!(
+                            "line {} names `{}` where `{key}` is required",
+                            index + 2,
+                            bounded_fragment(found_key)
+                        ),
+                    });
+                }
+                values[index] = value;
+            }
+            let [product, platform, arch, kind, version, channel, sha256, sequence, expiry] =
+                values;
+            for (name, value) in [
+                ("product", product),
+                ("platform", platform),
+                ("arch", arch),
+                ("version", version),
+                ("channel", channel),
+            ] {
+                if !is_canonical_release_value(value) {
+                    return Err(VerifyFailure::MalformedReleaseDocument {
+                        reason: format!("field `{name}` is not a canonical ASCII token"),
+                    });
+                }
+            }
+            // A digest is the one field whose absence and malformation are separate,
+            // actionable conditions: an installer with no digest to check is a
+            // different defect from a digest that is not a SHA-256.
+            if sha256.is_empty() {
+                return Err(VerifyFailure::MissingDigest);
+            }
+            if !is_valid_sha256(sha256) || sha256.bytes().any(|byte| byte.is_ascii_uppercase()) {
+                return Err(VerifyFailure::MalformedDigest);
+            }
+            let artifact_kind = ReleaseArtifactKind::parse(kind).ok_or_else(|| {
+                VerifyFailure::UnsupportedArtifactKind {
+                    found: bounded_fragment(kind),
+                }
+            })?;
+            let metadata_sequence =
+                sequence
+                    .parse::<u64>()
+                    .map_err(|_| VerifyFailure::MalformedReleaseDocument {
+                        reason: "field `sequence` is not a decimal u64".to_string(),
+                    })?;
+            let expiry_unix_ms =
+                expiry
+                    .parse::<i64>()
+                    .map_err(|_| VerifyFailure::MalformedReleaseDocument {
+                        reason: "field `expiry` is not a decimal i64".to_string(),
+                    })?;
+            if expiry_unix_ms <= 0 {
+                return Err(VerifyFailure::MalformedReleaseDocument {
+                    reason: "field `expiry` is not a plausible instant".to_string(),
+                });
+            }
+            Ok(Self {
+                product: product.to_string(),
+                platform: platform.to_string(),
+                arch: arch.to_string(),
+                artifact_kind,
+                version: version.to_string(),
+                channel: channel.to_string(),
+                sha256: sha256.to_string(),
+                metadata_sequence,
+                expiry_unix_ms,
+            })
+        }
+    }
+
+    /// The build a signed release must name to be installable here.
+    ///
+    /// Platform and architecture reuse [`PolicyPlatform`] and [`PolicyArch`], the
+    /// same types the installed-client policy identity reports, so one running build
+    /// presents one platform/architecture vocabulary to both the release feed and the
+    /// policy service; the token methods are pinned by test to
+    /// `DesktopPolicyIdentity`'s header values. The derivation from
+    /// `std::env::consts::OS`/`ARCH` mirrors `policy_bootstrap::native_target`, which
+    /// cannot be called from here: this module is compiled on its own by the updater
+    /// probe and must not depend on the app shell's module tree.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub struct ReleaseTarget {
+        /// Product identifier the document must carry ([`RELEASE_PRODUCT_ID`]).
+        pub product: &'static str,
+        /// Platform this build was produced for.
+        pub platform: PolicyPlatform,
+        /// CPU architecture this build was produced for.
+        pub arch: PolicyArch,
+    }
+
+    impl ReleaseTarget {
+        /// The target of the build this process is running.
+        ///
+        /// `None` when this product does not ship for the host: an unrecognized
+        /// platform or architecture must produce a refusal at the caller, never a
+        /// guessed target that another platform's signed manifest could satisfy. The
+        /// `Win32`/`Arm64` combination is refused here as well, because it is the one
+        /// combination the installer never produces and `DesktopPolicyIdentity`
+        /// already rejects (`mandatory_update.rs`). Linux is absent for the same
+        /// reason [`PolicyPlatform`] has no Linux variant: the runtime payload names
+        /// a linux target, but a `linux` string cannot be formed from these types.
+        pub fn for_running_build() -> Option<Self> {
+            let platform = match std::env::consts::OS {
+                "windows" => PolicyPlatform::Win32,
+                "macos" => PolicyPlatform::Darwin,
+                _ => return None,
+            };
+            let arch = match std::env::consts::ARCH {
+                "x86_64" => PolicyArch::X64,
+                "aarch64" => PolicyArch::Arm64,
+                _ => return None,
+            };
+            if platform == PolicyPlatform::Win32 && arch != PolicyArch::X64 {
+                return None;
+            }
+            Some(Self {
+                product: RELEASE_PRODUCT_ID,
+                platform,
+                arch,
+            })
+        }
+
+        /// The canonical platform token a signed message must carry.
+        pub fn platform_token(self) -> &'static str {
+            match self.platform {
+                PolicyPlatform::Win32 => "desktop-win",
+                PolicyPlatform::Darwin => "desktop-mac",
+            }
+        }
+
+        /// The canonical architecture token a signed message must carry.
+        pub fn arch_token(self) -> &'static str {
+            match self.arch {
+                PolicyArch::X64 => "x64",
+                PolicyArch::Arm64 => "arm64",
+            }
+        }
+    }
+
+    /// Everything one v2 admission decision depends on.
+    ///
+    /// The clock and the persisted floor are parameters rather than ambient reads, so
+    /// [`verify_release_v2`] touches neither the filesystem nor the system clock: an
+    /// admission is reproducible in a test, and a caller cannot silently skip the
+    /// floor it persisted.
+    #[derive(Debug, Clone, Copy)]
+    pub struct ReleaseAdmissionV2<'a> {
+        /// Target the running build requires the document to name.
+        pub target: &'a ReleaseTarget,
+        /// Artifact class this admission is for.
+        pub artifact_kind: ReleaseArtifactKind,
+        /// The caller's wall-clock instant in Unix milliseconds. A value below
+        /// [`RELEASE_METADATA_CLOCK_FLOOR_UNIX_MS`] means "no usable clock" and
+        /// refuses.
+        pub now_unix_ms: i64,
+        /// Highest metadata sequence already admitted, when one is persisted.
+        pub floor: Option<&'a ReleaseFloor>,
+    }
+
+    /// The values a v2 signature authenticated, on the `Ok` path only.
+    ///
+    /// Deliberately a different type from [`SignedReleaseV2`]: a caller that has a
+    /// `VerifiedReleaseV2` cannot pair "this document verified" with fields read from
+    /// somewhere else, which is the property the module's "one immutable candidate
+    /// per operation" rule depends on.
+    #[derive(Debug, Clone, PartialEq, Eq)]
+    pub struct VerifiedReleaseV2 {
+        /// Authenticated product identifier.
+        pub product: String,
+        /// Authenticated platform token.
+        pub platform: String,
+        /// Authenticated architecture token.
+        pub arch: String,
+        /// Authenticated artifact class.
+        pub artifact_kind: ReleaseArtifactKind,
+        /// Authenticated release version.
+        pub version: String,
+        /// Authenticated release channel.
+        pub channel: String,
+        /// Authenticated SHA-256 of the artifact bytes.
+        pub sha256: String,
+        /// Authenticated metadata sequence.
+        pub metadata_sequence: u64,
+        /// Authenticated expiry, Unix milliseconds.
+        pub expiry_unix_ms: i64,
+    }
+
+    /// Verify one v2 release document and bind it to this build.
+    ///
+    /// The order of the checks is part of the contract, because it decides which
+    /// refusal a caller sees and, more importantly, that no *policy* decision is made
+    /// about an unauthenticated document:
+    ///
+    /// 1. no packaged key for the channel refuses with
+    ///    [`VerifyFailure::NoTrustedKeys`], before the document is even read;
+    /// 2. the document must parse as canonical v2, which covers the schema, the
+    ///    field structure, the artifact kind token, and the digest shape;
+    /// 3. the signature must be present, well formed, and verify over the exact
+    ///    document bytes;
+    /// 4. only then are the target bindings compared;
+    /// 5. then the clock floor, the expiry, and the persisted sequence floor.
+    ///
+    /// `now_unix_ms` is supplied by the caller and never read here: see
+    /// [`RELEASE_METADATA_CLOCK_SKEW_MS`] for the bounded tolerance and
+    /// [`RELEASE_METADATA_CLOCK_FLOOR_UNIX_MS`] for what an unusable clock does.
+    /// Expiry reports stale metadata; it cannot make a blocked network deliver an
+    /// update, and a refusal here never claims that anything was installed.
+    ///
+    /// The channel is bound inside the signature but is not compared against a
+    /// selected channel here: choosing which channel's document to admit remains the
+    /// caller's existing selection logic, which this increment does not change.
+    pub fn verify_release_v2(
+        trusted_keys: &[String],
+        document: &str,
+        signature_hex: Option<&str>,
+        admission: &ReleaseAdmissionV2<'_>,
+    ) -> Result<VerifiedReleaseV2, VerifyFailure> {
+        if trusted_keys.is_empty() {
+            return Err(VerifyFailure::NoTrustedKeys);
+        }
+        let release = SignedReleaseV2::parse(document)?;
+        let signature_hex = signature_hex
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .ok_or(VerifyFailure::MissingSignature)?;
+        let signature = decode_hex(signature_hex).ok_or(VerifyFailure::MalformedSignature)?;
+        let signature: [u8; 64] = signature
+            .try_into()
+            .map_err(|_| VerifyFailure::MalformedSignature)?;
+        let message = release.message();
+        let mut authenticated = false;
+        for key in trusted_keys {
+            let bytes = decode_hex(key.trim())
+                .ok_or_else(|| VerifyFailure::MalformedKey(format!("`{key}` is not hex")))?;
+            let key: [u8; 32] = bytes
+                .try_into()
+                .map_err(|_| VerifyFailure::MalformedKey(format!("`{key}` is not 32 bytes")))?;
+            if ed25519_verify(&key, message.as_bytes(), &signature) {
+                authenticated = true;
+                break;
+            }
+        }
+        if !authenticated {
+            return Err(VerifyFailure::InvalidSignature);
+        }
+        // Past this point every field below was covered by the signature, so a
+        // mismatch is a statement about an authentic document rather than about
+        // attacker-chosen bytes.
+        if release.product != admission.target.product {
+            return Err(VerifyFailure::WrongProduct {
+                expected: admission.target.product.to_string(),
+                found: bounded_fragment(&release.product),
+            });
+        }
+        if release.platform != admission.target.platform_token() {
+            return Err(VerifyFailure::WrongPlatform {
+                expected: admission.target.platform_token().to_string(),
+                found: bounded_fragment(&release.platform),
+            });
+        }
+        if release.arch != admission.target.arch_token() {
+            return Err(VerifyFailure::WrongArchitecture {
+                expected: admission.target.arch_token().to_string(),
+                found: bounded_fragment(&release.arch),
+            });
+        }
+        if release.artifact_kind != admission.artifact_kind {
+            return Err(VerifyFailure::WrongArtifactKind {
+                expected: admission.artifact_kind,
+                found: release.artifact_kind,
+            });
+        }
+        if admission.now_unix_ms < RELEASE_METADATA_CLOCK_FLOOR_UNIX_MS {
+            return Err(VerifyFailure::ClockUnavailable {
+                now_unix_ms: admission.now_unix_ms,
+            });
+        }
+        // Saturating rather than wrapping: an absurd expiry must not panic a debug
+        // build, and a signed far-future expiry simply never expires.
+        let latest = release
+            .expiry_unix_ms
+            .saturating_add(RELEASE_METADATA_CLOCK_SKEW_MS);
+        if admission.now_unix_ms > latest {
+            return Err(VerifyFailure::MetadataExpired {
+                expiry_unix_ms: release.expiry_unix_ms,
+                now_unix_ms: admission.now_unix_ms,
+            });
+        }
+        if let Some(floor) = admission.floor {
+            if release.metadata_sequence <= floor.metadata_sequence {
+                return Err(VerifyFailure::MetadataSequenceTooLow {
+                    floor_sequence: floor.metadata_sequence,
+                    found_sequence: release.metadata_sequence,
+                });
+            }
+        }
+        Ok(VerifiedReleaseV2 {
+            product: release.product,
+            platform: release.platform,
+            arch: release.arch,
+            artifact_kind: release.artifact_kind,
+            version: release.version,
+            channel: release.channel,
+            sha256: release.sha256,
+            metadata_sequence: release.metadata_sequence,
+            expiry_unix_ms: release.expiry_unix_ms,
+        })
+    }
+
+    // ---------------------------------------------------------------------------
+    // Persisted anti-rollback floor
+    // ---------------------------------------------------------------------------
+
+    /// The highest metadata sequence, and the release it admitted, that this
+    /// installation has already accepted.
+    ///
+    /// Rollback protection needs one durable fact that only ever moves forward. The
+    /// floor is that fact: a candidate whose authenticated sequence is at or below it
+    /// is refused, so an operator who can serve an older but correctly signed
+    /// manifest cannot walk an installation backwards.
+    ///
+    /// WHAT THIS DOES NOT DEFEND AGAINST, STATED PLAINLY. The floor lives in a
+    /// user-writable location, and the same user's malware can rewrite it. It
+    /// protects the update protocol against replay of genuine older metadata; it is
+    /// not a defence against an attacker who already executes as this user. The plan
+    /// says the same about the application and the trust store generally
+    /// (`port-fix-plan-2026-10-10.md` milestone 4, change 7).
+    #[derive(Debug, Clone, PartialEq, Eq)]
+    pub struct ReleaseFloor {
+        /// Highest metadata sequence already admitted.
+        pub metadata_sequence: u64,
+        /// The release version that sequence admitted, recorded for diagnostics so a
+        /// reader can tell which release the floor belongs to.
+        pub release_version: String,
+    }
+
+    /// The on-disk floor document. Private: callers read and write [`ReleaseFloor`],
+    /// never this shape, so the file format can gain a field without changing the
+    /// public type.
+    #[derive(Debug, Serialize, Deserialize)]
+    #[serde(rename_all = "camelCase", deny_unknown_fields)]
+    struct ReleaseFloorDocument {
+        schema_version: u32,
+        metadata_sequence: u64,
+        release_version: String,
+    }
+
+    /// Why persisted anti-rollback state could not be read or written.
+    ///
+    /// Separate from [`VerifyFailure`] because these are I/O and format conditions
+    /// rather than statements about a release document, and because every caller of
+    /// the floor must treat all of them as "refuse to admit anything new": an
+    /// unreadable floor is not an absent floor.
+    #[derive(Debug, Clone, PartialEq, Eq)]
+    pub enum FloorFailure {
+        /// The floor file exists but could not be read.
+        ReadFailed { path: String, reason: String },
+        /// The floor file exists but is not the canonical floor document: not a
+        /// regular file, larger than the contract allows, or not valid JSON of the
+        /// expected schema. A refused floor is never reinterpreted as "no floor".
+        Unusable { path: String, reason: String },
+        /// The floor file could not be created. [`ReleaseFloor::save_to`] creates
+        /// exclusively, so an existing file is reported here rather than replaced.
+        WriteFailed { path: String, reason: String },
+    }
+
+    impl std::fmt::Display for FloorFailure {
+        fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            match self {
+                Self::ReadFailed { path, reason } => write!(
+                    formatter,
+                    "the persisted anti-rollback floor at {path} could not be read: {reason}"
+                ),
+                Self::Unusable { path, reason } => write!(
+                    formatter,
+                    "the persisted anti-rollback floor at {path} is unusable: {reason}"
+                ),
+                Self::WriteFailed { path, reason } => write!(
+                    formatter,
+                    "the persisted anti-rollback floor at {path} could not be created: {reason}"
+                ),
+            }
+        }
+    }
+
+    impl std::error::Error for FloorFailure {}
+
+    /// Create a new private file, exclusively and owner-only where the platform
+    /// expresses that through the standard library.
+    ///
+    /// `create_new` is `O_CREAT|O_EXCL`: it never truncates and never follows an
+    /// existing name, so a floor can never be silently lowered by writing over one,
+    /// and a pre-planted symlink is a refusal rather than a redirection. On Unix the
+    /// creation mode is `0o600`, mirroring how this repository already writes private
+    /// state (`dev_handoff.rs`).
+    ///
+    /// On Windows the standard library exposes no way to attach a DACL to a newly
+    /// created file, so the file inherits its parent directory's ACL. The
+    /// creation-time owner-only DACL this tree uses elsewhere needs the `windows`
+    /// crate, which this module cannot depend on because the updater probe compiles
+    /// it standalone without the app shell's dependencies. The Windows per-file ACL
+    /// is therefore an explicit gap for the increment that wires the floor, and the
+    /// floor must be written into a directory whose ACL already excludes other users.
+    fn create_owner_only_new(path: &std::path::Path) -> std::io::Result<std::fs::File> {
+        let mut options = std::fs::OpenOptions::new();
+        options.write(true).create_new(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            options.mode(0o600);
+        }
+        options.open(path)
+    }
+
+    impl ReleaseFloor {
+        /// Record a sequence and the release version it admitted.
+        pub fn new(metadata_sequence: u64, release_version: impl Into<String>) -> Self {
+            Self {
+                metadata_sequence,
+                release_version: release_version.into(),
+            }
+        }
+
+        /// Whether a candidate sequence must be refused against this floor.
+        ///
+        /// "At or below" rather than "below": replaying the exact manifest this
+        /// installation already admitted is a rollback too, and it is the cheapest
+        /// replay an attacker can mount.
+        pub fn refuses(&self, metadata_sequence: u64) -> bool {
+            metadata_sequence <= self.metadata_sequence
+        }
+
+        /// Read the floor from `path`, or report that none is persisted.
+        ///
+        /// `Ok(None)` means the file does not exist. Every other condition -
+        /// unreadable, a directory or other non-regular entry, oversized, malformed,
+        /// or carrying a schema version this build does not know - is a
+        /// [`FloorFailure`], never an absent floor: a caller that cannot read the
+        /// floor must refuse to admit anything new rather than start from zero.
+        pub fn load_from(path: &std::path::Path) -> Result<Option<Self>, FloorFailure> {
+            let path_text = path.display().to_string();
+            // Classify the directory entry itself rather than its target, mirroring
+            // `load_trust_config`: a dangling symlink is not an absent file.
+            match std::fs::symlink_metadata(path) {
+                Ok(metadata) => {
+                    if !metadata.file_type().is_file() {
+                        return Err(FloorFailure::Unusable {
+                            path: path_text,
+                            reason: "the entry is not a regular file".to_string(),
+                        });
+                    }
+                    if metadata.len() > RELEASE_FLOOR_MAX_BYTES {
+                        return Err(FloorFailure::Unusable {
+                        path: path_text,
+                        reason: format!(
+                            "the document is {} bytes, above the {RELEASE_FLOOR_MAX_BYTES}-byte contract",
+                            metadata.len()
+                        ),
+                    });
+                    }
+                }
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+                Err(error) => {
+                    return Err(FloorFailure::ReadFailed {
+                        path: path_text,
+                        reason: error.to_string(),
+                    })
+                }
+            }
+            let text = std::fs::read_to_string(path).map_err(|error| FloorFailure::ReadFailed {
+                path: path_text.clone(),
+                reason: error.to_string(),
+            })?;
+            let document: ReleaseFloorDocument =
+                serde_json::from_str(&text).map_err(|error| FloorFailure::Unusable {
+                    path: path_text.clone(),
+                    reason: error.to_string(),
+                })?;
+            if document.schema_version != RELEASE_FLOOR_SCHEMA_VERSION {
+                return Err(FloorFailure::Unusable {
+                    path: path_text,
+                    reason: format!(
+                        "schemaVersion {} is not the supported {RELEASE_FLOOR_SCHEMA_VERSION}",
+                        document.schema_version
+                    ),
+                });
+            }
+            if document.release_version.is_empty() {
+                return Err(FloorFailure::Unusable {
+                    path: path_text,
+                    reason: "releaseVersion is empty".to_string(),
+                });
+            }
+            Ok(Some(Self {
+                metadata_sequence: document.metadata_sequence,
+                release_version: document.release_version,
+            }))
+        }
+
+        /// Write this floor to `path`, creating it exclusively.
+        ///
+        /// Advancing an existing floor is deliberately **not** performed here. The
+        /// exclusive creation is what guarantees this call can never lower a floor
+        /// that is already on disk: an existing file is a [`FloorFailure::WriteFailed`]
+        /// rather than a replacement. A correct replacement needs an atomic
+        /// create-then-swap strategy (`std::fs::rename` does not replace an existing
+        /// file on Windows), which is a reviewed decision for the increment that
+        /// actually advances the floor, not something to invent here untested.
+        pub fn save_to(&self, path: &std::path::Path) -> Result<(), FloorFailure> {
+            let path_text = path.display().to_string();
+            let document = ReleaseFloorDocument {
+                schema_version: RELEASE_FLOOR_SCHEMA_VERSION,
+                metadata_sequence: self.metadata_sequence,
+                release_version: self.release_version.clone(),
+            };
+            let bytes =
+                serde_json::to_vec(&document).map_err(|error| FloorFailure::WriteFailed {
+                    path: path_text.clone(),
+                    reason: error.to_string(),
+                })?;
+            let mut file =
+                create_owner_only_new(path).map_err(|error| FloorFailure::WriteFailed {
+                    path: path_text.clone(),
+                    reason: error.to_string(),
+                })?;
+            file.write_all(&bytes)
+                .and_then(|()| file.sync_all())
+                .map_err(|error| FloorFailure::WriteFailed {
+                    path: path_text,
+                    reason: error.to_string(),
+                })
+        }
+    }
+}
+
+/// The v2 contract's public surface, re-exported beside the v1 items.
+///
+/// The re-export is what keeps the probe's and the app's test builds resolving
+/// the same names, `update_security::SignedReleaseV2` and
+/// `update_security::verify_release_v2`, that the wiring increment will call.
+#[cfg(any(test, updater_probe))]
+pub use signed_release_v2::*;
 
 // ---------------------------------------------------------------------------
 // Release policy: HTTPS transport plan with explicit origin/redirect rules
@@ -2342,5 +3297,753 @@ mod tests {
             artifact_file_name(&candidate("0.1.8", "stable", "aa")),
             Err(ArtifactNameFailure::DigestNotSha256Hex)
         );
+    }
+
+    // --- the v2 signed target/freshness contract ---------------------------
+
+    /// The fixed qualification key pair.
+    ///
+    /// The RFC 8032 §7.1 TEST 2 vector, already pinned by the signature tests
+    /// above. A published test vector, never product trust: nothing here mints,
+    /// stores, ships, or enables release authority.
+    fn v2_key_pair() -> (ring::signature::Ed25519KeyPair, String) {
+        let seed = hex("4ccd089b28ff96da9db6c346ec114e0f5b8a319f35aba624da8cf6ed4fb8a6fb");
+        let key_pair =
+            ring::signature::Ed25519KeyPair::from_seed_and_public_key(&seed, &hex(TEST_PUBLIC_KEY))
+                .expect("the RFC 8032 TEST 2 key pair is consistent");
+        (key_pair, TEST_PUBLIC_KEY.to_string())
+    }
+
+    fn v2_signature(key_pair: &ring::signature::Ed25519KeyPair, document: &str) -> String {
+        encode_hex(key_pair.sign(document.as_bytes()).as_ref())
+    }
+
+    /// The target these cases verify against, fixed so the suite does not depend
+    /// on which platform it happens to run on.
+    fn v2_target() -> ReleaseTarget {
+        ReleaseTarget {
+            product: RELEASE_PRODUCT_ID,
+            platform: PolicyPlatform::Win32,
+            arch: PolicyArch::X64,
+        }
+    }
+
+    fn v2_document(sequence: u64, expiry_unix_ms: i64) -> SignedReleaseV2 {
+        SignedReleaseV2 {
+            product: RELEASE_PRODUCT_ID.to_string(),
+            platform: v2_target().platform_token().to_string(),
+            arch: v2_target().arch_token().to_string(),
+            artifact_kind: ReleaseArtifactKind::Installer,
+            version: "0.1.8".to_string(),
+            channel: "stable".to_string(),
+            sha256: sha256_hex(b"v2 payload"),
+            metadata_sequence: sequence,
+            expiry_unix_ms,
+        }
+    }
+
+    /// A clock instant well clear of both the clock floor and the expiries used
+    /// by these cases.
+    const V2_NOW: i64 = 1_700_000_000_000;
+    const V2_EXPIRY: i64 = V2_NOW + 60 * 60 * 1000;
+
+    fn v2_admission<'a>(
+        target: &'a ReleaseTarget,
+        floor: Option<&'a ReleaseFloor>,
+    ) -> ReleaseAdmissionV2<'a> {
+        ReleaseAdmissionV2 {
+            target,
+            artifact_kind: ReleaseArtifactKind::Installer,
+            now_unix_ms: V2_NOW,
+            floor,
+        }
+    }
+
+    /// Verify `release` with a genuine signature over its own canonical message.
+    ///
+    /// Re-signing is what makes the *policy* arms testable: a mutated document is
+    /// still authentic, so a refusal can only come from the binding under test
+    /// rather than from a broken signature.
+    fn v2_verify_signed(
+        release: &SignedReleaseV2,
+        target: &ReleaseTarget,
+        floor: Option<&ReleaseFloor>,
+    ) -> Result<VerifiedReleaseV2, VerifyFailure> {
+        let (key_pair, public) = v2_key_pair();
+        let document = release.message();
+        let signature = v2_signature(&key_pair, &document);
+        verify_release_v2(
+            &[public],
+            &document,
+            Some(&signature),
+            &v2_admission(target, floor),
+        )
+    }
+
+    #[test]
+    fn the_v2_canonical_message_is_pinned_field_by_field() {
+        let document = v2_document(7, 1_700_000_000_000);
+        let digest = sha256_hex(b"v2 payload");
+        let expected = format!(
+            "dsh-desktop-release/v2\nproduct=dsh-desktop\nplatform=desktop-win\narch=x64\nkind=installer\nversion=0.1.8\nchannel=stable\nsha256={digest}\nsequence=7\nexpiry=1700000000000\n"
+        );
+        assert_eq!(document.message(), expected);
+        // One marker, nine fields, and the empty tail a trailing newline leaves.
+        assert_eq!(document.message().split('\n').count(), 11);
+        // The digest is the canonical lowercase form, so the bytes a publisher
+        // signs are the bytes a verifier reads.
+        assert!(digest
+            .bytes()
+            .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit()));
+    }
+
+    #[test]
+    fn a_canonical_v2_document_parses_back_to_its_fields() {
+        let document = v2_document(11, 1_700_000_000_000);
+        let parsed =
+            SignedReleaseV2::parse(&document.message()).expect("the canonical document parses");
+        assert_eq!(parsed, document);
+        assert_eq!(parsed.metadata_sequence, 11);
+        assert_eq!(parsed.artifact_kind, ReleaseArtifactKind::Installer);
+    }
+
+    #[test]
+    fn a_changed_byte_in_any_v2_field_breaks_the_signature() {
+        let target = v2_target();
+        let (key_pair, public) = v2_key_pair();
+        let signed = v2_document(7, V2_EXPIRY);
+        let document = signed.message();
+        let signature = v2_signature(&key_pair, &document);
+        assert!(
+            verify_release_v2(
+                std::slice::from_ref(&public),
+                &document,
+                Some(&signature),
+                &v2_admission(&target, None)
+            )
+            .is_ok(),
+            "the unmutated document verifies"
+        );
+        for (label, mutated) in [
+            (
+                "version",
+                SignedReleaseV2 {
+                    version: "0.1.9".to_string(),
+                    ..signed.clone()
+                },
+            ),
+            (
+                "sequence",
+                SignedReleaseV2 {
+                    metadata_sequence: 8,
+                    ..signed.clone()
+                },
+            ),
+            (
+                "expiry",
+                SignedReleaseV2 {
+                    expiry_unix_ms: V2_EXPIRY + 1,
+                    ..signed.clone()
+                },
+            ),
+            (
+                "product",
+                SignedReleaseV2 {
+                    product: "other-product".to_string(),
+                    ..signed.clone()
+                },
+            ),
+            (
+                "platform",
+                SignedReleaseV2 {
+                    platform: "desktop-mac".to_string(),
+                    ..signed.clone()
+                },
+            ),
+            (
+                "arch",
+                SignedReleaseV2 {
+                    arch: "arm64".to_string(),
+                    ..signed.clone()
+                },
+            ),
+            (
+                "kind",
+                SignedReleaseV2 {
+                    artifact_kind: ReleaseArtifactKind::RuntimePayload,
+                    ..signed.clone()
+                },
+            ),
+            (
+                "channel",
+                SignedReleaseV2 {
+                    channel: "beta".to_string(),
+                    ..signed.clone()
+                },
+            ),
+            (
+                "digest",
+                SignedReleaseV2 {
+                    sha256: "b".repeat(64),
+                    ..signed.clone()
+                },
+            ),
+        ] {
+            // Every mutation is still a canonical document, so the refusal below
+            // is the signature binding and not the parser.
+            assert!(
+                SignedReleaseV2::parse(&mutated.message()).is_ok(),
+                "{label} must stay canonical"
+            );
+            assert_eq!(
+                verify_release_v2(
+                    std::slice::from_ref(&public),
+                    &mutated.message(),
+                    Some(&signature),
+                    &v2_admission(&target, None)
+                ),
+                Err(VerifyFailure::InvalidSignature),
+                "{label}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_v1_document_is_refused_by_v2_and_a_v2_signature_by_v1() {
+        let digest = sha256_hex(b"v2 payload");
+        let v1 = SignedRelease {
+            version: "0.1.8",
+            channel: "stable",
+            sha256: &digest,
+        };
+        assert_eq!(
+            SignedReleaseV2::parse(&v1.message()),
+            Err(VerifyFailure::UnsupportedSchema {
+                found: "dsh-desktop-release/v1".to_string()
+            })
+        );
+        // The other direction: a signature over the v2 message is not a signature
+        // over the v1 message, so the v1 verifier refuses it instead of accepting
+        // a document it never read.
+        let (key_pair, public) = v2_key_pair();
+        let document = v2_document(7, V2_EXPIRY).message();
+        let signature = v2_signature(&key_pair, &document);
+        assert_eq!(
+            verify_release(&[public], &v1, Some(&signature)),
+            Err(VerifyFailure::InvalidSignature)
+        );
+    }
+
+    #[test]
+    fn an_unknown_schema_marker_is_refused_without_a_fallback() {
+        for document in [
+            "",
+            "dsh-desktop-release/v3\nproduct=dsh-desktop\n",
+            "not a release document",
+        ] {
+            let outcome = SignedReleaseV2::parse(document);
+            assert!(
+                matches!(outcome, Err(VerifyFailure::UnsupportedSchema { .. })),
+                "{document:?} -> {outcome:?}"
+            );
+        }
+        // The verifier refuses the schema before it would consult a key or a
+        // clock: neither can rescue an unreadable document.
+        let target = v2_target();
+        let (_, public) = v2_key_pair();
+        let outcome = verify_release_v2(
+            &[public],
+            "dsh-desktop-release/v1\nversion=0.1.8\nchannel=stable\nsha256=aa\n",
+            Some("00"),
+            &v2_admission(&target, None),
+        );
+        assert!(matches!(
+            outcome,
+            Err(VerifyFailure::UnsupportedSchema { .. })
+        ));
+    }
+
+    #[test]
+    fn the_v2_document_format_refuses_every_non_canonical_shape() {
+        let canonical = v2_document(7, 1_700_000_000_000).message();
+        let digest = sha256_hex(b"v2 payload");
+        let cases: [(&str, String); 8] = [
+            (
+                "no trailing newline",
+                canonical.trim_end_matches('\n').to_string(),
+            ),
+            (
+                "blank line",
+                canonical.replace("channel=stable\n", "channel=stable\n\n"),
+            ),
+            (
+                "reordered fields",
+                canonical.replace(
+                    "platform=desktop-win\narch=x64\n",
+                    "arch=x64\nplatform=desktop-win\n",
+                ),
+            ),
+            (
+                "extra field",
+                canonical.replace("channel=stable\n", "channel=stable\nextra=1\n"),
+            ),
+            (
+                "unknown key",
+                canonical.replace("channel=stable", "route=stable"),
+            ),
+            (
+                "uppercase digest",
+                canonical.replace(&digest, &digest.to_ascii_uppercase()),
+            ),
+            (
+                "empty value",
+                canonical.replace("channel=stable", "channel="),
+            ),
+            (
+                "carriage return",
+                canonical.replace("channel=stable", "channel=stable\r"),
+            ),
+        ];
+        for (label, document) in cases {
+            let outcome = SignedReleaseV2::parse(&document);
+            assert!(outcome.is_err(), "{label} must be refused: {outcome:?}");
+        }
+        // The unmodified document still parses, so the cases above are the only
+        // difference.
+        assert!(SignedReleaseV2::parse(&canonical).is_ok());
+    }
+
+    #[test]
+    fn a_v2_document_needs_a_well_formed_digest() {
+        let canonical = v2_document(7, 1_700_000_000_000).message();
+        let digest = sha256_hex(b"v2 payload");
+        assert_eq!(
+            SignedReleaseV2::parse(&canonical.replace(&digest, "")),
+            Err(VerifyFailure::MissingDigest)
+        );
+        assert_eq!(
+            SignedReleaseV2::parse(&canonical.replace(&digest, &"a".repeat(63))),
+            Err(VerifyFailure::MalformedDigest)
+        );
+        assert_eq!(
+            SignedReleaseV2::parse(&canonical.replace(&digest, &"z".repeat(64))),
+            Err(VerifyFailure::MalformedDigest)
+        );
+    }
+
+    #[test]
+    fn an_unknown_artifact_kind_token_is_refused() {
+        let document = v2_document(7, 1_700_000_000_000)
+            .message()
+            .replace("kind=installer", "kind=snapshot");
+        assert_eq!(
+            SignedReleaseV2::parse(&document),
+            Err(VerifyFailure::UnsupportedArtifactKind {
+                found: "snapshot".to_string()
+            })
+        );
+    }
+
+    #[test]
+    fn v2_signature_and_key_refusals_are_distinct() {
+        let target = v2_target();
+        let (key_pair, public) = v2_key_pair();
+        let document = v2_document(7, V2_EXPIRY).message();
+        let signature = v2_signature(&key_pair, &document);
+        let admission = v2_admission(&target, None);
+        assert_eq!(
+            verify_release_v2(&[], &document, Some(&signature), &admission),
+            Err(VerifyFailure::NoTrustedKeys)
+        );
+        assert_eq!(
+            verify_release_v2(std::slice::from_ref(&public), &document, None, &admission),
+            Err(VerifyFailure::MissingSignature)
+        );
+        assert_eq!(
+            verify_release_v2(
+                std::slice::from_ref(&public),
+                &document,
+                Some("   "),
+                &admission
+            ),
+            Err(VerifyFailure::MissingSignature)
+        );
+        assert_eq!(
+            verify_release_v2(
+                std::slice::from_ref(&public),
+                &document,
+                Some("aabb"),
+                &admission
+            ),
+            Err(VerifyFailure::MalformedSignature)
+        );
+        // A well-formed signature over a different document, and a signature from
+        // a key that is not the trusted one, are both simply not this release.
+        let other = v2_document(8, V2_EXPIRY).message();
+        let other_signature = v2_signature(&key_pair, &other);
+        assert_eq!(
+            verify_release_v2(
+                std::slice::from_ref(&public),
+                &document,
+                Some(&other_signature),
+                &admission
+            ),
+            Err(VerifyFailure::InvalidSignature)
+        );
+        // A key that is not the trusted one cannot authenticate this document,
+        // even though its signature is well formed. The RFC 8032 §7.1 TEST 1
+        // vector supplies the second pair.
+        let untrusted_seed =
+            hex("9d61b19deffd5a60ba844af492ec2cc44449c5697b326919703bac031cae7f60");
+        let untrusted_public =
+            hex("d75a980182b10ab7d54bfed3c964073a0ee172f3daa62325af021a68f707511a");
+        let untrusted = ring::signature::Ed25519KeyPair::from_seed_and_public_key(
+            &untrusted_seed,
+            &untrusted_public,
+        )
+        .expect("the RFC 8032 TEST 1 key pair is consistent");
+        let untrusted_signature = v2_signature(&untrusted, &document);
+        assert_eq!(
+            verify_release_v2(
+                std::slice::from_ref(&public),
+                &document,
+                Some(&untrusted_signature),
+                &admission
+            ),
+            Err(VerifyFailure::InvalidSignature)
+        );
+        // A key that cannot be a key is a different condition from a key that did
+        // not sign this document.
+        for unusable in ["zz", "aabb"] {
+            assert!(
+                matches!(
+                    verify_release_v2(
+                        &[unusable.to_string()],
+                        &document,
+                        Some(&signature),
+                        &admission
+                    ),
+                    Err(VerifyFailure::MalformedKey(_))
+                ),
+                "{unusable}"
+            );
+        }
+        assert!(verify_release_v2(&[public], &document, Some(&signature), &admission).is_ok());
+    }
+
+    #[test]
+    fn v2_target_bindings_are_each_refused_for_an_authentic_document() {
+        let target = v2_target();
+        assert_eq!(
+            v2_verify_signed(
+                &SignedReleaseV2 {
+                    product: "other-product".to_string(),
+                    ..v2_document(7, V2_EXPIRY)
+                },
+                &target,
+                None
+            ),
+            Err(VerifyFailure::WrongProduct {
+                expected: RELEASE_PRODUCT_ID.to_string(),
+                found: "other-product".to_string()
+            })
+        );
+        assert_eq!(
+            v2_verify_signed(
+                &SignedReleaseV2 {
+                    platform: "desktop-mac".to_string(),
+                    ..v2_document(7, V2_EXPIRY)
+                },
+                &target,
+                None
+            ),
+            Err(VerifyFailure::WrongPlatform {
+                expected: "desktop-win".to_string(),
+                found: "desktop-mac".to_string()
+            })
+        );
+        assert_eq!(
+            v2_verify_signed(
+                &SignedReleaseV2 {
+                    arch: "arm64".to_string(),
+                    ..v2_document(7, V2_EXPIRY)
+                },
+                &target,
+                None
+            ),
+            Err(VerifyFailure::WrongArchitecture {
+                expected: "x64".to_string(),
+                found: "arm64".to_string()
+            })
+        );
+        assert_eq!(
+            v2_verify_signed(
+                &SignedReleaseV2 {
+                    artifact_kind: ReleaseArtifactKind::RuntimePayload,
+                    ..v2_document(7, V2_EXPIRY)
+                },
+                &target,
+                None
+            ),
+            Err(VerifyFailure::WrongArtifactKind {
+                expected: ReleaseArtifactKind::Installer,
+                found: ReleaseArtifactKind::RuntimePayload
+            })
+        );
+    }
+
+    #[test]
+    fn v2_refuses_expired_metadata_and_an_unusable_clock() {
+        let target = v2_target();
+        // Expiry plus the tolerated skew is still current; one millisecond later
+        // is stale. The boundary is asserted in both directions so the tolerance
+        // cannot drift unnoticed.
+        let boundary = SignedReleaseV2 {
+            expiry_unix_ms: V2_NOW - RELEASE_METADATA_CLOCK_SKEW_MS,
+            ..v2_document(7, V2_NOW)
+        };
+        assert!(
+            v2_verify_signed(&boundary, &target, None).is_ok(),
+            "metadata at the tolerance boundary is still current"
+        );
+        let stale_expiry = V2_NOW - RELEASE_METADATA_CLOCK_SKEW_MS - 1;
+        assert_eq!(
+            v2_verify_signed(
+                &SignedReleaseV2 {
+                    expiry_unix_ms: stale_expiry,
+                    ..v2_document(7, V2_NOW)
+                },
+                &target,
+                None
+            ),
+            Err(VerifyFailure::MetadataExpired {
+                expiry_unix_ms: stale_expiry,
+                now_unix_ms: V2_NOW
+            })
+        );
+        // A clock the caller cannot trust refuses a perfectly fresh document: an
+        // unusable clock is never read as "nothing has expired".
+        let (key_pair, public) = v2_key_pair();
+        let document = v2_document(7, V2_EXPIRY).message();
+        let signature = v2_signature(&key_pair, &document);
+        let untrusted_now = RELEASE_METADATA_CLOCK_FLOOR_UNIX_MS - 1;
+        let no_clock = ReleaseAdmissionV2 {
+            target: &target,
+            artifact_kind: ReleaseArtifactKind::Installer,
+            now_unix_ms: untrusted_now,
+            floor: None,
+        };
+        assert_eq!(
+            verify_release_v2(&[public], &document, Some(&signature), &no_clock),
+            Err(VerifyFailure::ClockUnavailable {
+                now_unix_ms: untrusted_now
+            })
+        );
+    }
+
+    #[test]
+    fn v2_refuses_a_sequence_at_or_below_the_persisted_floor() {
+        let target = v2_target();
+        let floor = ReleaseFloor::new(7, "0.1.8");
+        assert_eq!(
+            v2_verify_signed(&v2_document(7, V2_EXPIRY), &target, Some(&floor)),
+            Err(VerifyFailure::MetadataSequenceTooLow {
+                floor_sequence: 7,
+                found_sequence: 7
+            }),
+            "replaying the admitted manifest is a rollback too"
+        );
+        assert_eq!(
+            v2_verify_signed(&v2_document(6, V2_EXPIRY), &target, Some(&floor)),
+            Err(VerifyFailure::MetadataSequenceTooLow {
+                floor_sequence: 7,
+                found_sequence: 6
+            })
+        );
+        assert!(
+            v2_verify_signed(&v2_document(8, V2_EXPIRY), &target, Some(&floor)).is_ok(),
+            "a strictly newer sequence is admitted"
+        );
+        assert!(
+            v2_verify_signed(&v2_document(1, V2_EXPIRY), &target, None).is_ok(),
+            "with no persisted floor there is nothing to roll back to"
+        );
+    }
+
+    #[test]
+    fn a_v2_document_that_binds_this_build_verifies() {
+        let target = v2_target();
+        let verified = v2_verify_signed(&v2_document(7, V2_EXPIRY), &target, None)
+            .expect("an authentic document binding this build is admitted");
+        assert_eq!(verified.product, RELEASE_PRODUCT_ID);
+        assert_eq!(verified.platform, target.platform_token());
+        assert_eq!(verified.arch, target.arch_token());
+        assert_eq!(verified.artifact_kind, ReleaseArtifactKind::Installer);
+        assert_eq!(verified.version, "0.1.8");
+        assert_eq!(verified.channel, "stable");
+        assert_eq!(verified.sha256, sha256_hex(b"v2 payload"));
+        assert_eq!(verified.metadata_sequence, 7);
+        assert_eq!(verified.expiry_unix_ms, V2_EXPIRY);
+    }
+
+    #[test]
+    fn the_release_floor_round_trips_and_keeps_refusing() {
+        let directory = tempfile::tempdir().expect("a temporary directory");
+        let path = directory.path().join("updates-floor.json");
+        assert_eq!(
+            ReleaseFloor::load_from(&path),
+            Ok(None),
+            "an absent floor is not an error"
+        );
+        let floor = ReleaseFloor::new(7, "0.1.8");
+        floor.save_to(&path).expect("the floor is written");
+        let loaded = ReleaseFloor::load_from(&path)
+            .expect("the floor loads")
+            .expect("a floor is present");
+        assert_eq!(loaded, floor);
+        // The refusal survives the round trip: the persisted sequence still
+        // refuses itself and anything older, and still admits a newer one.
+        assert!(loaded.refuses(7));
+        assert!(loaded.refuses(6));
+        assert!(!loaded.refuses(8));
+        let target = v2_target();
+        assert_eq!(
+            v2_verify_signed(&v2_document(7, V2_EXPIRY), &target, Some(&loaded)),
+            Err(VerifyFailure::MetadataSequenceTooLow {
+                floor_sequence: 7,
+                found_sequence: 7
+            })
+        );
+        assert!(v2_verify_signed(&v2_document(8, V2_EXPIRY), &target, Some(&loaded)).is_ok());
+    }
+
+    #[test]
+    fn saving_a_floor_never_replaces_an_existing_one() {
+        let directory = tempfile::tempdir().expect("a temporary directory");
+        let path = directory.path().join("updates-floor.json");
+        ReleaseFloor::new(9, "0.1.9")
+            .save_to(&path)
+            .expect("the first write succeeds");
+        // A lower floor cannot overwrite a higher one, because the write is
+        // refused outright rather than truncating the file that is there.
+        assert!(matches!(
+            ReleaseFloor::new(1, "0.1.1").save_to(&path),
+            Err(FloorFailure::WriteFailed { .. })
+        ));
+        assert_eq!(
+            ReleaseFloor::load_from(&path).expect("the floor still loads"),
+            Some(ReleaseFloor::new(9, "0.1.9"))
+        );
+    }
+
+    #[test]
+    fn an_unusable_floor_file_is_refused_rather_than_read_as_absent() {
+        let directory = tempfile::tempdir().expect("a temporary directory");
+        let cases: [(&str, Vec<u8>); 5] = [
+            ("not json", b"{not json".to_vec()),
+            (
+                "unknown field",
+                br#"{"schemaVersion":1,"metadataSequence":7,"releaseVersion":"0.1.8","extra":true}"#
+                    .to_vec(),
+            ),
+            (
+                "unsupported schema",
+                br#"{"schemaVersion":2,"metadataSequence":7,"releaseVersion":"0.1.8"}"#.to_vec(),
+            ),
+            (
+                "empty version",
+                br#"{"schemaVersion":1,"metadataSequence":7,"releaseVersion":""}"#.to_vec(),
+            ),
+            (
+                "oversized",
+                vec![b'0'; (RELEASE_FLOOR_MAX_BYTES + 1) as usize],
+            ),
+        ];
+        for (index, (label, bytes)) in cases.iter().enumerate() {
+            let path = directory.path().join(format!("floor-{index}.json"));
+            std::fs::write(&path, bytes).expect("write the case fixture");
+            let outcome = ReleaseFloor::load_from(&path);
+            assert!(
+                matches!(outcome, Err(FloorFailure::Unusable { .. })),
+                "{label}: {outcome:?}"
+            );
+        }
+        // A directory at the path is not a floor either: the entry is classified
+        // before it is read, so a wrong kind of entry is never "no floor".
+        let path = directory.path().join("floor-directory.json");
+        std::fs::create_dir(&path).expect("create the directory case");
+        assert!(matches!(
+            ReleaseFloor::load_from(&path),
+            Err(FloorFailure::Unusable { .. })
+        ));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn the_floor_file_is_created_owner_only_on_unix() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let directory = tempfile::tempdir().expect("a temporary directory");
+        let path = directory.path().join("updates-floor.json");
+        ReleaseFloor::new(7, "0.1.8")
+            .save_to(&path)
+            .expect("the floor is written");
+        let mode = std::fs::metadata(&path)
+            .expect("floor metadata")
+            .permissions()
+            .mode();
+        assert_eq!(mode & 0o777, 0o600, "the floor is owner-only");
+    }
+
+    #[test]
+    fn release_target_tokens_are_the_installed_client_identity_vocabulary() {
+        use crate::mandatory_update::DesktopPolicyIdentity;
+
+        for (platform, expected_platform) in [
+            (PolicyPlatform::Win32, "desktop-win"),
+            (PolicyPlatform::Darwin, "desktop-mac"),
+        ] {
+            for (arch, expected_arch) in [(PolicyArch::X64, "x64"), (PolicyArch::Arm64, "arm64")] {
+                let target = ReleaseTarget {
+                    product: RELEASE_PRODUCT_ID,
+                    platform,
+                    arch,
+                };
+                // The policy identity reports the same running build, so the two
+                // vocabularies are pinned together: a change on either side fails
+                // here rather than silently splitting the product's identity.
+                let identity = DesktopPolicyIdentity {
+                    platform,
+                    arch,
+                    bundled_dsh_version: "0.1.8".to_string(),
+                };
+                assert_eq!(target.platform_token(), identity.platform_header());
+                assert_eq!(target.arch_token(), identity.arch_header());
+                assert_eq!(target.platform_token(), expected_platform);
+                assert_eq!(target.arch_token(), expected_arch);
+                assert!(is_canonical_release_value(target.platform_token()));
+                assert!(is_canonical_release_value(target.arch_token()));
+            }
+        }
+    }
+
+    #[test]
+    fn the_running_build_target_is_derived_from_its_own_constants() {
+        let expected = match (std::env::consts::OS, std::env::consts::ARCH) {
+            ("windows", "x86_64") => Some((PolicyPlatform::Win32, PolicyArch::X64)),
+            ("macos", "x86_64") => Some((PolicyPlatform::Darwin, PolicyArch::X64)),
+            ("macos", "aarch64") => Some((PolicyPlatform::Darwin, PolicyArch::Arm64)),
+            _ => None,
+        };
+        match (ReleaseTarget::for_running_build(), expected) {
+            (Some(target), Some((platform, arch))) => {
+                assert_eq!(target.product, RELEASE_PRODUCT_ID);
+                assert_eq!((target.platform, target.arch), (platform, arch));
+            }
+            (None, None) => {}
+            (target, expected) => panic!(
+                "the running build target {target:?} disagrees with the host constants {expected:?}"
+            ),
+        }
     }
 }

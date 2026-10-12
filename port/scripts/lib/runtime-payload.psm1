@@ -47,7 +47,7 @@ Set-StrictMode -Version Latest
 # explicitly; every path and pin it needs arrives as an argument.
 $script:DshRuntimeStageProgram = @'
 import { closeSync, copyFileSync, cpSync, existsSync, globSync, mkdirSync, openSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs'
-import { join, relative } from 'node:path'
+import { dirname, join, relative } from 'node:path'
 import { pathToFileURL } from 'node:url'
 import { createRequire } from 'node:module'
 import { spawnSync } from 'node:child_process'
@@ -61,6 +61,7 @@ const [
 const importUpstream = (file) => import(pathToFileURL(join(upstream, file)).href)
 const lockTools = await import(pathToFileURL(lockHelper).href)
 const { repairConfigEditorRuntimeImport } = await import(new URL('./config-editor-runtime-import.mjs', pathToFileURL(lockHelper)).href)
+const { repairAccountProfileRuntime } = await import(new URL('./account-profile-runtime.mjs', pathToFileURL(lockHelper)).href)
 const { prepareDesktopPackageSet } = await importUpstream('apps/desktop/scripts/prepare-package-set.ts')
 const { createRuntimeProjectMetadata } = await importUpstream('apps/desktop/src/project-manager.ts')
 const { DESKTOP_HOST_PROTOCOL_VERSION } = await importUpstream('apps/desktop/src/host-protocol.ts')
@@ -235,6 +236,12 @@ const cordisVersion = JSON.parse(readFileSync(join(materialized, '@deepseek-ai/c
 const editorRepair = repairConfigEditorRuntimeImport(readFileSync(editorPath, 'utf8'), cordisVersion)
 if (editorRepair.changed) writeFileSync(editorPath, editorRepair.source)
 console.log(`ConfigEditor const-enum import repair: ${editorRepair.changed ? 'applied' : 'not required'}`)
+const accountDir = join(materialized, '@deepseek-ai/dsh-deepseek-account-platform')
+const accountVersion = JSON.parse(readFileSync(join(accountDir, 'package.json'), 'utf8')).version
+const accountPath = join(accountDir, 'lib/index.js')
+const accountRepair = repairAccountProfileRuntime(readFileSync(accountPath, 'utf8'), accountVersion)
+if (accountRepair.changed) writeFileSync(accountPath, accountRepair.source)
+copyFileSync(join(dirname(adapterSource), 'account-profile-cache.mjs'), join(accountDir, 'lib/profile-cache.js'))
 writeFileSync(join(output, 'package.json'), `${JSON.stringify({
   name: '@deepseek-ai/dsh-desktop-runtime', private: true, version,
   type: 'module', dependencies: Object.fromEntries(set.packages.map((entry) => [entry.name, entry.version])),

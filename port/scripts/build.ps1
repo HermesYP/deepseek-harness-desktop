@@ -1083,9 +1083,10 @@ function Get-PayloadInputs([string]$StageRoot) {
 
   $nodeStageProgram = Get-DshRuntimeStageProgram
   $inputs['stageProgram'] = (Get-DshStringDigest -Value $nodeStageProgram)
-  foreach ($helper in @('seal-runtime.mjs', 'runtime-locks.mjs', 'runtime-payload.psm1', 'payload-manifest.psm1', 'config-editor-runtime-import.mjs')) {
+  foreach ($helper in @('seal-runtime.mjs', 'runtime-locks.mjs', 'runtime-payload.psm1', 'payload-manifest.psm1', 'config-editor-runtime-import.mjs', 'account-profile-runtime.mjs')) {
     $inputs["packagingHelper:$helper"] = (Get-FileHash -LiteralPath (Join-Path $PSScriptRoot "lib\$helper") -Algorithm SHA256).Hash.ToLowerInvariant()
   }
+  $inputs['accountProfileCache'] = (Get-FileHash -LiteralPath (Join-Path $TauriDir 'runtime\account-profile-cache.mjs') -Algorithm SHA256).Hash.ToLowerInvariant()
 
   $packageManager = (Get-Content (Join-Path $Upstream 'package.json') -Raw | ConvertFrom-Json).packageManager
   $inputs['upstreamPackageManager'] = [string]$packageManager

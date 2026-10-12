@@ -887,14 +887,38 @@ fn resolve_policy(app: &DesktopApp, channel: &'static str) -> Result<ChannelSele
     Ok(ChannelSelection { channel, policy })
 }
 
-/// The channel the user has selected (`stable` unless explicitly `beta`).
-async fn requested_channel(app: &DesktopApp) -> Result<&'static str, String> {
+/// The renderer's persisted preference; packaged authority may override it.
+async fn channel_preference(app: &DesktopApp) -> Result<&'static str, String> {
     let state = app.state::<std::sync::Arc<AppState>>();
     let settings = state.settings.lock().await;
     match settings.get(UPDATE_CHANNEL_KEY) {
         Ok(value) => Ok(update_security::normalize_channel(value)),
         Err(error) => Err(error.to_string()),
     }
+}
+
+/// Read-only configuration for the Updates page, using the same packaged source
+/// as checks. Renderer settings never provide feed authority.
+pub async fn configuration(
+    app: &DesktopApp,
+) -> Result<update_security::UpdateConfiguration, DshError> {
+    let requested = channel_preference(app)
+        .await
+        .map_err(|error| DshError::other("update_configuration", error))?;
+    Ok(update_security::present_configuration(
+        &load_packaged_trust(app),
+        requested,
+    ))
+}
+
+/// Effective check channel, honoring a packaged pin even after an older build
+/// persisted another channel preference.
+async fn requested_channel(app: &DesktopApp) -> Result<&'static str, String> {
+    let requested = channel_preference(app).await?;
+    Ok(update_security::effective_channel(
+        &load_packaged_trust(app),
+        requested,
+    ))
 }
 
 // ---------------------------------------------------------------------------

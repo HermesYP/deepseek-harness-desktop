@@ -777,6 +777,7 @@ const RESPONSE_FIXTURES: Record<DshCommandName, string | null> = {
   credential_delete: null,
   shell_pick_directory: 'picked-directory',
   update_status: 'desktop-update-presentation',
+  update_configuration: null, // Port-owned configuration, covered by native projection tests.
   update_open: null,
   update_check: 'desktop-update-presentation',
   // Guest commands. The two typed responses below have no Rust-owned fixture
@@ -860,7 +861,7 @@ const COMMAND_NAMES: Record<DshCommandName, true> = {
   runtime_boot_ready: true, runtime_boot_failed: true, runtime_status: true, runtime_restart: true,
   runtime_quit_inspection: true, settings_get: true, settings_set: true, settings_list: true,
   settings_reset: true, credential_list: true, credential_has: true, credential_store: true,
-  credential_delete: true, shell_pick_directory: true, update_status: true, update_open: true, update_check: true,
+  credential_delete: true, shell_pick_directory: true, update_status: true, update_configuration: true, update_open: true, update_check: true,
   guest_browser_acquire: true, guest_browser_release: true, guest_browser_set_bounds: true,
   guest_browser_navigate: true, guest_browser_command: true, guest_browser_state: true,
   guest_platform_open: true, guest_platform_set_bounds: true, guest_platform_close: true,
@@ -973,7 +974,7 @@ describe('type lockstep', () => {
 
   it('closed unions enumerate every member (compile-time Record coverage)', () => {
     expect(Object.keys(MENU_ACTION_IDS)).toHaveLength(21)
-    expect(Object.keys(COMMAND_NAMES)).toHaveLength(56)
+    expect(Object.keys(COMMAND_NAMES)).toHaveLength(57)
     expect(Object.keys(EVENT_NAMES)).toHaveLength(12)
     expect(Object.keys(ERROR_SAMPLES)).toHaveLength(8)
   })
@@ -1089,7 +1090,7 @@ describe('port-addition wire forms (no Rust-owned fixture file yet)', () => {
       runtime_status: true, runtime_restart: true, runtime_quit_inspection: true,
       settings_get: true, settings_set: true, settings_list: true, settings_reset: true,
       credential_list: true, credential_has: true, credential_store: true, credential_delete: true,
-      shell_pick_directory: true, update_status: true, update_open: true, update_check: true,
+      shell_pick_directory: true, update_status: true, update_configuration: true, update_open: true, update_check: true,
       guest_browser_acquire: true, guest_browser_release: true, guest_browser_set_bounds: true,
       guest_browser_navigate: true, guest_browser_command: true, guest_browser_state: true,
       guest_platform_open: true, guest_platform_set_bounds: true, guest_platform_close: true,
@@ -1104,7 +1105,7 @@ describe('port-addition wire forms (no Rust-owned fixture file yet)', () => {
       'dsh://shell/quit-confirmed': true,
       'dsh://guests/browser-open': true, 'dsh://guests/browser-state': true,
     }
-    expect(Object.keys(commands)).toHaveLength(56)
+    expect(Object.keys(commands)).toHaveLength(57)
     expect(Object.keys(events)).toHaveLength(12)
   })
 })

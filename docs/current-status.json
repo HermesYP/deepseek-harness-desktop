@@ -1,7 +1,7 @@
 {
   "schemaVersion": 1,
-  "generatedAt": "2026-10-10T22:26:56.194782+05:30",
-  "reviewedBaseline": "bd4641e1c58928add9f0adddf5e9afe8fbd201ea",
+  "generatedAt": "2026-10-12T21:24:42.928+05:30",
+  "reviewedBaseline": "ebfc84070277772269b464f73856f79def8f61cf",
   "rows": [
     {
       "gateId": "source-checks",
@@ -110,7 +110,7 @@
       "gateId": "settings-updates",
       "title": "Settings Updates activation",
       "evidenceKind": "native",
-      "scope": "Existing application-menu update route and More > Settings fallback remain intentional",
+      "scope": "Offline composition, staged serving and Cordis registration pass in the Oct 12 candidate; native WebView2 acceptance remains open",
       "sourceCommit": null,
       "sourceInputsSHA256": null,
       "artifactSHA256": null,
@@ -119,7 +119,7 @@
         "staged-resolution",
         "browser-activation"
       ],
-      "deferredReason": "Separate deferred feature; do not disable account Settings",
+      "deferredReason": null,
       "receipt": null
     },
     {

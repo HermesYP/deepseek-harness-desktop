@@ -87,6 +87,6 @@ export function renderStatus(input) {
   lines.push('', 'Counts above come only from schema- and identity-validated structured receipts; overlapping suites are not summed. A receipt must name all required feature checks. A PASS containing ignored/skipped tests, missing checks, a nonzero exit, or mismatched source/artifact identities is rejected.', '',
     'Current work: [repair checkpoint](docs/repair-checkpoint-2026-10-10.md) and [implementation plan](docs/port-fix-plan-2026-10-10.md).',
     'History: [review checkpoint](docs/commit-review-2026-10-10.md), [earlier repair ledger](docs/repair-ledger-2026-10-10.md), and [verification report](docs/verification-report.md). These remain evidence only for their recorded sources/images.', '',
-    'Native guest admission remains disabled. The Settings Updates section is deferred; the functioning application-menu update route and More > Settings fallback remain intentional. Exact release installation, upgrade and uninstall without system Node require a separate non-overlapping production-identity environment.', '')
+    'Native guest admission remains disabled. Settings Updates native acceptance follows its own gate above; the application-menu update route and Account Settings launcher remain available. Exact release installation, upgrade and uninstall without system Node require a separate non-overlapping production-identity environment.', '')
   return lines.join('\n')
 }

@@ -342,6 +342,7 @@ pub const COMMAND_ADMISSION_TABLE: &[(&str, CommandAdmission)] = &[
     ("policy_update", CommandAdmission::MandatoryUpdate),
     // --- informational reads ---------------------------------------------
     ("update_status", CommandAdmission::Informational),
+    ("update_configuration", CommandAdmission::Informational),
     ("runtime_status", CommandAdmission::Informational),
     ("runtime_quit_inspection", CommandAdmission::Informational),
     ("shell_app_info", CommandAdmission::Informational),
@@ -772,6 +773,7 @@ mod tests {
         );
         for command in [
             "update_status",
+            "update_configuration",
             "runtime_status",
             "runtime_quit_inspection",
             "shell_app_info",

@@ -57,7 +57,7 @@
  *   feed, so a completed check must not retire an otherwise valid answer.
  */
 
-import type { DesktopUpdatePresentation } from '../../../desktop-bridge/protocol.ts'
+import type { DesktopUpdateConfiguration, DesktopUpdatePresentation } from '../../../desktop-bridge/protocol.ts'
 import type { ReleaseChannel } from './types.ts'
 
 /** The operations that hold independent ownership of the section. */
@@ -83,7 +83,8 @@ export interface UpdatesTransitionState {
   channel: ReleaseChannel
   feed: string | null
   appVersion: string
-  error: 'channel' | 'action' | null
+  error: 'channel' | 'action' | 'configuration' | null
+  configuration: DesktopUpdateConfiguration | null
   /** Incremented when a channel save begins; older check results are obsolete. */
   generation: number
   /** Whether a channel save is unresolved; a check begun now is already obsolete. */
@@ -118,6 +119,7 @@ export interface UpdatesSettingsRead {
   readonly channel: ReleaseChannel
   readonly feed: string | null
   readonly appVersion: string
+  readonly configuration?: DesktopUpdateConfiguration
 }
 
 /** The state facts a startup read was requested against. */
@@ -133,7 +135,7 @@ export interface UpdatesReadStamp {
 /** How a channel save ended, relative to the moment the shell wrote the preference. */
 export type ChannelChangeCompletion =
   /** The preference was written and the refreshed feed was read. */
-  | { readonly commit: 'saved'; readonly feed: string | null; readonly previousChannel: ReleaseChannel }
+  | { readonly commit: 'saved'; readonly feed: string | null; readonly configuration?: DesktopUpdateConfiguration; readonly previousChannel: ReleaseChannel }
   /** The preference was written, but the refresh that names its feed failed. */
   | { readonly commit: 'saved-unreadable'; readonly previousChannel: ReleaseChannel }
   /** The shell refused the write, so the persisted preference never changed. */
@@ -148,6 +150,7 @@ export function initialTransitionState(): UpdatesTransitionState {
     feed: null,
     appVersion: '',
     error: null,
+    configuration: null,
     generation: 0,
     switching: false,
     events: 0,
@@ -207,7 +210,8 @@ export function canCheck(state: UpdatesTransitionState): boolean {
  * does not wait for a check: the switch invalidates whatever that check finds.
  */
 export function canChangeChannel(state: UpdatesTransitionState): boolean {
-  return state.ownership.channel === null && state.ownership.action === null && !isWorking(state.update.phase)
+  return state.configuration?.pinnedChannel == null
+    && state.ownership.channel === null && state.ownership.action === null && !isWorking(state.update.phase)
 }
 
 /**
@@ -287,6 +291,9 @@ export function applyStartupStatus(
   stamp: UpdatesReadStamp,
 ): UpdatesTransitionState {
   if (state.events !== stamp.events || state.sequence !== stamp.sequence) return state
+  // A fresh process starts idle too. Without a check event, idle cannot certify
+  // that the installed version was compared with a feed.
+  if (update.phase === 'idle') return { ...state, update }
   return withPresentation(state, update)
 }
 
@@ -312,7 +319,7 @@ export function applyStartupSettings(
 ): UpdatesTransitionState {
   const versioned = state.appVersion === read.appVersion ? state : { ...state, appVersion: read.appVersion }
   if (state.generation !== stamp.generation) return versioned
-  return { ...versioned, channel: read.channel, feed: read.feed }
+  return { ...versioned, channel: read.channel, feed: read.feed, configuration: read.configuration ?? state.configuration, error: state.error === 'configuration' ? null : state.error }
 }
 
 /**
@@ -439,11 +446,11 @@ export function completeChannelChange(
   }
   switch (outcome.commit) {
     case 'saved':
-      return { ...released, error: null, feed: outcome.feed }
+      return { ...released, error: null, feed: outcome.feed, configuration: outcome.configuration ?? state.configuration }
     case 'saved-unreadable':
       // The preference is persisted; only the feed naming it is unknown, and it
       // is configured per channel, so the previous channel's feed must not stand.
-      return { ...released, error: 'channel', feed: null }
+      return { ...released, error: 'channel', feed: null, configuration: null }
     case 'refused':
       return { ...released, error: 'channel', channel: outcome.previousChannel }
   }

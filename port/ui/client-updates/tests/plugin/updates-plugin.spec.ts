@@ -40,6 +40,8 @@ function deferred(): Slot {
 const backend = vi.hoisted(() => ({
   settings: {} as Record<string, string>,
   version: '0.1.7-rc.2',
+  desktopAvailable: true,
+  configuration: null as unknown,
   writes: [] as { key: string; value: unknown }[],
   calls: { check: 0, open: 0, status: 0 },
   listeners: new Set<(payload: never) => void>(),
@@ -61,9 +63,17 @@ function respond(queue: unknown[], immediate: unknown): Promise<unknown> {
 }
 
 vi.mock('../../../desktop-bridge/index.ts', () => ({
+  tryDesktop: () => backend.desktopAvailable ? {} : undefined,
   desktop: {
     shellAppInfo: () => Promise.resolve({ version: backend.version }),
-    settingsList: () => respond(backend.listQueue, backend.settings),
+    updateConfiguration: async () => {
+      const read = await respond(backend.listQueue, backend.configuration ?? backend.settings) as Record<string, unknown>
+      if ('availableChannels' in read) return read
+      const channel = read['updates.channel'] === 'beta' ? 'beta' : 'stable'
+      // The mocked native command names a packaged feed. Settings retain only
+      // the channel preference; renderer feed keys carry no authority.
+      return { channel, feedUrl: channel === 'beta' ? BETA_FEED : STABLE_FEED, availableChannels: ['stable', 'beta'], pinnedChannel: null, disabledReason: null }
+    },
     settingsSet: (request: { key: string; value: unknown }) => {
       backend.writes.push(request)
       const slot = backend.setQueue.shift()
@@ -104,6 +114,7 @@ interface Mounted {
   readonly state: () => UpdatesSectionState
   readonly actions: UpdatesSectionInjected
   readonly disposers: (() => void)[]
+  readonly registered: readonly Registered[]
 }
 
 /** Register the plugin on a minimal Cordis context and return its injected face. */
@@ -131,6 +142,7 @@ async function mount(): Promise<Mounted> {
     state: () => actions.hooks.updates.getSnapshot(),
     actions,
     disposers,
+    registered,
   }
 }
 
@@ -148,6 +160,8 @@ async function settle(): Promise<void> {
 beforeEach(() => {
   backend.settings = { 'updates.channel': 'stable', 'updates.feed-url': STABLE_FEED, 'updates.feed-url-beta': BETA_FEED }
   backend.version = INSTALLED_VERSION
+  backend.desktopAvailable = true
+  backend.configuration = null
   backend.writes = []
   backend.calls = { check: 0, open: 0, status: 0 }
   backend.listeners = new Set()
@@ -649,6 +663,50 @@ describe('the install owns the section until the shell publishes', () => {
 })
 
 describe('startup reads are ordered against what happened after them', () => {
+  it('uses the native packaged feed even when renderer settings name another server', async () => {
+    backend.settings['updates.feed-url'] = 'https://attacker.invalid/latest.json'
+    const { state } = await mount()
+    await settle()
+    expect(state().feed).toBe(STABLE_FEED)
+    expect(state().configuration?.feedUrl).toBe(STABLE_FEED)
+    expect(state().checked).toBe(false)
+  })
+
+  it('explains missing packaged authority and refuses a check without contacting the updater', async () => {
+    backend.configuration = { channel: 'stable', feedUrl: null, availableChannels: [], pinnedChannel: null, disabledReason: 'missing-source' }
+    const { state, actions } = await mount()
+    await settle()
+    await actions.check()
+    expect(state().configuration?.disabledReason).toBe('missing-source')
+    expect(state().checked).toBe(false)
+    expect(backend.calls.check).toBe(0)
+  })
+
+  it('honors a packaged channel pin and does not register a competing Settings launcher', async () => {
+    backend.settings['updates.channel'] = 'beta'
+    backend.configuration = { channel: 'stable', feedUrl: STABLE_FEED, availableChannels: ['stable'], pinnedChannel: 'stable', disabledReason: null }
+    const { state, actions, registered } = await mount()
+    await settle()
+    await actions.selectChannel('beta')
+    expect(state().channel).toBe('stable')
+    expect(canChangeChannel(state())).toBe(false)
+    expect(backend.writes).toEqual([])
+    expect(registered.filter(row => row.name === 'settings.launcher')).toHaveLength(0)
+  })
+
+  it('retries a failed configuration read and recovers the real feed', async () => {
+    const unavailable = deferred()
+    backend.listQueue.push(unavailable)
+    const { state, actions } = await mount()
+    unavailable.reject(new Error('native command temporarily unavailable'))
+    await settle()
+    expect(state().error).toBe('configuration')
+    expect(state().configuration).toBeNull()
+    await actions.retryConfiguration()
+    expect(state().error).toBeNull()
+    expect(state().feed).toBe(STABLE_FEED)
+  })
+
   it('adopts the persisted selection when it is the newest information', async () => {
     backend.settings = { 'updates.channel': 'beta', 'updates.feed-url-beta': BETA_FEED }
     const { state } = await mount()

@@ -228,6 +228,7 @@ const COMMAND_CASES: Readonly<Record<CommandMember, CommandCase>> = {
     call: api => api.shellPickDirectory({ title: null, defaultPath: null }),
   },
   updateStatus: { command: 'update_status', args: undefined, call: api => api.updateStatus() },
+  updateConfiguration: { command: 'update_configuration', args: undefined, call: api => api.updateConfiguration() },
   updateOpen: { command: 'update_open', args: undefined, call: api => api.updateOpen() },
   updateCheck: { command: 'update_check', args: undefined, call: api => api.updateCheck() },
   // The `guest_*` family declares ONE `request: <Struct>` parameter.

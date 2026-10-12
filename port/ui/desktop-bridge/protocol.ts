@@ -268,6 +268,15 @@ export type DesktopUpdateFailureKind =
   | 'install' | 'install-network'
   | 'stop-failed' | 'tasks-changed' | 'tasks-unavailable'
 
+/** Read-only authority projection from the packaged updates.json. */
+export interface DesktopUpdateConfiguration {
+  readonly channel: 'stable' | 'beta'
+  readonly feedUrl: string | null
+  readonly availableChannels: readonly ('stable' | 'beta')[]
+  readonly pinnedChannel: 'stable' | 'beta' | null
+  readonly disabledReason: 'missing-source' | 'invalid-source' | 'missing-channel' | 'missing-key' | null
+}
+
 /**
  * `update_status` / `update_check` response and `dsh://update/state` payload —
  * the upstream `DesktopUpdatePresentation` from `apps/desktop/src/ipc.ts:63-68`
@@ -778,6 +787,7 @@ export interface DshCommandMap {
   credential_delete: { readonly request: CredentialLookupRequest; readonly response: void }
   shell_pick_directory: { readonly request: PickDirectoryRequest; readonly response: PickedDirectory }
   update_status: { readonly request: void; readonly response: DesktopUpdatePresentation }
+  update_configuration: { readonly request: void; readonly response: DesktopUpdateConfiguration }
   update_open: { readonly request: void; readonly response: void }
   update_check: { readonly request: void; readonly response: DesktopUpdatePresentation }
   guest_browser_acquire: { readonly request: BrowserAcquireRequest; readonly response: BrowserReservation }

@@ -3,7 +3,9 @@
 Date: 2026-10-11. Target: the installed/portable Windows application becomes
 usable within **1,500 ms of process launch** on the user's system. This replaces
 the previous relative improvement and 3/8-second targets. This is a plan; no
-startup optimization has been implemented or benchmarked in this review.
+native launch-to-usable benchmark has accepted the target. The desktop preload
+sidecar is now implemented. The [2026-10-12 repair and measurements](desktop-signin-repair-2026-10-12.md)
+record isolated Host samples above the target and distinguish them from native acceptance.
 
 ## Acceptance and latency budget
 
@@ -68,7 +70,8 @@ fail explicitly, and deferred features must not compete with the first frame.
    rows, preceding bootstrap scripts.
 3. The port's preserved `shell/src/web-main.ts` calls `applyIndexInjections`.
    Its implementation in `client/web/src/apply-injections.ts:36` ignores
-   `script-preload`, so the desktop path misses that early-download opportunity.
+   `script-preload`. The port-owned `script-preload.ts` sidecar now consumes those
+   hints before the preserved entry applies the bootstrap rows; this step is implemented.
 4. The Host advertises revisioned script responses with immutable caching;
    `dsh-gateway/src/lib.rs:1063` overrides every `/plugins/` response to
    `no-store`. The gateway selects an ephemeral port, so normal HTTP caches are

@@ -1,5 +1,6 @@
 /** Narrow adapter for the pinned account plugin; preserves the upstream checkout. */
 import { createHash } from 'node:crypto'
+import { TARGET_RELEASE } from './target-release.mjs'
 
 // Reviewed compiled getProfile bodies: upstream, then the previous portable
 // disk fallback. A package version alone does not identify generated code.
@@ -9,7 +10,11 @@ const reviewedMethods = new Set([
 ])
 
 export function repairAccountProfileRuntime(source, version) {
-  if (version !== '0.1.7-rc.2') throw new Error('Unreviewed account plugin version')
+  // The target getProfile is byte-identical to the reviewed upstream body.
+  // The legacy portable disk fallback is not an accepted target input.
+  const methods = version === '0.1.7-rc.2' ? reviewedMethods
+    : version === TARGET_RELEASE.release ? new Set(['3628899fd423bb6838586f915d7da7ee5b96de6e371546f95a4944ec4f3f97b2']) : undefined
+  if (!methods) throw new Error('Unreviewed account plugin version')
   source = source.replaceAll('\r\n', '\n')
   const start = '\tasync getProfile(client) {'
   const end = '\n\tgetBalance(client) {'
@@ -47,7 +52,7 @@ export function repairAccountProfileRuntime(source, version) {
     if (method !== repaired) throw new Error('Unreviewed cached account getProfile shape')
     return { source, changed: false }
   }
-  if (!reviewedMethods.has(createHash('sha256').update(method).digest('hex'))) {
+  if (!methods.has(createHash('sha256').update(method).digest('hex'))) {
     throw new Error('Unreviewed account getProfile semantics')
   }
   let output = source.slice(0, first) + repaired + source.slice(last)

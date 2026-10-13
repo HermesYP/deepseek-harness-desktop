@@ -97,15 +97,17 @@ test('the version pins the parent approved are the recorded target release', () 
   assert.equal(appInfo.protocolGeneration, TARGET_RELEASE.hostProtocolVersion, 'the protocol generation is unchanged at 4')
 })
 
-test('the account transforms still fail closed on the previous reviewed release', () => {
-  // The parent owns re-reviewing these three modules against the built target.
-  // Until that lands they must refuse every other version, so a payload is not
-  // staged from an unreviewed transformation.
-  for (const name of ['account-data-runtime.mjs', 'account-login-runtime.mjs', 'account-profile-runtime.mjs']) {
-    const source = read(join('scripts', 'lib', name))
-    assert.match(source, /0\.1\.7-rc\.2/, `${name} retains its reviewed version gate`)
-    assert.match(source, /Unreviewed/, `${name} still refuses an unreviewed version`)
-    assert.ok(!source.includes(TARGET_RELEASE.release),
-      `${name} must not silently bless ${TARGET_RELEASE.release} before its shape is re-reviewed`)
+test('account transforms require a recorded release AND reviewed emitted semantics', async () => {
+  const modules = await Promise.all([
+    import('../../scripts/lib/account-data-runtime.mjs'),
+    import('../../scripts/lib/account-login-runtime.mjs'),
+    import('../../scripts/lib/account-profile-runtime.mjs'),
+  ])
+  for (const repair of [modules[0].repairAccountDataRuntime, modules[1].repairAccountLoginRuntime, modules[2].repairAccountProfileRuntime]) {
+    assert.throws(() => repair('', 'unreviewed'), /Unreviewed.*version/)
+    assert.throws(() => repair('', TARGET_RELEASE.release), /Unreviewed.*shape/,
+      'the target version alone cannot approve generated code')
   }
+  assert.throws(() => modules[0].repairAccountDataClient('', '', TARGET_RELEASE.release), /Unreviewed.*wrapper/)
+  assert.throws(() => modules[0].repairAccountDataClient('', '', 'unreviewed'), /Unreviewed.*version/)
 })

@@ -1,9 +1,13 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 import {readFileSync} from 'node:fs'
+import {runInNewContext} from 'node:vm'
+import {createRequire} from 'node:module'
+import {join} from 'node:path'
 import {accountSessionId,accountResponseMetadata,accountFailureReason} from '../src-tauri/runtime/account-data.mjs'
 import {sameAccountSession,settledAccountDetail,accountNeedsRetry,openAccountPageInBrowser} from '../ui/account-data/client-state.mjs'
 import {repairAccountDataRuntime,repairAccountDataClient} from '../scripts/lib/account-data-runtime.mjs'
+import {accountUpstreamRoot,accountUpstreamVersion,readAccountUpstream} from './helpers/account-upstream.mjs'
 
 test('random session identifiers rotate with credential lifetime and never encode a token',()=>{
  const first=new AbortController(),next=new AbortController()
@@ -33,6 +37,7 @@ test('verification diagnostics allowlist metadata and exclude response bodies an
  assert.deepEqual(accountResponseMetadata(new Response(null,{headers:{'content-type':'secret/server-value','x-amzn-waf-action':'private-value'}})),{contentType:'other',verification:null})
  assert.equal(accountFailureReason({accountReason:'verification-required'}),'verification-required')
  assert.equal(accountFailureReason({code:'network',message:'secret'}),'network')
+ assert.equal(accountFailureReason({code:'no-response',message:'secret'}),'network')
 })
 
 test('external account pages validate their destination and report a return only after leaving the app',()=>{
@@ -51,23 +56,53 @@ test('external account pages validate their destination and report a return only
  assert.throws(()=>openAccountPageInBrowser(links,'unknown',target,()=>{}))
 })
 
+test('actual repaired request preserves credential expiry ahead of WAF recovery and redacts transport failures',async()=>{
+ const original=readAccountUpstream('packages/credentials/deepseek-account-platform/lib/index.js').replaceAll('\r\n','\n')
+ const source=repairAccountDataRuntime(original,accountUpstreamVersion).source
+ const errors=source.slice(source.indexOf('var PlatformAuthError'),source.indexOf('/**\n* Accept HTTPS'))
+ const requestStart=source.indexOf('async function platformRequest(url, init, signal) {')
+ const request=source.slice(requestStart,source.indexOf('\n/**\n* Accept a browser-accessible',requestStart))
+ const require=createRequire(join(accountUpstreamRoot,'packages/credentials/deepseek-account-platform/lib/index.js'))
+ let response,transportError=false
+ const logs=[]
+ const runtime=runInNewContext(`${errors}\n${request}\n({platformRequest,AccountUnauthorizedError})`,{
+  URL,Headers,Buffer,z:require('zod').z,accountResponseMetadata,
+  fetch:async()=>{if(transportError)throw new Error('private-fixture-transport');return response},
+  console:{info:(...values)=>logs.push(values)},
+ })
+ const invoke=()=>runtime.platformRequest('https://fixture.invalid/auth-api/v0/users/current?private=query',{
+  method:'GET',headers:{'x-dsh-auth-token':'private-fixture-grant'},
+ },new AbortController().signal)
+ response=new Response('private-fixture-html',{status:401,headers:{'x-amzn-waf-action':'challenge','set-cookie':'private-fixture-cookie'}})
+ await assert.rejects(invoke(),error=>error instanceof runtime.AccountUnauthorizedError)
+ assert.equal(response.bodyUsed,true,'unauthorized response is canceled')
+ response=new Response('private-fixture-html',{status:202,headers:{'x-amzn-waf-action':'challenge'}})
+ await assert.rejects(invoke(),error=>error.accountReason==='verification-required')
+ assert.equal(response.bodyUsed,true,'challenge response is canceled')
+ response=new Response(JSON.stringify({code:40003}),{status:200})
+ await assert.rejects(invoke(),error=>error instanceof runtime.AccountUnauthorizedError)
+ transportError=true
+ await assert.rejects(invoke(),error=>error.code===(accountUpstreamVersion==='0.1.7-rc.2'?'network':'no-response'))
+ assert.doesNotMatch(JSON.stringify(logs),/private-fixture|private=query/)
+})
+
 test('reviewed Host and client transforms preserve authentic loader boundaries and refuse unknown inputs',()=>{
- const source=readFileSync(new URL('../../_upstream/packages/credentials/deepseek-account-platform/lib/index.js',import.meta.url),'utf8')
- const client=readFileSync(new URL('../../_upstream/packages/client/ui-settings-account/lib/client.js',import.meta.url),'utf8')
+ const source=readAccountUpstream('packages/credentials/deepseek-account-platform/lib/index.js')
+ const client=readAccountUpstream('packages/client/ui-settings-account/lib/client.js')
  const helper=readFileSync(new URL('../ui/account-data/client-state.mjs',import.meta.url),'utf8')
- const repaired=repairAccountDataRuntime(source,'0.1.7-rc.2')
+ const repaired=repairAccountDataRuntime(source,accountUpstreamVersion)
  assert.ok(repaired.source.includes('portSessionId: accountSessionId'))
  assert.ok(repaired.source.includes('error.accountReason = "verification-required"'))
  assert.ok(repaired.source.includes('email: z.string().nullish()'))
  assert.ok(repaired.source.includes('profile identity is missing'))
- assert.throws(()=>repairAccountDataRuntime(source.replace('email: z.string(),','email: z.unknown(),'),'0.1.7-rc.2'))
- assert.throws(()=>repairAccountDataRuntime(source.replace('status: response.status','status: 200'),'0.1.7-rc.2'))
- const result=repairAccountDataClient(client,helper,'0.1.7-rc.2')
+ assert.throws(()=>repairAccountDataRuntime(source.replace('email: z.string(),','email: z.unknown(),'),accountUpstreamVersion))
+ assert.throws(()=>repairAccountDataRuntime(source.replace('status: response.status','status: 200'),accountUpstreamVersion))
+ const result=repairAccountDataClient(client,helper,accountUpstreamVersion)
  assert.ok(result.source.startsWith('window.__ModuleLoader__.load({'))
  assert.ok(result.source.includes('return module.exports;'))
  assert.ok(result.source.includes('details: sameSession ? snapshot.details : void 0'))
  assert.ok(result.source.includes('accountRetry: "Retry account details"'))
- assert.throws(()=>repairAccountDataClient(client+'unreviewed',helper,'0.1.7-rc.2'))
- assert.throws(()=>repairAccountDataClient(client.replace('revision++;','revision += 2;'),helper,'0.1.7-rc.2'))
- assert.doesNotThrow(()=>repairAccountDataClient(client.replaceAll('C:\\Users\\Yoova\\OneDrive','D:\\CleanCheckout'),helper,'0.1.7-rc.2'),'build-location metadata must not reject the reviewed account semantics')
+ assert.throws(()=>repairAccountDataClient(client+'unreviewed',helper,accountUpstreamVersion))
+ assert.throws(()=>repairAccountDataClient(client.replace('revision++;','revision += 2;'),helper,accountUpstreamVersion))
+ assert.doesNotThrow(()=>repairAccountDataClient(client.replaceAll('C:\\Users\\Yoova\\OneDrive','D:\\CleanCheckout'),helper,accountUpstreamVersion),'build-location metadata must not reject the reviewed account semantics')
 })

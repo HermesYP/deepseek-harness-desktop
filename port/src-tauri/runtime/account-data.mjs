@@ -24,5 +24,5 @@ export function accountResponseMetadata(response) {
 /** Account field failures retain a small, non-secret reason for an honest recovery UI. */
 export function accountFailureReason(error) {
   if (error?.accountReason === 'verification-required') return 'verification-required'
-  return error?.code === 'network' ? 'network' : 'protocol'
+  return error?.code === 'network' || error?.code === 'no-response' ? 'network' : 'protocol'
 }

@@ -1,8 +1,10 @@
 import { createHash } from 'node:crypto'
+import { TARGET_RELEASE } from './target-release.mjs'
 
 /** Retain caller validation, then select the owned Host callback for native login. */
 export function repairAccountLoginRuntime(source, version) {
-  if (version !== '0.1.7-rc.2') throw new Error('Unreviewed account login version')
+  // startSignIn is byte-identical at the target; retain the exact body guard.
+  if (version !== '0.1.7-rc.2' && version !== TARGET_RELEASE.release) throw new Error('Unreviewed account login version')
   source = source.replaceAll('\r\n', '\n')
   const start = '\tasync startSignIn(client, callbackOrigin, loginSource) {'
   const first = source.indexOf(start), last = source.indexOf('\n\tasync cancelSignIn(id) {', first)

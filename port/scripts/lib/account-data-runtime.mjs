@@ -1,4 +1,30 @@
 import { createHash } from 'node:crypto'
+import { TARGET_RELEASE } from './target-release.mjs'
+
+// Re-reviewed emitted behavioral regions at d7432673 (0.2.1-alpha.2).
+// The request now distinguishes no-response; the client retains the upstream
+// bonus-row, feedback and onboarding-analytics changes. Never infer these pins
+// from the package version or regenerate them during staging.
+const reviewedVersions = new Map([
+  ['0.1.7-rc.2', {
+    request: '3499f26c801621a806937fe849efe5a27ba384dfe9a0bfe9672805d260b8d94e',
+    client: [
+      ['function AccountSection({', '5370e6ef1f862d5d2effc29f851e2da78d07f4ccbe68c54ff135c7fa00147191'],
+      ['function apply(ctx) {', '7a7a79a671b52a87f928ff28717227fe9b5b7d2eacfc61a808e60ef8b2b615ab'],
+      ['const en = {', 'f5dbb99658b2519216e3b7704c4e246d09d8497bd27b7f89d59106e489f85e36'],
+      ['const zh = {', '13a6e985942ce24b01c784e6856d01096183c47449c9450e1cf27c8b2a154ade'],
+    ],
+  }],
+  [TARGET_RELEASE.release, {
+    request: '13ce7456fc971c58c8f95d212957dadb8b117a8a48e07753ba3786a41ca4b87a',
+    client: [
+      ['function AccountSection({', 'b77d0878eae2e44ca4883a45a05d601261646ec57202a54d2c7af631594e79d1'],
+      ['function apply(ctx) {', '30703f0fd642d3381c77bcc29152abbd81a3999bcccbcb77db0d06edfd924b37'],
+      ['const en = {', '3f3ce636669ce75254e5bfffcaded7cf4d1c196e09326c58e4ae02243e7259c4'],
+      ['const zh = {', 'e162549f2b24d3fa850b9d00301b92ee536716da045f1a2e332c48e9974e83a5'],
+    ],
+  }],
+])
 
 const hash = source => createHash('sha256').update(source).digest('hex')
 function replaceOnce(source, before, after) {
@@ -14,7 +40,8 @@ function repairBlock(source, start, end, expected, mutate) {
 }
 
 export function repairAccountDataRuntime(source, version) {
-  if (version !== '0.1.7-rc.2') throw new Error('Unreviewed account-data version')
+  const reviewed = reviewedVersions.get(version)
+  if (!reviewed) throw new Error('Unreviewed account-data version')
   source = source.replaceAll('\r\n', '\n')
   if (source.includes('DSH_PORT_ACCOUNT_DATA')) throw new Error('Account-data overlay must be applied to the reviewed base once')
   source = repairBlock(source, 'const user = z.object({', '\nconst decimal =', '8d5f2bf44712c9e338a60497b65859abaa1d4df7405d8ab253a7d6a12a44ec1b', block => {
@@ -27,10 +54,10 @@ export function repairAccountDataRuntime(source, version) {
     block = replaceOnce(block, '\t\tconst record = await this.ctx.credentials.readRecord(KEY);', '\t\tconst lifetime = this.detailsLifetime;\n\t\tconst record = await this.ctx.credentials.readRecord(KEY);\n\t\tif (lifetime !== this.detailsLifetime) return this.getState();')
     return replaceOnce(block, '\t\treturn {', '\t\treturn {\n\t\t\tportSessionId: accountSessionId(lifetime, record?.payload.token),')
   })
-  source = repairBlock(source, 'async function platformRequest(url, init, signal) {', '\n/**\n* Accept a browser-accessible', '3499f26c801621a806937fe849efe5a27ba384dfe9a0bfe9672805d260b8d94e', block => {
+  source = repairBlock(source, 'async function platformRequest(url, init, signal) {', '\n/**\n* Accept a browser-accessible', reviewed.request, block => {
     return replaceOnce(block, '\tconsole.info("[deepseek-account] response", {\n\t\tpath,\n\t\tstatus: response.status\n\t});', `\tconst metadata = accountResponseMetadata(response);
 \tconsole.info("[deepseek-account] response", { path, status: response.status, ...metadata });
-\tif (metadata.verification !== null) {
+\tif (metadata.verification !== null && !(response.status === 401 && new Headers(init.headers).has("x-dsh-auth-token"))) {
 \t\tawait response.body?.cancel();
 \t\tconst error = new PlatformAuthError("network");
 \t\terror.accountReason = "verification-required";
@@ -42,18 +69,14 @@ export function repairAccountDataRuntime(source, version) {
 }
 
 export function repairAccountDataClient(source, helper, version) {
-  if (version !== '0.1.7-rc.2') throw new Error('Unreviewed account-client version')
+  const reviewed = reviewedVersions.get(version)
+  if (!reviewed) throw new Error('Unreviewed account-client version')
   source = source.replaceAll('\r\n', '\n')
   if (!source.startsWith('window.__ModuleLoader__.load({\n\tid: "@deepseek-ai/dsh-client-ui-settings-account",\n\tfactory: (require) => {')
       || !/\t\treturn module\.exports;\n\t}\n}\);\n\n\/\/# sourceMappingURL=client\.js\.map\s*$/.test(source)) throw new Error('Unreviewed account-client wrapper')
   // CSS identifiers include the checkout path. Guard the reviewed behavior
   // blocks rather than an entire artifact hash, so a clean checkout can stage.
-  for (const [start, expected] of [
-    ['function AccountSection({', '5370e6ef1f862d5d2effc29f851e2da78d07f4ccbe68c54ff135c7fa00147191'],
-    ['function apply(ctx) {', '7a7a79a671b52a87f928ff28717227fe9b5b7d2eacfc61a808e60ef8b2b615ab'],
-    ['const en = {', 'f5dbb99658b2519216e3b7704c4e246d09d8497bd27b7f89d59106e489f85e36'],
-    ['const zh = {', '13a6e985942ce24b01c784e6856d01096183c47449c9450e1cf27c8b2a154ade'],
-  ]) repairBlock(source, start, '\n\t\t//#endregion', expected, value => value)
+  for (const [start, expected] of reviewed.client) repairBlock(source, start, '\n\t\t//#endregion', expected, value => value)
   if (!helper.includes('export function sameAccountSession') || /\bimport\b/.test(helper)) throw new Error('Unreviewed account-client helper')
   const embedded = helper.replace(/^export /gm, '')
   source = replaceOnce(source, '\t\tvar module = { exports: {} };', '\t\tvar module = { exports: {} };\n\t\t// DSH_PORT_ACCOUNT_DATA_CLIENT\n' + embedded)

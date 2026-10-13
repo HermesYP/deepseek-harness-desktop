@@ -4,12 +4,13 @@ import test from 'node:test'
 import {readFileSync} from 'node:fs'
 import {runInNewContext} from 'node:vm'
 import {repairAccountDataClient} from '../scripts/lib/account-data-runtime.mjs'
+import {accountUpstreamVersion,readAccountUpstream} from './helpers/account-upstream.mjs'
 
-const base=readFileSync(new URL('../../_upstream/packages/client/ui-settings-account/lib/client.js',import.meta.url),'utf8')
+const base=readAccountUpstream('packages/client/ui-settings-account/lib/client.js')
 const helper=readFileSync(new URL('../ui/account-data/client-state.mjs',import.meta.url),'utf8')
 const fixed=process.env.DSH_TEST_ACCOUNT_CLIENT
  ? readFileSync(process.env.DSH_TEST_ACCOUNT_CLIENT,'utf8')
- : repairAccountDataClient(base,helper,'0.1.7-rc.2').source
+ : repairAccountDataClient(base,helper,accountUpstreamVersion).source
 const deferred=()=>{let resolve;const promise=new Promise(done=>{resolve=done});return {promise,resolve}}
 const flush=()=>new Promise(resolve=>setImmediate(resolve))
 const session=id=>({status:'credential-stored',portSessionId:id,attempt:null,links:{usageUrl:'https://platform.deepseek.com/usage',topUpUrl:'https://platform.deepseek.com/top_up'}})
@@ -48,6 +49,7 @@ function harness(source,{onboarding=false}={}){
  })
  const read=pending=>{const request=deferred();pending.push(request);return request.promise}
  module.apply({
+  get:()=>undefined,
   effect:callback=>{const dispose=callback();if(typeof dispose==='function')effects.push(dispose)},
   locale:{register:(_,value)=>{dictionaries=value;return ()=>{}},bind:()=>key=>dictionaries.en[key]??key,getSnapshot:()=>({active:'en'})},
   theme:{getTheme:()=>({active:{colorScheme:'dark'}})},on:()=>()=>{},

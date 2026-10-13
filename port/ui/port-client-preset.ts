@@ -1,12 +1,12 @@
 import type { UserConfig } from 'tsdown'
 import {
   requestedExternals,
-} from '../../_upstream/packages/client/tsdown.client.ts'
+} from '../.upstream/packages/client/tsdown.client.ts'
 import {
   PLATFORM_MODULES,
   PRELOADED_CLIENT_EXTERNALS,
-} from '../../_upstream/packages/client/web/src/platform.ts'
-import { clientBuildEnvironmentDefines } from '../../_upstream/scripts/client-build-environment.ts'
+} from '../.upstream/packages/client/web/src/platform.ts'
+import { clientBuildEnvironmentDefines } from '../.upstream/scripts/client-build-environment.ts'
 
 /** Emit the port-owned Host and Client halves using upstream's loader conventions. */
 export function portClientBundle(id: string, clientEntry: string): UserConfig[] {

@@ -11,7 +11,10 @@
  * - `outDir` is `port/ui/dist` (the artifact the Rust gateway serves) and
  *   `cacheDir` stays under `port/ui/`.
  * - the read-only upstream helpers and license text are referenced in place
- *   under `_upstream/`.
+ *   through `port/.upstream`, the generated junction `link-toolchain.ps1` points
+ *   at the SELECTED checkout (`-UpstreamRoot` / `$env:DSH_UPSTREAM_ROOT`). The
+ *   specifiers are static because esbuild inlines them when this config is
+ *   bundled, so a runtime-chosen path could never reach them.
  */
 import { readFile } from 'node:fs/promises'
 import { resolve } from 'node:path'
@@ -20,7 +23,7 @@ import { defineConfig } from 'vite'
 import type { Plugin } from 'vite'
 import react from '@vitejs/plugin-react'
 // Read-only reuse of the upstream build-environment helper (same defines as apps/web).
-import { clientBuildEnvironmentDefines } from '../../../_upstream/scripts/client-build-environment.ts'
+import { clientBuildEnvironmentDefines } from '../../.upstream/scripts/client-build-environment.ts'
 import { createPolicyBootstrap } from './policy-bootstrap.mjs'
 
 const src = (rel: string): string => fileURLToPath(new URL(rel, import.meta.url))
@@ -36,7 +39,7 @@ function desktopPolicyBootstrap(): Plugin {
   return {
     name: 'dsh-desktop-policy-bootstrap',
     async buildStart() {
-      const applicationPackage = JSON.parse(await readFile(src('../../../_upstream/apps/desktop/package.json'), 'utf8'))
+      const applicationPackage = JSON.parse(await readFile(src('../../.upstream/apps/desktop/package.json'), 'utf8'))
       source = `${JSON.stringify(createPolicyBootstrap(applicationPackage, clientBuildDefines), null, 2)}\n`
     },
     generateBundle() {
@@ -69,7 +72,7 @@ function brandFontLicense(): Plugin {
       this.emitFile({
         type: 'asset',
         fileName: 'assets/fonts/Montserrat-OFL.txt',
-        source: await readFile(src('../../../_upstream/packages/client/ui-theme/src/styles/Montserrat-OFL.txt')),
+        source: await readFile(src('../../.upstream/packages/client/ui-theme/src/styles/Montserrat-OFL.txt')),
       })
     },
   }

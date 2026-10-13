@@ -5,7 +5,7 @@ import { fileURLToPath } from 'node:url'
 
 const packageRoot = dirname(fileURLToPath(import.meta.url))
 const portBundle = await readFile(resolve(packageRoot, 'lib/client.js'), 'utf8')
-const upstreamBundle = await readFile(resolve(packageRoot, '../../../_upstream/packages/client/ui-settings-general/lib/client.js'), 'utf8')
+const upstreamBundle = await readFile(resolve(packageRoot, '../../.upstream/packages/client/ui-settings-general/lib/client.js'), 'utf8')
 const packageId = '@dsh-port/dsh-client-ui-updates'
 
 function wrapper(source, expectedId) {

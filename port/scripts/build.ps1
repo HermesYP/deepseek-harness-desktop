@@ -243,6 +243,7 @@ function Assert-UpstreamCheckout {
       throw "The upstream checkout at $Upstream has no $relative; it cannot serve the runtime stage. Refusing to stage from a checkout that is not the supported target."
     }
   }
+  Assert-UpstreamLinkMatches
 }
 
 function Get-UpstreamPackageManager {
@@ -259,6 +260,33 @@ function Get-UpstreamPackageManager {
     throw "The upstream checkout at $Upstream declares no pnpm packageManager; refusing to guess the package manager."
   }
   return $manager
+}
+
+function Assert-UpstreamLinkMatches {
+  <#
+  .SYNOPSIS
+    The generated `port/.upstream` junction must point at the selected root.
+  .DESCRIPTION
+    The shell build (`port/ui/shell/vite.config.ts`), the port's tsdown preset and
+    the desktop bridge read upstream sources through that junction with STATIC
+    specifiers, because esbuild inlines them when the Vite config is bundled. If
+    the junction pointed at a different checkout than the one being staged from,
+    the build would silently mix two revisions -- exactly the substitution the
+    explicit root exists to prevent. An absent junction is not an error: it is
+    created by `port/ui/link-toolchain.ps1` before the UI stage builds.
+  #>
+  $linkPath = Join-Path $PortRoot '.upstream'
+  $item = Get-Item -LiteralPath $linkPath -Force -ErrorAction SilentlyContinue
+  if ($null -eq $item) { return }
+  if (($item.Attributes -band [System.IO.FileAttributes]::ReparsePoint) -eq 0) {
+    throw "The generated upstream link path is an ordinary file or directory: $linkPath. It must be the junction link-toolchain.ps1 creates; remove it deliberately."
+  }
+  $linkTarget = @($item.Target)[0]
+  if (-not $linkTarget) { throw "The generated upstream link exposes no target: $linkPath" }
+  $linkTarget = [System.IO.Path]::GetFullPath($linkTarget)
+  if (-not [string]::Equals($linkTarget, $Upstream, [System.StringComparison]::OrdinalIgnoreCase)) {
+    throw "The generated upstream link points at $linkTarget, but this build selected $Upstream. Re-run port/ui/link-toolchain.ps1 with the same root; the shell build would otherwise read a different checkout than the one staged from."
+  }
 }
 
 function Invoke-Checked([string]$File, [string[]]$Arguments, [string]$WorkDir) {
@@ -353,6 +381,9 @@ function Build-Ui {
     throw "UI toolchain linker is missing: $linkToolchain"
   }
   & $linkToolchain -UpstreamRoot $Upstream
+  # The linker is what points the shell build at the selected checkout; verify it
+  # did, rather than trusting that a previous run left it right.
+  Assert-UpstreamLinkMatches
   $vite = Join-Path $UiDir 'node_modules\vite\bin\vite.js'
   if (-not (Test-Path $vite)) {
     throw "UI toolchain is not linked: $vite is missing. Build the reference checkout first ('pnpm install; pnpm run build' in $Upstream), then re-run this stage."
@@ -1153,7 +1184,11 @@ function Get-PayloadInputs([string]$StageRoot) {
 
   $nodeStageProgram = Get-DshRuntimeStageProgram
   $inputs['stageProgram'] = (Get-DshStringDigest -Value $nodeStageProgram)
-  foreach ($helper in @('seal-runtime.mjs', 'runtime-locks.mjs', 'runtime-payload.psm1', 'payload-manifest.psm1', 'config-editor-runtime-import.mjs', 'account-profile-runtime.mjs', 'account-login-runtime.mjs', 'account-data-runtime.mjs')) {
+  # `target-release.mjs` is a transitive input of the account transforms: each of
+  # them imports TARGET_RELEASE from it to decide which release's reviewed hashes
+  # apply. Sealing the transforms without it would leave the input that governs
+  # the accepted target version outside the manifest.
+  foreach ($helper in @('seal-runtime.mjs', 'runtime-locks.mjs', 'runtime-payload.psm1', 'payload-manifest.psm1', 'config-editor-runtime-import.mjs', 'target-release.mjs', 'account-profile-runtime.mjs', 'account-login-runtime.mjs', 'account-data-runtime.mjs')) {
     $inputs["packagingHelper:$helper"] = (Get-FileHash -LiteralPath (Join-Path $PSScriptRoot "lib\$helper") -Algorithm SHA256).Hash.ToLowerInvariant()
   }
   $inputs['accountProfileCache'] = (Get-FileHash -LiteralPath (Join-Path $TauriDir 'runtime\account-profile-cache.mjs') -Algorithm SHA256).Hash.ToLowerInvariant()

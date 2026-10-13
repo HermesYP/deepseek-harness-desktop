@@ -15,6 +15,9 @@ port/ui/native-guests/.tmp/
 port/ui/native-guests/.cache/
 port/ui/client-updates/lib/
 port/ui/node_modules/
+# Generated junction to the selected upstream checkout (see port/ui/link-toolchain.ps1).
+# It is a link, never content, and it points at a read-only reference tree.
+port/.upstream
 port/runtime-payload/
 # Generated runtime seal inventory, not the checked-in Node pin specification.
 /port/installer/runtime-payload.json

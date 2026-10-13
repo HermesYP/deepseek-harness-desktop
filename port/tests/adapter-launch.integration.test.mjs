@@ -161,7 +161,20 @@ test(payload ? 'sealed artifact adapter contract and isolated owned-control Host
   // The stock adapter argv asks for port 19387, already owned by another process.
   // A legitimate profile user-layer changes ONLY the listener to loopback port 0.
   // No source instrumentation, live-profile mutation or competing server occurs.
-  writeFileSync(join(profile, 'cordis.patch.yml'), '- id: webserver\n  config:\n    host: 127.0.0.1\n    port: 0\n')
+  // A patch REPLACES the matched row's whole `config`, so the rest of the target's
+  // `webserver` config is restated here: omitting it would silently drop gzip and
+  // leave those keys undefined rather than at their shipped values.
+  writeFileSync(join(profile, 'cordis.patch.yml'), [
+    '- id: webserver',
+    '  config:',
+    '    host: 127.0.0.1',
+    '    port: 0',
+    '    tls: null',
+    '    compression: gzip',
+    '    compressionLevel: 1',
+    '    compressionThresholdBytes: 1024',
+    '',
+  ].join('\n'))
   const report = {
     scope: artifact
       ? 'sealed payload adapter, interpreter and dependencies; owned user-layer loopback port 0; not native or installed acceptance'

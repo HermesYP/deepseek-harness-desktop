@@ -22,7 +22,7 @@ import { chromium } from 'playwright'
 const here = dirname(fileURLToPath(import.meta.url))
 const uiRoot = resolve(here, '..')
 const repoRoot = resolve(uiRoot, '..', '..')
-const upstream = join(repoRoot, '_upstream')
+const upstream = join(repoRoot, 'port', '.upstream')
 const dist = join(uiRoot, 'dist')
 const PORT = Number(process.env.DSH_MOUNT_CHECK_PORT ?? 3086)
 

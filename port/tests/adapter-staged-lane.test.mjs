@@ -202,7 +202,19 @@ test('staged adapter lane: identity, control auth, ready, shutdown, exit, seal',
   }, null, 2))
   // The stock adapter argv asks for port 19387; a legitimate profile user layer
   // moves the listener to an ephemeral loopback port. No product file is touched.
-  writeFileSync(join(profile, 'cordis.patch.yml'), '- id: webserver\n  config:\n    host: 127.0.0.1\n    port: 0\n')
+  // A patch REPLACES the matched row's whole `config`, so the rest of the target's
+  // `webserver` config is restated; a bare host/port patch would drop gzip.
+  writeFileSync(join(profile, 'cordis.patch.yml'), [
+    '- id: webserver',
+    '  config:',
+    '    host: 127.0.0.1',
+    '    port: 0',
+    '    tls: null',
+    '    compression: gzip',
+    '    compressionLevel: 1',
+    '    compressionThresholdBytes: 1024',
+    '',
+  ].join('\n'))
 
   const secrets = createRedactor()
   const socketName = process.platform === 'win32'

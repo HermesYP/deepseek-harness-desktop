@@ -1,5 +1,5 @@
 /** Replace the upstream native shell's account watcher, without a guest webview. */
-import { parseRemoteStreamServerMessage, REMOTE_STREAM_MUX_PATH } from '../../../_upstream/packages/api/gateway/src/stream-protocol.ts'
+import { parseRemoteStreamServerMessage, REMOTE_STREAM_MUX_PATH } from '../../.upstream/packages/api/gateway/src/stream-protocol.ts'
 
 const active = new WeakMap<Window, () => void>()
 const record = (value: unknown): value is Record<string, unknown> =>

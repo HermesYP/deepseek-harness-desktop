@@ -52,3 +52,26 @@ test('the sealed release descriptor is the one this port records', () => {
   assert.equal(tauri.version, TARGET_RELEASE.release,
     'the sealed descriptor and the shipped product version must name the same release')
 })
+
+test('the seal program needs no TypeScript loader, and the stage program keeps one', () => {
+  // Justification for dropping tsx from the seal invocation: the program is plain
+  // JavaScript over Node builtins. If a later edit adds a `.ts` import or an
+  // upstream package here, this fails and says the loader became necessary again.
+  const seal = readFileSync(join(port, 'scripts', 'lib', 'seal-runtime.mjs'), 'utf8')
+  const specifiers = [...seal.matchAll(/^\s*import[^\n]*?from\s+'([^']+)'/gmu)].map(match => match[1])
+  assert.ok(specifiers.length > 0, 'the seal program has imports to check')
+  for (const specifier of specifiers) {
+    assert.ok(specifier.startsWith('node:'),
+      `seal-runtime.mjs must import only Node builtins so it can run without tsx, found '${specifier}'`)
+  }
+  assert.match(build, /\$arguments = @\(\(Join-Path \$PSScriptRoot 'lib\\seal-runtime\.mjs'\)\)/,
+    'the seal program is launched without a loader')
+  assert.ok(!/\$arguments = @\('--import', 'tsx\/esm'/.test(build),
+    'the seal invocation no longer routes through tsx')
+
+  // The STAGING program still requires tsx: it imports upstream sources at runtime,
+  // and project-manager.ts uses a constructor parameter property that Node's
+  // strip-only TypeScript mode rejects (ERR_UNSUPPORTED_TYPESCRIPT_SYNTAX).
+  assert.match(build, /\$nodeArgs = @\('--import', 'tsx\/esm', \$nodeProgram/,
+    'the staging program still runs through tsx for the non-erasable upstream sources')
+})

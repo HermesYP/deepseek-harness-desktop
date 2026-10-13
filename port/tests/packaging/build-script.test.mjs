@@ -419,13 +419,18 @@ test('metadata sealing precedes the final file count and post-swap verification 
   assert.match(code, /\$anchors \+= @\('runtime-payload.json', 'desktop-runtime.json'\)/)
 })
 
-test('sealing launches the pinned payload interpreter through tsx/esm via the trusted resolver', () => {
+test('sealing launches the pinned payload interpreter without a loader via the trusted resolver', () => {
   const helper = code.slice(code.indexOf('function Invoke-StagedRuntimeSeal'), code.indexOf('function Get-StagedHostProtocolVersion'))
   assert.match(helper, /\$identity.NodeVersion -ne \$pin.nodeVersion/)
   assert.match(helper, /\$identity.Sha256 -ne \$pinTarget.sha256/)
   assert.match(helper, /\$identity.Target -ne \$targetName/)
   assert.match(helper, /\$bundledNode = Join-Path \$DshRoot \$relativeExecutable/)
-  assert.match(helper, /@\('--import', 'tsx\/esm'/)
+  // `seal-runtime.mjs` imports only Node builtins, so it runs with no TypeScript
+  // loader. Routing it through tsx pulled tsx's own esbuild (0.28.1) into a step
+  // that never uses it. The STAGING program keeps tsx, because it imports upstream
+  // sources and project-manager.ts uses a non-erasable parameter property.
+  assert.match(helper, /\$arguments = @\(\(Join-Path \$PSScriptRoot 'lib\\seal-runtime\.mjs'\)\)/)
+  assert.doesNotMatch(helper, /--import', 'tsx\/esm/)
   // The pinned payload bytes are the REFERENCE for the resolver, never the process
   // that is executed: the shipped image is Low-labelled, so it cannot write the temp
   // and pipes the sealing program needs.

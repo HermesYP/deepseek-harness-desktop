@@ -1076,7 +1076,12 @@ function Invoke-StagedRuntimeSeal {
     throw 'Staged Node identity has an unexpected executable location.'
   }
   $bundledNode = Join-Path $DshRoot $relativeExecutable
-  $arguments = @('--import', 'tsx/esm', (Join-Path $PSScriptRoot 'lib\seal-runtime.mjs'))
+  # `seal-runtime.mjs` imports ONLY Node builtins (node:crypto, node:fs, node:path,
+  # node:url) -- no TypeScript, no upstream package -- so it needs no loader. Running
+  # it through `tsx` pulled tsx's own esbuild (0.28.1) into the runtime stage, which is
+  # a compiler this step never uses and which cannot share the UI's 0.25.12 override.
+  # The staging program below still REQUIRES `tsx` (it imports upstream `.ts`).
+  $arguments = @((Join-Path $PSScriptRoot 'lib\seal-runtime.mjs'))
   if ($VerifyOnly) { $arguments += '--verify' }
   $arguments += @($Upstream, $DshRoot, (Join-Path $StageRoot 'work\runtime-identity.json'),
     (Join-Path $StageRoot 'node-identity.json'))

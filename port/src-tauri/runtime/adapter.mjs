@@ -590,6 +590,35 @@ function installControlRequestHandlers() {
   })
 }
 
+/**
+ * The loopback application origin the shell opens for this run.
+ *
+ * The Host reports the protocol its listener actually speaks: `webServer.protocol`
+ * is `'http:'` for a plain listener and `'https:'` when the listener serves TLS,
+ * so the URL is composed from that value rather than assumed. Only those two
+ * schemes are accepted -- an unexpected value means the listener is not what the
+ * shell believes, and publishing a guessed origin would open the wrong scheme.
+ * The port is validated the same way: the invocation asks for port 0 and the Host
+ * reports the port the operating system actually assigned.
+ *
+ * @param webServer - the Host's `webServer` service.
+ * @returns the `scheme//127.0.0.1:port` origin, with no path and no token.
+ */
+function loopbackApplicationOrigin(webServer) {
+  const protocol = webServer?.protocol
+  if (protocol !== 'http:' && protocol !== 'https:') {
+    // The refusal names the reason and never the observed value: this text reaches
+    // startup diagnostics, and a malformed or substituted service must not be able
+    // to place arbitrary content there.
+    throw new Error('dsh desktop: the Host webserver reported an unsupported protocol; refusing to publish an application URL')
+  }
+  const port = webServer?.port
+  if (!Number.isInteger(port) || port <= 0 || port > 65535) {
+    throw new Error('dsh desktop: the Host webserver reported an unusable port; refusing to publish an application URL')
+  }
+  return `${protocol}//127.0.0.1:${String(port)}`
+}
+
 async function main() {
   const profile = loadProfileDirectory('dsh', projectDir, installAnchor)
   reportSkippedBundles('dsh', profile)
@@ -598,7 +627,11 @@ async function main() {
     profile: 'desktop',
     resolvedProfile: { profile, installAnchor },
     patchFiles: [],
-    args: ['--no-open', '--port', '19387'],
+    // `--host 127.0.0.1 --port 0` is the invocation the Desktop Host uses: a
+    // loopback listener on an OS-assigned ephemeral port. A fixed port collides
+    // with whichever process already owns it, and the shell learns the real
+    // origin from the `ready` frame anyway.
+    args: ['--no-open', '--host', '127.0.0.1', '--port', '0'],
     ...(process.argv[5] === undefined ? {} : {
       packageManager: {
         command: process.execPath,
@@ -629,7 +662,7 @@ async function main() {
     root: join(resolveDshHome(), 'dsh-runtimes', 'dsh-primary-runtime'),
   })
   installPlatformSessionPublisher(ctx, (session) => { sendQuietly({ type: 'platform-session', session }) })
-  const url = ctx.connection.authenticatedUrl(`http://127.0.0.1:${String(ctx.webServer.port)}`)
+  const url = ctx.connection.authenticatedUrl(loopbackApplicationOrigin(ctx.webServer))
   sendQuietly({ type: 'ready', url, injections: ctx.webServer.collectIndexInjections() })
   // Frames that raced the acknowledgement are answered now that the control
   // surfaces exist. They are delivered in wire order.

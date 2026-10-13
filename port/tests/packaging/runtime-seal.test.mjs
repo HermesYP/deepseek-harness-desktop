@@ -324,7 +324,9 @@ test('real payload interpreter seals, verifies after relocation, and refuses byt
   mkdirSync(temporary, { recursive: true })
   try {
     // The sealing process is the pinned build; only WHERE it is executed from varies.
-    const invoke = (executable, payload, verify, nodeIdentityPath = f.nodePath) => spawnSync(executable, ['--import', 'tsx/esm', cli,
+    // It runs with no TypeScript loader, exactly as the build launches it: the
+    // program imports only Node builtins, so this also fails if that ever changes.
+    const invoke = (executable, payload, verify, nodeIdentityPath = f.nodePath) => spawnSync(executable, [cli,
       ...(verify ? ['--verify'] : []), upstream, payload, f.stagePath, nodeIdentityPath],
     { cwd: upstream, stdio: 'inherit', env: { ...process.env, TEMP: temporary, TMP: temporary } })
     assert.equal(invoke(f.executable, f.payload, false).status, 0)
@@ -379,7 +381,7 @@ test('a byte-identical trusted copy outside the payload seals and verifies', { s
   try {
     assert.notEqual(resolve(pinnedNode), resolve(f.executable), 'the fixture keeps the pinned bytes at a different path')
     assert.equal(sha256Of(pinnedNode), f.executableSha256, 'fixture payload bytes are the pinned interpreter')
-    const invoke = (executable, payload, verify, nodeIdentityPath = f.nodePath) => spawnSync(executable, ['--import', 'tsx/esm', cli,
+    const invoke = (executable, payload, verify, nodeIdentityPath = f.nodePath) => spawnSync(executable, [cli,
       ...(verify ? ['--verify'] : []), upstream, payload, f.stagePath, nodeIdentityPath],
     { cwd: upstream, stdio: 'inherit', env: { ...process.env, TEMP: temporary, TMP: temporary } })
     assert.equal(invoke(pinnedNode, f.payload, false).status, 0, 'an outside byte-identical copy seals the payload')

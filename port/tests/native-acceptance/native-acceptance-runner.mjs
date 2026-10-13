@@ -62,7 +62,7 @@
 
 import { createHash, randomUUID } from 'node:crypto'
 import { spawn as nodeSpawn } from 'node:child_process'
-import { readFile, writeFile, mkdir, access, stat } from 'node:fs/promises'
+import { lstat as fsLstat, readFile, writeFile, mkdir, access, stat } from 'node:fs/promises'
 import { constants as fsConstants } from 'node:fs'
 import { dirname, isAbsolute, join, resolve } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
@@ -176,7 +176,7 @@ export function parseArgs(argv) {
   const values = new Map()
   const flags = new Set()
   const valueNames = new Set([
-    'exe', 'sha256', 'repo', 'report', 'stamp', 'runtime-dir', 'shell-dir',
+    'exe', 'sha256', 'repo', 'report', 'stamp', 'runtime-dir', 'shell-dir', 'node-exe',
     ...Object.keys(NUMERIC_BOUNDS),
   ])
   const flagNames = new Set(['without-fixture-chat', 'dry-run', 'help'])
@@ -239,6 +239,7 @@ export function parseArgs(argv) {
     stamp,
     runtimeDir: values.has('runtime-dir') ? resolve(values.get('runtime-dir')) : null,
     shellDir: values.has('shell-dir') ? resolve(values.get('shell-dir')) : null,
+    nodeExe: values.has('node-exe') ? resolve(values.get('node-exe')) : null,
     withFixtureChat: !flags.has('without-fixture-chat'),
     dryRun: flags.has('dry-run'),
     bounds: Object.freeze(bounds),
@@ -248,6 +249,71 @@ export function parseArgs(argv) {
 // ---------------------------------------------------------------------------
 // Pure preflight / staging helpers (unit-tested)
 // ---------------------------------------------------------------------------
+
+/** Truncate a hash for refusal messages: never emit a secret-shaped 64-hex run. */
+export function truncateHash(hash) {
+  const text = String(hash ?? '')
+  return text.length <= 16 ? `${text}…` : `${text.slice(0, 16)}…`
+}
+
+/** SHA-256 over a file's bytes. */
+async function sha256File(path) {
+  return createHash('sha256').update(await readFile(path)).digest('hex')
+}
+
+/**
+ * Resolve the runtime interpreter for this run.
+ *
+ * Default (no `--node-exe`): the payload's own pinned interpreter — the
+ * published-layout behaviour, unchanged.
+ *
+ * With `--node-exe <ABS path>`: an ATTESTED COPY of the payload interpreter —
+ * never a relabel and never a different interpreter. The copy must be a
+ * regular non-linked file (symlink/junction/reparse refused) that is not the
+ * same underlying file as the reference (hardlinks share the reference's
+ * integrity label and are refused), and its SHA-256 must EXACTLY equal the
+ * reference `runtimeDir/node/node.exe` bytes — so a different interpreter,
+ * version or architecture can never be accepted. Both paths and both hashes
+ * are recorded.
+ */
+export async function resolveExecutionNode({ payloadNodePath, nodeExe, lstatImpl = fsLstat, hashImpl = sha256File }) {
+  if (nodeExe === undefined || nodeExe === null || nodeExe === '') {
+    const referenceSha256 = await hashImpl(payloadNodePath)
+    return { source: 'payload', referencePath: payloadNodePath, referenceSha256, executionPath: payloadNodePath, executionSha256: referenceSha256 }
+  }
+  if (typeof nodeExe !== 'string' || !isAbsolute(nodeExe)) {
+    throw refusal('--node-exe must be an absolute path to a byte-identical trusted copy of the runtime interpreter')
+  }
+  let trustedInfo
+  let referenceInfo
+  try {
+    trustedInfo = await lstatImpl(nodeExe)
+    referenceInfo = await lstatImpl(payloadNodePath)
+  } catch {
+    throw refusal(`--node-exe or its payload reference could not be stat-ed; nothing was launched`)
+  }
+  if (!trustedInfo.isFile() || trustedInfo.isSymbolicLink()) {
+    throw refusal(`--node-exe must be a regular non-linked file (no symlink, junction or reparse point)`)
+  }
+  if (!referenceInfo.isFile()) {
+    throw refusal(`the runtime interpreter reference is not a regular file`)
+  }
+  if (trustedInfo.dev === referenceInfo.dev && trustedInfo.ino === referenceInfo.ino) {
+    throw refusal(`--node-exe is the SAME underlying file as the payload interpreter (hardlink or identical path); it must be an independent byte-identical copy`)
+  }
+  const referenceSha256 = await hashImpl(payloadNodePath)
+  const executionSha256 = await hashImpl(nodeExe)
+  if (executionSha256 !== referenceSha256) {
+    throw refusal(`--node-exe is not byte-identical to the payload interpreter: expected ${truncateHash(referenceSha256)}, observed ${truncateHash(executionSha256)}`)
+  }
+  return {
+    source: 'trusted-copy',
+    referencePath: payloadNodePath,
+    referenceSha256,
+    executionPath: nodeExe,
+    executionSha256,
+  }
+}
 
 /**
  * The candidate preflight: existence, size, debug-image requirement and the
@@ -273,7 +339,7 @@ export async function preflightCandidate(candidate) {
   const bytes = await readFile(candidate.exe)
   const sha256 = createHash('sha256').update(bytes).digest('hex')
   if (sha256 !== candidate.sha256) {
-    throw refusal(`candidate hash mismatch: expected ${candidate.sha256}, observed ${sha256} for ${candidate.exe}`)
+    throw refusal(`candidate hash mismatch: expected ${truncateHash(candidate.sha256)}, observed ${truncateHash(sha256)} for ${candidate.exe}`)
   }
   return { exePath: candidate.exe, sha256, sizeBytes: info.size }
 }
@@ -471,32 +537,84 @@ export const HOST_FACTS_EXPRESSION = `(() => {
   };
 })()`
 
-/** Click ONE onboarding action. Commercial/destructive actions are excluded. */
+/**
+ * Click ONE onboarding action, state-aware against the actual 0.2.1-alpha.2
+ * flow (packages/client/ui-settings-account/src/client/DesktopOnboarding.tsx):
+ * welcome → credit → purpose → process, with confirmation dialogs rendered
+ * OUTSIDE the region, purpose/process continue buttons that only exist after a
+ * selection, and a credit step whose PRIMARY button is the recharge action.
+ * Commercial/recharge actions are never clicked; the footer back/skip buttons
+ * are never generically clicked (skip opens a dialog).
+ */
 export const ONBOARDING_ACTION_CLICK_EXPRESSION = `(() => {
+  const forbidden = /\\u5145\\u503c|\\u524d\\u5f80\\u5145\\u503c|recharge|top.?up|add credits|\\u8d2d\\u4e70|buy|pay|\\u4ed8\\u6b3e/iu;
+  const label = (el) => (el.getAttribute('aria-label') || '') + ' ' + (el.getAttribute('title') || '') + ' ' + (el.textContent || '');
+  const visible = (el) => { const style = getComputedStyle(el); return style.display !== 'none' && style.visibility !== 'hidden'; };
+  const click = (el, matched) => { el.click(); return { record: 'onboarding-click', clicked: true, matched }; };
+
+  // 0. A confirmation dialog is open (rendered outside [data-desktop-onboarding]).
+  const dialogButtons = [...document.querySelectorAll('[class*="dialogButton"]')].filter((el) => visible(el) && el.disabled !== true);
+  if (dialogButtons.length > 0) {
+    const safe = dialogButtons.find((el) => !forbidden.test(label(el)));
+    if (safe) return click(safe, 'dialog');
+  }
+
   const region = document.querySelector('[data-desktop-onboarding]');
   if (!region) return { record: 'onboarding-click', clicked: false, reason: 'absent' };
   if (region.getAttribute('aria-busy') === 'true') return { record: 'onboarding-click', clicked: false, reason: 'busy' };
-  const label = (el) => (el.getAttribute('aria-label') || '') + ' ' + (el.getAttribute('title') || '') + ' ' + (el.textContent || '');
-  const forbidden = /\\u5145\\u503c|recharge|top.?up|\\u8d2d\\u4e70|buy|pay|\\u4ed8\\u6b3e/iu;
+  const step = region.getAttribute('data-desktop-onboarding');
+
+  // 1. welcome: the single start button.
+  if (step === 'welcome') {
+    const start = [...region.querySelectorAll('button, [role="button"]')].find((el) => visible(el) && /\\u5f00\\u59cb\\u8bbe\\u7f6e|get started/iu.test(label(el)));
+    if (start) return click(start, 'welcome-start');
+  }
+
+  // 2. credit: NEVER the primary (recharge); take continue/next or the outline later action.
+  if (step === 'credit') {
+    const buttons = [...region.querySelectorAll('button, [role="button"]')].filter((el) => visible(el) && el.disabled !== true && !forbidden.test(label(el)));
+    const preferred = buttons.find((el) => /\\u4e0b\\u4e00\\u6b65|next|\\u7ee7\\u7eed|continue/iu.test(label(el)))
+      ?? buttons.find((el) => /[class*="laterAction"]/u.test(el.className))
+      ?? buttons[buttons.length - 1];
+    if (preferred) return click(preferred, 'credit-next');
+  }
+
+  // 3. purpose: the continue button does not exist until a card is checked.
+  if (step === 'purpose') {
+    const boxes = [...region.querySelectorAll('input[type="checkbox"]')];
+    const unchecked = boxes.find((el) => el.checked !== true);
+    if (unchecked) return click(unchecked, 'purpose-select');
+    const primary = [...region.querySelectorAll('[class*="primaryAction"] button')].find((el) => visible(el));
+    if (primary) return click(primary, 'purpose-continue');
+  }
+
+  // 4. process: the complete button does not exist until a radio is chosen.
+  if (step === 'process') {
+    const radios = [...region.querySelectorAll('[data-process]')];
+    const chosen = radios.find((el) => el.getAttribute('aria-checked') === 'true');
+    if (!chosen && radios.length > 0) return click(radios[0], 'process-select');
+    const primary = [...region.querySelectorAll('[class*="primaryAction"] button')].find((el) => visible(el));
+    if (primary) return click(primary, 'process-complete');
+  }
+
+  // 5. Generic fallback over non-footer, non-commercial buttons.
   const buttons = [...region.querySelectorAll('button, [role="button"]')].filter((el) => {
-    const style = getComputedStyle(el);
-    return style.display !== 'none' && style.visibility !== 'hidden' && el.disabled !== true && !forbidden.test(label(el));
+    if (!visible(el) || el.disabled === true || forbidden.test(label(el))) return false;
+    if (el.closest('footer') !== null) return false;
+    return true;
   });
   const priorities = [
-    /\\u8fdb\\u5165\\u5e94\\u7528|enter (the )?(app|workspace)|get started|start (using|working|building)|finish|done|\\u5b8c\\u6210|\\u5f00\\u59cb\\u4f7f\\u7528/iu,
-    /skip|\\u8df3\\u8fc7|later|\\u7a0d\\u540e/iu,
-    /next|continue|\\u4e0b\\u4e00\\u6b65|\\u7ee7\\u7eed/iu,
-    /start setup|\\u5f00\\u59cb\\u8bbe\\u7f6e/iu,
-    /got it|understood|\\u77e5\\u9053\\u4e86|\\u660e\\u767d\\u4e86/iu,
+    /\\u8fdb\\u5165\\u5e94\\u7528|enter (the )?(app|workspace)|open app|get started|finish|done|\\u5b8c\\u6210/iu,
+    /\\u7ee7\\u7eed|continue|\\u4e0b\\u4e00\\u6b65|next/iu,
+    /\\u5f00\\u59cb|start/iu,
+    /got it|understood|\\u77e5\\u9053\\u4e86/iu,
   ];
   for (const re of priorities) {
     const match = buttons.find((el) => re.test(label(el)));
-    if (match) { match.click(); return { record: 'onboarding-click', clicked: true, matched: re.source.slice(0, 48) }; }
+    if (match) return click(match, 'generic');
   }
-  const primary = [...region.querySelectorAll('[class*="primaryAction"] button')].find((el) => !forbidden.test(label(el)));
-  if (primary) { primary.click(); return { record: 'onboarding-click', clicked: true, matched: 'primaryAction' }; }
   const fallback = buttons[buttons.length - 1];
-  if (fallback) { fallback.click(); return { record: 'onboarding-click', clicked: true, matched: 'last-visible' }; }
+  if (fallback) return click(fallback, 'generic-last');
   return { record: 'onboarding-click', clicked: false, reason: 'no-action-button' };
 })()`
 
@@ -794,12 +912,12 @@ export async function runAcceptance(args, inject = {}) {
     record.candidate.sizeBytes = candidate.sizeBytes
     push('identity.executable_hash', true, 'pass', `sha256 verified for ${candidate.sizeBytes} bytes`)
 
-    // -- 1. Runtime payload preflight --------------------------------------------
+    // -- 1. Runtime payload preflight + attested interpreter ----------------------
     const runtimeDir = args.runtimeDir ?? join(repoRoot, 'port', 'runtime-payload', 'dsh')
     const shellDir = args.shellDir ?? join(repoRoot, 'port', 'ui', 'dist')
     const nodePath = join(runtimeDir, 'node', 'node.exe')
     const adapterPath = join(runtimeDir, 'adapter.mjs')
-    record.runtime = { runtimeDir, shellDir, nodePath, adapterPath }
+    record.runtime = { runtimeDir, shellDir, nodePath, adapterPath, executionNode: null }
     for (const [label, path] of [
       ['runtime adapter', adapterPath],
       ['pinned interpreter', nodePath],
@@ -811,6 +929,9 @@ export async function runAcceptance(args, inject = {}) {
         throw refusal(`${label} is missing at ${path}; assemble the candidate payload first. Nothing was launched.`)
       }
     }
+    const executionNode = await resolveExecutionNode({ payloadNodePath: nodePath, nodeExe: args.nodeExe })
+    record.runtime.executionNode = executionNode
+    log(`interpreter: ${executionNode.source} -> ${executionNode.executionPath} (sha256 ${truncateHash(executionNode.executionSha256)})`)
 
     // -- 2. Fresh isolation roots (checked read-only; nothing is created yet) ----
     await assertFreshRoots(paths)
@@ -856,7 +977,7 @@ export async function runAcceptance(args, inject = {}) {
     }
 
     // -- 4. Launch (first run) ----------------------------------------------------------
-    const env = buildChildEnvironment({ args, paths, nodePath, adapterPath, runtimeDir, shellDir, handoffIndex: 1 })
+    const env = buildChildEnvironment({ args, paths, nodePath: executionNode.executionPath, adapterPath, runtimeDir, shellDir, handoffIndex: 1 })
     const launched = await spawnImpl({ exe: args.exe, env, log })
     child = launched.child
     identityAtSpawn = launched.identityAtSpawn
@@ -1472,6 +1593,8 @@ export function redactionAllowList(record) {
   }
   add(record?.fixture?.patchPath)
   add(record?.fixture?.origin)
+  add(record?.runtime?.executionNode?.referenceSha256)
+  add(record?.runtime?.executionNode?.executionSha256)
   return allowed
 }
 
@@ -1537,6 +1660,12 @@ Optional:
   --stamp <name>            run-stamp for the evidence root
   --runtime-dir <path>      materialized runtime payload (default <repo>/port/runtime-payload/dsh)
   --shell-dir <path>        packaged shell assets (default <repo>/port/ui/dist)
+  --node-exe <ABS path>     OPTIONAL byte-identical trusted copy of the payload
+                            interpreter (regular non-linked file; SHA-256 must
+                            exactly equal runtimeDir/node/node.exe). Used as
+                            DSH_DESKTOP_NODE when the published payload image
+                            inherits a problematic integrity label. Never a
+                            relabel; a mismatch refuses the run.
   --cdp-port <1024-65535>   WebView2 remote-debugging port for THIS run (default 9333)
   --fixture-port <...>      local fixture-provider port (default 9471)
   --without-fixture-chat    record the chat checks as not-requested (never a pass)

@@ -37,6 +37,7 @@ import { FIXTURE_API_KEY, FIXTURE_KEY_ENV, FIXTURE_MODEL_ID, FIXTURE_ROUTE, pars
 import {
   CHAT_OBSERVE_EXPRESSION,
   HOST_FACTS_EXPRESSION,
+  ONBOARDING_ACTION_CLICK_EXPRESSION,
   REQUIRED_CHECK_IDS,
   SETTINGS_MARKER_KEY,
   SETTINGS_MARKER_VALUE,
@@ -52,8 +53,10 @@ import {
   parseGatewayUrl,
   preflightCandidate,
   redactionAllowList,
+  resolveExecutionNode,
   runAcceptance,
   runOnboardingScenario,
+  truncateHash,
 } from './native-acceptance-runner.mjs'
 import { findSecretLikeLeaks } from '../native-cdp/native-cdp-probe.mjs'
 
@@ -743,4 +746,251 @@ test('K1: the staged patch is a plain-YAML overlay bound to the fixture origin',
   assert.equal(baseURLs[0], 'baseURL: http://127.0.0.1:9471/v1')
   assert.ok(!patch.includes(FIXTURE_API_KEY), 'the key value must never appear in staged config')
   assert.ok(patch.includes(`apiKeyEnv: ${FIXTURE_KEY_ENV}`), 'the credential reference must be the env-var NAME')
+})
+
+// ---------------------------------------------------------------------------
+// L. Onboarding clicker decision table (0.2.1-alpha.2 flow, fake DOM)
+// ---------------------------------------------------------------------------
+
+/**
+ * A minimal DOM covering exactly the selectors the click expression uses.
+ * Nodes: { tag, attrs, className, text, children, checked, disabled,
+ * inPrimaryAction, footer } — the walker matches the expression's fixed
+ * selector strings, nothing more.
+ */
+function fakeNode({ tag = 'button', attrs = {}, className = '', text = '', children = [], checked, disabled, inPrimaryAction = false, footer = false } = {}) {
+  const node = {
+    tag, attrs, className, textContent: text, children, checked, disabled, inPrimaryAction,
+    clicked: 0,
+    click() { node.clicked += 1 },
+    getAttribute(name) { return attrs[name] ?? null },
+    closest(selector) { return selector === 'footer' && footer ? { tag: 'footer' } : null },
+    querySelectorAll(selector) { return fakeQueryAll(selector, [node]).filter(candidate => candidate !== node) },
+  }
+  return node
+}
+
+function fakeMatches(selector, node, ancestors) {
+  if (selector.startsWith('[class*="dialogButton"]')) return node.className.includes('dialogButton')
+  if (selector === 'button, [role="button"]') return node.tag === 'button' || node.attrs.role === 'button'
+  if (selector === 'input[type="checkbox"]') return node.tag === 'input' && node.attrs.type === 'checkbox'
+  if (selector === '[data-process]') return 'data-process' in node.attrs
+  if (selector === '[class*="primaryAction"] button') {
+    return node.tag === 'button' && (node.inPrimaryAction === true || ancestors.some(parent => parent.className.includes('primaryAction')))
+  }
+  return false
+}
+
+function fakeQueryAll(selector, nodes) {
+  const out = []
+  const walk = (children, ancestors) => {
+    for (const child of children) {
+      if (fakeMatches(selector, child, ancestors)) out.push(child)
+      walk(child.children, [...ancestors, child])
+    }
+  }
+  walk(nodes, [])
+  return out
+}
+
+/** Evaluate the click expression against a fake document. */
+function runOnboardingClick({ step, regionChildren, dialogButtons = [] }) {
+  const region = step === null ? null : fakeNode({ tag: 'section', attrs: { 'data-desktop-onboarding': step }, children: regionChildren })
+  const document = {
+    querySelector: selector => (selector === '[data-desktop-onboarding]' ? region : null),
+    querySelectorAll: selector => (selector === '[class*="dialogButton"]' ? dialogButtons : []),
+  }
+  const outcome = new Function('document', 'getComputedStyle', `return ${ONBOARDING_ACTION_CLICK_EXPRESSION}`)(
+    document,
+    () => ({ display: 'block', visibility: 'visible' }),
+  )
+  const allClicked = [...dialogButtons, ...fakeQueryAll('button, [role="button"]', region === null ? [] : [region]), ...fakeQueryAll('input[type="checkbox"]', region === null ? [] : [region])]
+  const hit = allClicked.find(node => node.clicked > 0)
+  return { outcome, hit }
+}
+
+test('L1: welcome clicks the start button', () => {
+  const { outcome, hit } = runOnboardingClick({
+    step: 'welcome',
+    regionChildren: [fakeNode({ text: '开始设置', className: 'action start' }), fakeNode({ text: 'Back', footer: true })],
+  })
+  assert.equal(outcome.clicked, true)
+  assert.equal(outcome.matched, 'welcome-start')
+  assert.equal(hit.textContent, '开始设置')
+})
+
+test('L2: credit never clicks the recharge primary; it takes Next/Later', () => {
+  const recharge = fakeNode({ text: '去充值', className: 'action' })
+  const next = fakeNode({ text: '下一步', className: 'action laterAction' })
+  const { outcome, hit } = runOnboardingClick({ step: 'credit', regionChildren: [recharge, next] })
+  assert.equal(outcome.clicked, true)
+  assert.equal(outcome.matched, 'credit-next')
+  assert.equal(hit, next, 'the recharge primary must never be clicked')
+  assert.equal(recharge.clicked, 0)
+})
+
+test('L3: credit English copy also avoids "Add credits" and takes "Next"', () => {
+  const addCredits = fakeNode({ text: 'Add credits', className: 'action' })
+  const next = fakeNode({ text: 'Next', className: 'action laterAction' })
+  const { outcome, hit } = runOnboardingClick({ step: 'credit', regionChildren: [addCredits, next] })
+  assert.equal(outcome.matched, 'credit-next')
+  assert.equal(hit, next)
+  assert.equal(addCredits.clicked, 0)
+})
+
+test('L4: purpose selects a checkbox before the continue button exists, then continues', () => {
+  const office = fakeNode({ tag: 'input', attrs: { type: 'checkbox', 'aria-label': '办公与创作' }, checked: false })
+  const development = fakeNode({ tag: 'input', attrs: { type: 'checkbox', 'aria-label': '代码与开发' }, checked: false })
+  const first = runOnboardingClick({ step: 'purpose', regionChildren: [office, development] })
+  assert.equal(first.outcome.matched, 'purpose-select')
+  assert.ok(first.hit === office || first.hit === development, 'a purpose card must be selected first')
+  const developmentChecked = fakeNode({ tag: 'input', attrs: { type: 'checkbox' }, checked: true })
+  const primary = fakeNode({ text: '继续', inPrimaryAction: true })
+  const second = runOnboardingClick({ step: 'purpose', regionChildren: [developmentChecked, primary] })
+  assert.equal(second.outcome.matched, 'purpose-continue')
+  assert.equal(second.hit, primary)
+})
+
+test('L5: process selects a radio before the complete button exists, then completes', () => {
+  const radio = (value, checked) => fakeNode({ attrs: { 'data-process': value, 'aria-checked': String(checked) }, text: value })
+  const first = runOnboardingClick({ step: 'process', regionChildren: [radio('compact', false), radio('standard', false), radio('detailed', false)] })
+  assert.equal(first.outcome.matched, 'process-select')
+  const complete = fakeNode({ text: '进入应用', inPrimaryAction: true })
+  const second = runOnboardingClick({ step: 'process', regionChildren: [radio('compact', false), radio('standard', true), radio('detailed', false), complete] })
+  assert.equal(second.outcome.matched, 'process-complete')
+  assert.equal(second.hit, complete)
+})
+
+test('L6: a confirmation dialog is answered outside the region, never via recharge', () => {
+  const goToRecharge = fakeNode({ text: '前往充值', className: 'dialogButton' })
+  const understood = fakeNode({ text: '我知道了', className: 'dialogButton' })
+  const { outcome, hit } = runOnboardingClick({
+    step: 'credit',
+    regionChildren: [fakeNode({ text: '下一步' })],
+    dialogButtons: [goToRecharge, understood],
+  })
+  assert.equal(outcome.clicked, true)
+  assert.equal(outcome.matched, 'dialog')
+  assert.equal(hit, understood, 'the dialog must be answered, and never via the recharge action')
+  assert.equal(goToRecharge.clicked, 0)
+})
+
+test('L7: footer skip/back are never generically clicked', () => {
+  const { outcome } = runOnboardingClick({
+    step: 'purpose',
+    regionChildren: [
+      fakeNode({ tag: 'input', attrs: { type: 'checkbox' }, checked: true }),
+      fakeNode({ text: '跳过', footer: true }),
+      fakeNode({ text: '上一步', footer: true }),
+    ],
+  })
+  assert.equal(outcome.clicked, false, 'no non-footer action exists: nothing may be clicked')
+  assert.equal(outcome.reason, 'no-action-button')
+})
+
+// ---------------------------------------------------------------------------
+// M. Attested interpreter copy (--node-exe) — byte identity or refusal
+// ---------------------------------------------------------------------------
+
+const lstatOf = map => async path => {
+  const entry = map.get(path)
+  if (entry === undefined) throw Object.assign(new Error('not found'), { code: 'ENOENT' })
+  return entry
+}
+
+test('M1: default resolution uses the payload interpreter and records its hash', async () => {
+  const payload = await mkdtemp(join(tmpdir(), 'dsh-acc-node-'))
+  try {
+    const payloadNode = join(payload, 'node.exe')
+    const bytes = Buffer.from('mock interpreter 22.20.0 x64')
+    await writeFile(payloadNode, bytes)
+    const resolved = await resolveExecutionNode({ payloadNodePath: payloadNode, nodeExe: null })
+    assert.equal(resolved.source, 'payload')
+    assert.equal(resolved.executionPath, payloadNode)
+    assert.equal(resolved.executionSha256, createHash('sha256').update(bytes).digest('hex'))
+    assert.equal(resolved.referenceSha256, resolved.executionSha256)
+  } finally {
+    await rm(payload, { recursive: true, force: true })
+  }
+})
+
+test('M2: a byte-identical trusted copy is accepted and recorded as the execution path', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'dsh-acc-node-'))
+  try {
+    const payloadNode = join(dir, 'payload-node.exe')
+    const trusted = join(dir, 'trusted-node.exe')
+    const bytes = Buffer.from('mock interpreter 22.20.0 x64')
+    await writeFile(payloadNode, bytes)
+    await writeFile(trusted, bytes) // independent copy, same bytes
+    const resolved = await resolveExecutionNode({ payloadNodePath: payloadNode, nodeExe: trusted })
+    assert.equal(resolved.source, 'trusted-copy')
+    assert.equal(resolved.executionPath, trusted)
+    assert.equal(resolved.referencePath, payloadNode)
+    assert.equal(resolved.executionSha256, resolved.referenceSha256)
+  } finally {
+    await rm(dir, { recursive: true, force: true })
+  }
+})
+
+test('M3: a copy with different bytes is refused (never a different interpreter/version/arch)', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'dsh-acc-node-'))
+  try {
+    const payloadNode = join(dir, 'payload-node.exe')
+    const trusted = join(dir, 'other-node.exe')
+    await writeFile(payloadNode, Buffer.from('mock interpreter 22.20.0 x64'))
+    await writeFile(trusted, Buffer.from('mock interpreter 24.0.0 arm64'))
+    await assert.rejects(
+      () => resolveExecutionNode({ payloadNodePath: payloadNode, nodeExe: trusted }),
+      error => error.code === 'refused' && /not byte-identical.*expected.*observed/su.test(error.message),
+    )
+  } finally {
+    await rm(dir, { recursive: true, force: true })
+  }
+})
+
+test('M4: a symlink/junction/reparse point is refused even with identical bytes', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'dsh-acc-node-'))
+  try {
+    const payloadNode = join(dir, 'payload-node.exe')
+    const trusted = join(dir, 'linked-node.exe')
+    const bytes = Buffer.from('mock interpreter 22.20.0 x64')
+    await writeFile(payloadNode, bytes)
+    await writeFile(trusted, bytes)
+    const linkMap = new Map([
+      [trusted, { isFile: () => true, isSymbolicLink: () => true, dev: 1, ino: 1 }],
+      [payloadNode, { isFile: () => true, isSymbolicLink: () => false, dev: 2, ino: 2 }],
+    ])
+    await assert.rejects(
+      () => resolveExecutionNode({ payloadNodePath: payloadNode, nodeExe: trusted, lstatImpl: lstatOf(linkMap) }),
+      error => error.code === 'refused' && /regular non-linked file.*symlink, junction or reparse/su.test(error.message),
+    )
+  } finally {
+    await rm(dir, { recursive: true, force: true })
+  }
+})
+
+test('M5: the same underlying file (hardlink) is refused: it shares the reference label', async () => {
+  const payloadNode = 'C:\\payload\\node\\node.exe'
+  const trusted = 'C:\\trusted\\node.exe'
+  const sameFile = { isFile: () => true, isSymbolicLink: () => false, dev: 7, ino: 42 }
+  await assert.rejects(
+    () => resolveExecutionNode({
+      payloadNodePath: payloadNode,
+      nodeExe: trusted,
+      lstatImpl: lstatOf(new Map([[trusted, sameFile], [payloadNode, sameFile]])),
+      hashImpl: async () => 'a'.repeat(64),
+    }),
+    error => error.code === 'refused' && /SAME underlying file.*hardlink/su.test(error.message),
+  )
+})
+
+test('M6: refusal messages never carry a full 64-hex hash; the truncation passes the leak gate', () => {
+  const full = 'ef722d887efcebf23392bff68cef3988f74d460c3bf478f2299f9f55196f674c'
+  const truncated = truncateHash(full)
+  assert.ok(truncated.length < 20)
+  assert.ok(truncated.endsWith('…'))
+  // The gate's value rule requires a 40+ alnum run with a digit; 16 chars cannot trip it.
+  assert.deepEqual(findSecretLikeLeaks({ refusalReason: `hash mismatch: expected ${truncated}, observed ${truncated}` }), [])
+  assert.deepEqual(findSecretLikeLeaks({ refusalReason: `hash mismatch: expected ${full}, observed ${full}` }, { allowedStrings: [full] }).length >= 1, true,
+    'the observed (non-allow-listed) hash must remain gate-worthy, so refusals must truncate')
 })

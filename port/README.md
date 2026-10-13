@@ -23,14 +23,24 @@ Run the [qualification gate](tests/run-verification-gate.ps1) with an explicitly
 
 | | Value |
 |---|---|
-| Pinned reference revision (what the port builds and targets) | `477b4f420553e8a52c2fbccc464d7561b239c443`, tag [`dsh-v0.1.7-rc.2`](https://github.com/deepseek-ai/deepseek-harness/releases/tag/dsh-v0.1.7-rc.2), root package version `0.1.7-rc.2` |
-| Local checkout | `_upstream/` — **read-only reference; nothing under it is ever edited** |
-| Newer revision **checked only for drift, not adopted** | `639ed015397290b3745d163aafe02ffee4aa3f84`, tag [`dsh-v0.2.0-rc.2`](https://github.com/deepseek-ai/deepseek-harness/releases/tag/dsh-v0.2.0-rc.2) |
+| Supported target revision (what the port stages from and carries) | `d743267388641bc76f17c45ce8b4c231aed1d32c`, tag [`dsh-v0.2.1-alpha.2`](https://github.com/deepseek-ai/deepseek-harness/releases/tag/dsh-v0.2.1-alpha.2), root package version `0.2.1-alpha.2`, pnpm `11.28.5` |
+| Recorded target descriptor | [`scripts/lib/target-release.mjs`](scripts/lib/target-release.mjs) — the one recorded identity, with a fail-closed probe that validates any checkout against it |
+| Upstream checkout | explicit input, defaulting to `_upstream/`; `-UpstreamRoot <path>` or `$env:DSH_UPSTREAM_ROOT` selects an externally owned checkout. **Read-only either way; nothing under it is ever edited** |
+| Previous reviewed revision | `477b4f420553e8a52c2fbccc464d7561b239c443`, tag `dsh-v0.1.7-rc.2` |
 
-The port's product version (`port/src-tauri/app/tauri.conf.json`), the staged runtime payload
-(`port/runtime-payload/dsh/package.json`) and the preserved client are all at `0.1.7-rc.2`. The newer
-revision was inventoried in [`../docs/upstream-drift.md`](../docs/upstream-drift.md) and **has not been
-adopted** — no parity with it is claimed anywhere.
+The product version pins (`port/src-tauri/app/tauri.conf.json`, `port/src-tauri/Cargo.toml` and its lockfile, `port/fixtures/protocol/app-info.json`, the port-owned UI packages) are at `0.2.1-alpha.2`.
+
+**What is not yet at the target, and is not claimed to be.** The staged runtime payload
+(`port/runtime-payload/dsh/package.json`), the reviewed runtime-lock descriptors under
+`port/runtime-locks/`, and the account transformation reviews
+(`port/scripts/lib/account-*-runtime.mjs`) remain at the **previous reviewed release** `0.1.7-rc.2`.
+The account transforms refuse every other version, so a payload cannot be staged from an unreviewed
+transformation. Re-materializing the payload and its locks requires a *built* checkout of the target
+(sources alone are not enough: the transforms hash reviewed blocks of emitted `lib/`), and a lock
+refresh requires the target's own pnpm `11.28.5`. See
+[the upgrade record](../docs/harness-upgrade-0.2.1-alpha.2.md) for the drift inventory and the exact
+remaining prerequisites. No parity with the target is claimed for any artifact that has not been
+rebuilt from it.
 
 ## Layout
 

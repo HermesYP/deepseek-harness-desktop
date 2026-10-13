@@ -1019,7 +1019,7 @@ dependencies = [
 
 [[package]]
 name = "dsh-core"
-version = "0.1.7-rc.2"
+version = "0.2.1-alpha.2"
 dependencies = [
  "chrono",
  "dirs",
@@ -1040,7 +1040,7 @@ dependencies = [
 
 [[package]]
 name = "dsh-desktop"
-version = "0.1.7-rc.2"
+version = "0.2.1-alpha.2"
 dependencies = [
  "chrono",
  "dirs",
@@ -1069,7 +1069,7 @@ dependencies = [
 
 [[package]]
 name = "dsh-gateway"
-version = "0.1.7-rc.2"
+version = "0.2.1-alpha.2"
 dependencies = [
  "axum",
  "base64 0.22.1",
@@ -1095,7 +1095,7 @@ dependencies = [
 
 [[package]]
 name = "dsh-runtime"
-version = "0.1.7-rc.2"
+version = "0.2.1-alpha.2"
 dependencies = [
  "base64 0.22.1",
  "chrono",

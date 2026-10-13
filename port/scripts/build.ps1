@@ -85,11 +85,22 @@
   this switch a payload whose bytes differ from the record fails the stage, which
   is what makes dependency drift visible instead of silent.
 
+.PARAMETER UpstreamRoot
+  An explicitly owned upstream checkout to stage and link from, instead of the
+  repository's own `_upstream` reference. Precedence is this parameter, then
+  `$env:DSH_UPSTREAM_ROOT`, then `<repo>/_upstream`. The checkout is read-only:
+  nothing here writes to it. A missing checkout, a checkout with no root
+  `package.json`, or one without the files the runtime stage imports fails the
+  stage with an actionable message rather than falling back silently.
+
 .EXAMPLE
   .\port\scripts\build.ps1 -Stage all -Release
 
 .EXAMPLE
   .\port\scripts\build.ps1 -Stage core
+
+.EXAMPLE
+  .\port\scripts\build.ps1 -Stage runtime -UpstreamRoot C:\owned\dsh-0.2.1-alpha.2
 #>
 [CmdletBinding()]
 param(
@@ -112,7 +123,9 @@ param(
   [ValidatePattern('^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$')]
   [string]$RuntimeLockCandidateName,
   [string]$RuntimeLockStageRoot,
-  [string]$RuntimeLockCandidateRoot
+  [string]$RuntimeLockCandidateRoot,
+  # An explicitly owned upstream checkout. See .PARAMETER UpstreamRoot.
+  [string]$UpstreamRoot
 )
 
 $ErrorActionPreference = 'Stop'
@@ -120,7 +133,18 @@ Set-StrictMode -Version Latest
 
 $PortRoot = Split-Path -Parent $PSScriptRoot
 $RepoRoot = Split-Path -Parent $PortRoot
-$Upstream = Join-Path $RepoRoot '_upstream'
+# The upstream checkout is an explicit input rather than a fixed path, so an
+# externally owned qualification clone is a supported staging source. Precedence:
+# -UpstreamRoot, then $env:DSH_UPSTREAM_ROOT, then the repository's own checkout.
+$UpstreamRequested = $UpstreamRoot
+if (-not $UpstreamRequested) { $UpstreamRequested = $env:DSH_UPSTREAM_ROOT }
+if (-not $UpstreamRequested) { $UpstreamRequested = Join-Path $RepoRoot '_upstream' }
+# Canonicalize when it exists; otherwise keep the requested path so the failure
+# names what the caller asked for.
+$Upstream = $UpstreamRequested
+if (Test-Path -LiteralPath $UpstreamRequested -PathType Container) {
+  $Upstream = (Resolve-Path -LiteralPath $UpstreamRequested).Path
+}
 $UiDir = Join-Path $PortRoot 'ui'
 $TauriDir = Join-Path $PortRoot 'src-tauri'
 $AppDir = Join-Path $TauriDir 'app'
@@ -200,6 +224,43 @@ function Assert-Tool([string]$Name, [string]$Hint) {
   }
 }
 
+function Assert-UpstreamCheckout {
+  <#
+  .SYNOPSIS
+    Fail closed unless the resolved upstream checkout can serve every stage.
+  .DESCRIPTION
+    Three inputs are load-bearing: the root manifest (release version and the
+    pnpm packageManager every stage derives its toolchain from), the Desktop Host
+    protocol source the runtime staging imports `DESKTOP_HOST_PROTOCOL_VERSION`
+    from, and the package-set preparer it imports. A checkout missing any of them
+    is refused here rather than failing later inside staging.
+  #>
+  if (-not (Test-Path -LiteralPath $Upstream -PathType Container)) {
+    throw "The upstream checkout was not found at $Upstream. Pass -UpstreamRoot <path> or set DSH_UPSTREAM_ROOT, and run 'pnpm install; pnpm run build' there first (see docs/build-and-install.md section 2)."
+  }
+  foreach ($relative in @('package.json', 'apps\desktop\src\host-protocol.ts', 'apps\desktop\scripts\prepare-package-set.ts')) {
+    if (-not (Test-Path -LiteralPath (Join-Path $Upstream $relative) -PathType Leaf)) {
+      throw "The upstream checkout at $Upstream has no $relative; it cannot serve the runtime stage. Refusing to stage from a checkout that is not the supported target."
+    }
+  }
+}
+
+function Get-UpstreamPackageManager {
+  <#
+  .SYNOPSIS
+    The pnpm packageManager the upstream checkout declares, verbatim.
+  .DESCRIPTION
+    Staging resolves its pnpm entry point from this value, so it is read from the
+    checkout rather than repeated as a literal that can drift from it.
+  #>
+  $manifest = Get-Content -LiteralPath (Join-Path $Upstream 'package.json') -Raw | ConvertFrom-Json
+  $manager = [string]$manifest.packageManager
+  if (-not $manager.StartsWith('pnpm@')) {
+    throw "The upstream checkout at $Upstream declares no pnpm packageManager; refusing to guess the package manager."
+  }
+  return $manager
+}
+
 function Invoke-Checked([string]$File, [string[]]$Arguments, [string]$WorkDir) {
   Write-Host "    $File $($Arguments -join ' ')" -ForegroundColor DarkGray
   Push-Location $WorkDir
@@ -246,8 +307,9 @@ function Use-IsolatedHarnessHome([string]$Purpose) {
 
 function Test-Prerequisites {
   Write-Stage 'Prerequisites'
+  Assert-UpstreamCheckout
   Assert-Tool 'node' 'Install Node.js 22.19+ or 24+ (upstream engines range).'
-  Assert-Tool 'pnpm' 'Install pnpm 11.7.0 (matches upstream packageManager).'
+  Assert-Tool 'pnpm' "Install $((Get-UpstreamPackageManager)) (matches the target upstream packageManager)."
   Assert-Tool 'cargo' 'Install Rust via rustup with the x86_64-pc-windows-msvc toolchain.'
   if (-not (Test-Path (Join-Path $Upstream 'apps\web\dist'))) {
     throw "The reference web client has not been built. Run 'pnpm install; pnpm run build' in $Upstream first (see docs/build-and-install.md section 2)."
@@ -276,7 +338,8 @@ function Get-UpstreamCommit {
 
 function Build-Ui {
   Write-Stage 'Preserved web client shell (port/ui)'
-  Assert-Tool 'pnpm' 'Install pnpm 11.7.0.'
+  Assert-UpstreamCheckout
+  Assert-Tool 'pnpm' "Install $((Get-UpstreamPackageManager))."
 
   # `port/ui` declares no dependencies of its own (an empty manifest and an empty
   # lockfile importer), so `pnpm install` here is a no-op at best and previously
@@ -289,7 +352,7 @@ function Build-Ui {
   if (-not (Test-Path $linkToolchain)) {
     throw "UI toolchain linker is missing: $linkToolchain"
   }
-  & $linkToolchain
+  & $linkToolchain -UpstreamRoot $Upstream
   $vite = Join-Path $UiDir 'node_modules\vite\bin\vite.js'
   if (-not (Test-Path $vite)) {
     throw "UI toolchain is not linked: $vite is missing. Build the reference checkout first ('pnpm install; pnpm run build' in $Upstream), then re-run this stage."
@@ -422,6 +485,7 @@ function Assert-ResourceRootsForCompile {
 
 function Stage-Runtime {
   Write-Stage 'Supervised dsh runtime payload (staged, validated, then published atomically)'
+  Assert-UpstreamCheckout
   $runtimeTarget = Get-CurrentNodeTargetName
   if ($runtimeTarget -ne 'win-x64') {
     throw "Runtime target '$runtimeTarget' is explicitly unqualified; reviewed runtime locks currently exist only for win-x64. No payload was published."
@@ -542,6 +606,7 @@ function Stage-Runtime {
 
 function Stage-RuntimeLockRefresh {
   Write-Stage 'Runtime lock refresh (candidate only; no payload publication)'
+  Assert-UpstreamCheckout
   if ((Get-CurrentNodeTargetName) -ne 'win-x64') {
     throw 'Runtime lock refresh is currently qualified only for win-x64.'
   }
@@ -688,7 +753,7 @@ function Stage-RuntimeInto(
   # prepare-package-set.ts. Its roots are @deepseek-ai/dsh and
   # @deepseek-ai/dsh-desktop-host; required dependencies and peers (including
   # cordis-plugin-group) are traversed from their manifests, not hand-listed.
-  $packageManager = (Get-Content (Join-Path $Upstream 'package.json') -Raw | ConvertFrom-Json).packageManager
+  $packageManager = Get-UpstreamPackageManager
   $pnpmVersion = ([string]$packageManager -replace '^pnpm@', '').Split('+')[0]
   $pnpmEntry = Join-Path $env:LOCALAPPDATA "node\corepack\v1\pnpm\$pnpmVersion\bin\pnpm.mjs"
   if (-not (Test-Path $pnpmEntry)) { throw "Pinned pnpm entry point not found: $pnpmEntry" }
@@ -1096,7 +1161,7 @@ function Get-PayloadInputs([string]$StageRoot) {
   $inputs['accountData'] = (Get-FileHash -LiteralPath (Join-Path $TauriDir 'runtime\account-data.mjs') -Algorithm SHA256).Hash.ToLowerInvariant()
   $inputs['accountDataClient'] = (Get-FileHash -LiteralPath (Join-Path $UiDir 'account-data\client-state.mjs') -Algorithm SHA256).Hash.ToLowerInvariant()
 
-  $packageManager = (Get-Content (Join-Path $Upstream 'package.json') -Raw | ConvertFrom-Json).packageManager
+  $packageManager = Get-UpstreamPackageManager
   $inputs['upstreamPackageManager'] = [string]$packageManager
 
   $runtimeIdentityPath = Join-Path $StageRoot 'work\runtime-identity.json'

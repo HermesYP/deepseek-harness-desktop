@@ -85,6 +85,17 @@
   this switch a payload whose bytes differ from the record fails the stage, which
   is what makes dependency drift visible instead of silent.
 
+.PARAMETER RuntimeEsbuildPath
+  An optional source for the runtime staging child's esbuild compiler. The staging
+  program loads upstream TypeScript through `--import tsx/esm`, so it runs tsx's own
+  esbuild, which is a different release from the UI child's. By default that release
+  is resolved from the checkout's tsx dependency and copied into a trusted Medium
+  root outside the labelled tree. This parameter selects WHERE those same bytes come
+  from; the file must be byte-identical to the resolved compiler (otherwise the stage
+  refuses a substituted compiler), must be a regular non-link file, and must produce
+  a Medium child token. The override is scoped to the runtime staging child and
+  restored afterwards; it is never visible to the UI stage or the seal.
+
 .PARAMETER UpstreamRoot
   An explicitly owned upstream checkout to stage and link from, instead of the
   repository's own `_upstream` reference. Precedence is this parameter, then
@@ -124,6 +135,9 @@ param(
   [string]$RuntimeLockCandidateName,
   [string]$RuntimeLockStageRoot,
   [string]$RuntimeLockCandidateRoot,
+  # An optional byte-identical source for the runtime staging child's esbuild.
+  # See .PARAMETER RuntimeEsbuildPath.
+  [string]$RuntimeEsbuildPath,
   # An explicitly owned upstream checkout. See .PARAMETER UpstreamRoot.
   [string]$UpstreamRoot
 )
@@ -818,15 +832,29 @@ function Stage-RuntimeInto(
   # the Low-image interpreter staged inside the workspace. The staged bytes stay in
   # place because they are what ships.
   $executionNode = Resolve-DshStagingExecutionNode -StagedExecutable $stagingNode.Executable -AttestedPath $AttestedNodePath
+  # The staging program loads upstream TypeScript through `--import tsx/esm`, so tsx
+  # runs ITS OWN esbuild -- a different release from the UI child's (which is whatever
+  # `apps/web`'s Vite resolves). One process-wide ESBUILD_BINARY_PATH cannot serve
+  # both: pointing this child at the UI compiler makes tsx abort with "Host version
+  # 0.28.1 does not match binary version 0.25.12". Resolve the release this
+  # checkout's tsx ACTUALLY resolves (through its own dependency link, never by range
+  # matching) into a trusted Medium copy outside the labelled tree, so a normal build
+  # needs no manual environment. The seal needs none of this: it runs no TypeScript.
+  Import-Module (Join-Path $PackagingTests 'runtime-esbuild-qualification.psm1') -Force
+  $runtimeEsbuild = Resolve-DshTrustedRuntimeEsbuild -UpstreamRoot $Upstream -OverridePath $RuntimeEsbuildPath -RequestedRoot $qualificationRoot
   $oldNpmExecPath = $env:npm_execpath
   $oldPath = $env:PATH
   # TEMP/TMP are set per invocation and restored EXACTLY (absent stays absent, empty
   # stays empty) in the finally. A Medium child needs a Medium temp; leaving the
   # caller's TEMP pointed at a fixture root was a defect in this script's siblings.
+  # ESBUILD_BINARY_PATH is scoped and restored the same way, so the UI child can
+  # never inherit this compiler and this child can never inherit the UI's.
   $hadTemp = Test-Path -LiteralPath 'Env:TEMP'
   $hadTmp = Test-Path -LiteralPath 'Env:TMP'
   $oldTemp = if ($hadTemp) { $env:TEMP } else { $null }
   $oldTmp = if ($hadTmp) { $env:TMP } else { $null }
+  $hadEsbuildBinaryPath = Test-Path -LiteralPath 'Env:ESBUILD_BINARY_PATH'
+  $oldEsbuildBinaryPath = if ($hadEsbuildBinaryPath) { $env:ESBUILD_BINARY_PATH } else { $null }
   try {
     $env:npm_execpath = $pnpmEntry
     $env:PATH = (Split-Path -Parent $executionNode.Path) + [IO.Path]::PathSeparator + $oldPath
@@ -835,12 +863,15 @@ function Stage-RuntimeInto(
       $env:TMP = $executionNode.Temp
       Write-Host "    staging TEMP -> $($executionNode.Temp) (restored on exit)" -ForegroundColor DarkGray
     }
+    $env:ESBUILD_BINARY_PATH = $runtimeEsbuild.Path
+    Write-Host "    staging ESBUILD_BINARY_PATH -> $($runtimeEsbuild.Path) (esbuild $($runtimeEsbuild.Version), restored on exit)" -ForegroundColor DarkGray
     Invoke-Checked $executionNode.Path $nodeArgs $Upstream
   } finally {
     $env:npm_execpath = $oldNpmExecPath
     $env:PATH = $oldPath
     if ($hadTemp) { $env:TEMP = $oldTemp } else { Remove-Item -LiteralPath 'Env:TEMP' -ErrorAction SilentlyContinue }
     if ($hadTmp) { $env:TMP = $oldTmp } else { Remove-Item -LiteralPath 'Env:TMP' -ErrorAction SilentlyContinue }
+    if ($hadEsbuildBinaryPath) { $env:ESBUILD_BINARY_PATH = $oldEsbuildBinaryPath } else { Remove-Item -LiteralPath 'Env:ESBUILD_BINARY_PATH' -ErrorAction SilentlyContinue }
   }
 
   if (-not (Test-Path $identityFile)) {

@@ -442,6 +442,29 @@ test('sealing launches the pinned payload interpreter without a loader via the t
   assert.match(code, /packagingHelper:/)
 })
 
+test('the runtime stage resolves its own trusted esbuild and restores the child environment', () => {
+  const stage = code.slice(code.indexOf('function Stage-RuntimeInto'), code.indexOf('function Copy-PortPackages'))
+  assert.ok(stage.length > 0, 'the runtime stage body is present')
+  assert.match(stage, /Import-Module \(Join-Path \$PackagingTests 'runtime-esbuild-qualification\.psm1'\) -Force/)
+  assert.match(stage, /Resolve-DshTrustedRuntimeEsbuild -UpstreamRoot \$Upstream -OverridePath \$RuntimeEsbuildPath/)
+  // Scoped to THIS child and restored exactly, the same way TEMP/TMP are, so the UI
+  // child can never inherit tsx's compiler and this child can never inherit the UI's.
+  assert.match(stage, /\$hadEsbuildBinaryPath = Test-Path -LiteralPath 'Env:ESBUILD_BINARY_PATH'/)
+  assert.match(stage, /\$env:ESBUILD_BINARY_PATH = \$runtimeEsbuild\.Path/)
+  assert.match(stage, /if \(\$hadEsbuildBinaryPath\) \{ \$env:ESBUILD_BINARY_PATH = \$oldEsbuildBinaryPath \} else \{ Remove-Item -LiteralPath 'Env:ESBUILD_BINARY_PATH'/)
+
+  // The UI stage keeps its own compiler: it must not reach for the runtime one.
+  const ui = code.slice(code.indexOf('function Build-Ui'), code.indexOf('function Build-Core'))
+  assert.doesNotMatch(ui, /runtime-esbuild-qualification/)
+  assert.doesNotMatch(ui, /RuntimeEsbuildPath/)
+
+  const resolver = readFileSync(join(portRoot, 'tests', 'packaging', 'runtime-esbuild-qualification.psm1'), 'utf8')
+  assert.match(resolver, /node_modules\\esbuild\\package\.json/,
+    "the compiler is read from tsx's own resolved dependency link")
+  assert.doesNotMatch(resolver, /Satisfies/,
+    'the runtime resolver must never range-match: tsx declares a range that several installed releases satisfy')
+})
+
 test('runtime qualification isolates payload, manifest and interpreter observations', () => {
   assert.match(code, /\[ValidatePattern\('\^\[A-Za-z0-9\]\[A-Za-z0-9_\-\]\{0,63\}\$'\)\]/)
   assert.match(code, /\$qualificationRoot = Join-Path \$Scratch "rq-\$RuntimeQualificationName"/)

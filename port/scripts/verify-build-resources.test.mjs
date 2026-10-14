@@ -401,6 +401,39 @@ test('G15: hardlinked resource files remain refused', async () => {
   }
 })
 
+test('G16: a UTF-8 BOM in the physical metadata manifest is stripped before JSON.parse', async () => {
+  const { repo, cleanup, sourceDsh, sourceUi, exeDir, exe } = await buildFixture()
+  try {
+    const mirrorDsh = join(exeDir, 'dsh')
+    const mirrorUi = join(exeDir, 'ui')
+    const goodManifest = combinedManifest({ sourceDsh, sourceUi, mirrorDsh, mirrorUi })
+    const manifestPath = join(repo, 'physical-metadata-bom.json')
+    // Simulate PowerShell Set-Content -Encoding utf8: UTF-8 BOM + JSON body.
+    const bom = Buffer.from([0xef, 0xbb, 0xbf])
+    const body = Buffer.from(JSON.stringify(goodManifest), 'utf8')
+    await writeFile(manifestPath, Buffer.concat([bom, body]))
+    assert.equal(await runGuard({ repo, sourceDsh, sourceUi, exe, manifests: manifestPath }), 0,
+      'a UTF-8 BOM in the physical metadata manifest must be stripped before JSON.parse')
+  } finally {
+    await cleanup()
+  }
+})
+
+test('G17: malformed physical metadata refuses safely and is parsed before byte hashing', async () => {
+  const { repo, cleanup, sourceDsh, sourceUi, exe } = await buildFixture()
+  try {
+    const manifestPath = join(repo, 'malformed-metadata.json')
+    await writeFile(manifestPath, '\uFEFF{"invalid": "not-a-real-secret')
+    assert.equal(await runGuard({ repo, sourceDsh, sourceUi, exe, manifests: manifestPath }), 2,
+      'malformed JSON must be a safe refusal, not a JSON.parse internal-error')
+    const helper = await readFile(new URL('./verify-build-resources.mjs', import.meta.url), 'utf8')
+    const parseAt = helper.indexOf('const physicalManifest =')
+    const hashAt = helper.indexOf("const dsh = await qualifyMirror('dsh'")
+    assert.ok(parseAt >= 0 && hashAt > parseAt, 'metadata syntax is checked before the expensive tree walk/hash')
+    assert.match(helper, /malformed physical metadata JSON; content is never echoed/)
+  } finally { await cleanup() }
+})
+
 test('G13: standalone runs record limited-pass (no physical metadata)', async () => {
   const { repo, cleanup, sourceDsh, sourceUi, exe } = await buildFixture()
   try {

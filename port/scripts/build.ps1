@@ -368,18 +368,31 @@ function Get-CompiledResourceArtifactJson([string[]]$CargoArgs) {
 # Parse the captured cargo JSON stream for the dsh-desktop bin executable.
 # Fail-closed: zero or multiple distinct executables refuse. Malformed line
 # CONTENT is never echoed (sensitive compiler/build-script text).
-function Get-ArtifactExeFromCargoJson([string]$ArtifactJsonPath) {
+function Get-ArtifactExeFromCargoJson(
+  [string]$ArtifactJsonPath,
+  [ValidateSet('cargo', 'tauri-build')][string]$Stream = 'cargo'
+) {
   $exePaths = @()
   $lineNumber = 0
+  $buildFinished = $false
   foreach ($line in (Get-Content -LiteralPath $ArtifactJsonPath)) {
     $lineNumber += 1
     if ([string]::IsNullOrWhiteSpace($line)) { continue }
+    $trimmed = $line.Trim()
+    if ($Stream -eq 'tauri-build' -and -not ($trimmed.StartsWith('{') -or $trimmed.StartsWith('['))) { continue }
     try { $entry = $line | ConvertFrom-Json } catch { throw "malformed cargo JSON at line $lineNumber; line content is never echoed" }
-    if ($entry.reason -eq 'compiler-artifact' -and $entry.target.name -eq 'dsh-desktop' -and
-        $entry.target.kind -contains 'bin' -and $entry.executable) {
+    if ($entry.reason -ceq 'build-finished') {
+      if ($entry.success -isnot [bool] -or -not $entry.success) { throw 'cargo build-finished did not report success' }
+      $buildFinished = $true
+    }
+    if ($entry.reason -ceq 'compiler-artifact' -and $entry.target.name -ceq 'dsh-desktop' -and
+        $entry.target.kind -ccontains 'bin' -and $entry.executable) {
+      if ($entry.executable -isnot [string] -or -not [System.IO.Path]::IsPathRooted($entry.executable) -or
+          $entry.executable -match '^[A-Za-z]:(?:$|[^\\/])') { throw 'cargo executable must be an absolute path' }
       $exePaths += $entry.executable
     }
   }
+  if (-not $buildFinished) { throw 'captured cargo JSON has no successful build-finished record' }
   if ($exePaths.Count -eq 0) { throw 'no dsh-desktop bin artifact found in the captured cargo JSON' }
   # Force @() so Select-Object -Unique on a single-element string array
   # returns an array, not the string itself (whose [0] would be a character).
@@ -388,7 +401,10 @@ function Get-ArtifactExeFromCargoJson([string]$ArtifactJsonPath) {
   return $distinct[0]
 }
 
-function Assert-CompiledResourceMirrorsFromJson([string]$ArtifactJsonPath) {
+function Assert-CompiledResourceMirrorsFromJson(
+  [string]$ArtifactJsonPath,
+  [ValidateSet('cargo', 'tauri-build')][string]$Stream = 'cargo'
+) {
   $verifier = Join-Path $PortRoot 'scripts\verify-build-resources.mjs'
   $payloadNode = Join-Path $PortRoot 'runtime-payload\dsh\node\node.exe'
   if (-not (Test-Path -LiteralPath $payloadNode -PathType Leaf)) {
@@ -397,7 +413,7 @@ function Assert-CompiledResourceMirrorsFromJson([string]$ArtifactJsonPath) {
   $guardNode = (Resolve-DshTrustedExecutionNodeCached -StagedExecutable $payloadNode).Path
   # Derive the artifact exe, then generate physical-metadata manifests for ALL
   # FOUR trees (sealed sources + compiled mirrors).
-  $exe = Get-ArtifactExeFromCargoJson $ArtifactJsonPath
+  $exe = Get-ArtifactExeFromCargoJson -ArtifactJsonPath $ArtifactJsonPath -Stream $Stream
   $exeDir = Split-Path $exe
   $manifestPath = "$ArtifactJsonPath.physical-metadata.json"
   Write-CombinedResourcePhysicalMetadata `
@@ -409,6 +425,7 @@ function Assert-CompiledResourceMirrorsFromJson([string]$ArtifactJsonPath) {
   Invoke-Checked $guardNode @(
     $verifier,
     '--artifact-json', $ArtifactJsonPath,
+    '--stream', $Stream,
     '--source-dsh', (Join-Path $PortRoot 'runtime-payload\dsh'),
     '--source-ui', (Join-Path $UiDir 'dist'),
     '--physical-metadata', $manifestPath
@@ -448,17 +465,21 @@ function Assert-CompiledResourceMirrorsForExe([string]$ExePath) {
 # Generates a manifest for ONE tree; the caller combines them. No content is
 # read or logged.
 function Get-ResourceTreePhysicalMetadata([string]$Root) {
+  $Root = [System.IO.Path]::GetFullPath($Root)
   $allowed = @('Directory', 'Archive', 'ReadOnly', 'NotContentIndexed')
-  $entries = @()
+  $entries = [System.Collections.Generic.List[object]]::new()
   $stack = [System.Collections.Generic.Stack[string]]::new()
-  $stack.Push((Join-Path $Root '.'))
+  # Do not append '.': EnumerateFileSystemEntries preserves that component and
+  # would emit './file' metadata keys instead of the verifier's 'file' keys.
+  $stack.Push($Root)
   $rootItem = Get-Item -LiteralPath $Root -Force
+  if (-not $rootItem.PSIsContainer) { throw 'resource tree root must be a directory; nothing was qualified' }
   foreach ($token in ($rootItem.Attributes.ToString().Split(','))) {
     $t = $token.Trim()
     if ($t -eq '') { continue }
     if ($allowed -notcontains $t) { throw "resource tree root '$Root' carries unknown attribute '$t' (SparseFile, ReparsePoint, Encrypted etc. are refused); nothing was qualified." }
   }
-  $entries += @{ path = '.'; kind = 'directory'; attributes = $rootItem.Attributes.ToString() }
+  $entries.Add(@{ path = '.'; kind = 'directory'; attributes = $rootItem.Attributes.ToString() })
   while ($stack.Count -gt 0) {
     $dir = $stack.Pop()
     foreach ($child in [System.IO.Directory]::EnumerateFileSystemEntries($dir)) {
@@ -470,14 +491,14 @@ function Get-ResourceTreePhysicalMetadata([string]$Root) {
       }
       $rel = $child.Substring($Root.Length).TrimStart('\', '/').Replace('\', '/')
       if ($item.PSIsContainer) {
-        $entries += @{ path = $rel; kind = 'directory'; attributes = $item.Attributes.ToString() }
+        $entries.Add(@{ path = $rel; kind = 'directory'; attributes = $item.Attributes.ToString() })
         $stack.Push($child)
       } else {
-        $entries += @{ path = $rel; kind = 'file'; attributes = $item.Attributes.ToString() }
+        $entries.Add(@{ path = $rel; kind = 'file'; attributes = $item.Attributes.ToString() })
       }
     }
   }
-  return $entries
+  return $entries.ToArray()
 }
 
 # Generate the COMBINED physical-metadata manifest for all four trees, bound
@@ -485,10 +506,10 @@ function Get-ResourceTreePhysicalMetadata([string]$Root) {
 function Write-CombinedResourcePhysicalMetadata([string]$SourceDsh, [string]$SourceUi, [string]$MirrorDsh, [string]$MirrorUi, [string]$ManifestPath) {
   $manifest = @{
     schemaVersion = 1
-    sourceDsh = @{ root = [System.IO.Path]::GetFullPath($SourceDsh); entries = (Get-ResourceTreePhysicalMetadata $SourceDsh) }
-    sourceUi = @{ root = [System.IO.Path]::GetFullPath($SourceUi); entries = (Get-ResourceTreePhysicalMetadata $SourceUi) }
-    mirrorDsh = @{ root = [System.IO.Path]::GetFullPath($MirrorDsh); entries = (Get-ResourceTreePhysicalMetadata $MirrorDsh) }
-    mirrorUi = @{ root = [System.IO.Path]::GetFullPath($MirrorUi); entries = (Get-ResourceTreePhysicalMetadata $MirrorUi) }
+    sourceDsh = @{ root = [System.IO.Path]::GetFullPath($SourceDsh).TrimEnd('\', '/'); entries = @(Get-ResourceTreePhysicalMetadata $SourceDsh) }
+    sourceUi = @{ root = [System.IO.Path]::GetFullPath($SourceUi).TrimEnd('\', '/'); entries = @(Get-ResourceTreePhysicalMetadata $SourceUi) }
+    mirrorDsh = @{ root = [System.IO.Path]::GetFullPath($MirrorDsh).TrimEnd('\', '/'); entries = @(Get-ResourceTreePhysicalMetadata $MirrorDsh) }
+    mirrorUi = @{ root = [System.IO.Path]::GetFullPath($MirrorUi).TrimEnd('\', '/'); entries = @(Get-ResourceTreePhysicalMetadata $MirrorUi) }
   }
   $manifest | ConvertTo-Json -Depth 4 | Set-Content -LiteralPath $ManifestPath -Encoding utf8
 }
@@ -1514,6 +1535,24 @@ recorded diff.
 "@
 }
 
+function Assert-BundleGuardConfiguration([string]$ConfigRoot) {
+  if (-not [string]::IsNullOrWhiteSpace($env:TAURI_CONFIG)) {
+    throw 'TAURI_CONFIG overlays are unsupported by the resource guard; clear the override before bundling'
+  }
+  # These CLI auto-merged overlays could inject a post-qualification hook. Until
+  # merged configuration is explicitly qualified, refuse them rather than guess.
+  foreach ($overlay in @('tauri.windows.conf.json', 'tauri.windows.conf.json5', 'Tauri.windows.toml')) {
+    if (Test-Path -LiteralPath (Join-Path $ConfigRoot $overlay)) {
+      throw 'platform configuration overlays are unsupported by the resource guard'
+    }
+  }
+  $tauriConf = Get-Content -LiteralPath (Join-Path $ConfigRoot 'tauri.conf.json') -Raw | ConvertFrom-Json
+  $hook = $tauriConf.build.beforeBundleCommand
+  if ($null -ne $hook -and ($hook -isnot [string] -or -not [string]::IsNullOrWhiteSpace($hook))) {
+    throw 'build.beforeBundleCommand is configured; a post-qualification hook could mutate the guarded resource trees'
+  }
+}
+
 function Build-Bundle {
   Write-Stage 'Release bundle and Windows installer (NSIS)'
   Assert-Tool 'cargo' 'Install Rust via rustup.'
@@ -1528,17 +1567,44 @@ function Build-Bundle {
     throw "Another cargo/rustc process is running ($($running.Count) of them): $(($running | ForEach-Object { "$($_.ProcessName)($($_.Id))" }) -join ', '). A bundling build needs the target directory to itself; wait for it to finish."
   }
 
-  # INTEGRATION GAP (honest): the bundle stage compiles the shell AND copies
-  # the resource mirrors in one step. The tauri CLI does not re-emit the cargo
-  # message stream, and a second cargo build could change the feature set and
-  # overwrite the packaged executable. The CORE stage's full resource
-  # qualification (exact membership + byte identity + physical metadata on all
-  # four trees) is the authoritative gate; the bundle stage builds from the
-  # same already-qualified source trees. A narrow bundle-stage guard requires
-  # tauri-CLI stream forwarding or a validated physical-metadata manifest, both
-  # of which need further integration work outside this scope.
-  Invoke-Checked 'cargo' @('tauri', 'build') $TauriDir
-  $nsis = Join-Path $TauriDir 'target\release\bundle\nsis'
+  # Fail closed if a beforeBundleCommand hook is configured: it could mutate
+  # the source trees AFTER the resource guard has qualified them, which would
+  # invalidate the physical-metadata and byte-identity proofs.
+  Assert-BundleGuardConfiguration -ConfigRoot $AppDir
+
+  # Split build and bundle: the tauri CLI forwards trailing ARGS to the cargo
+  # runner (help-verified: "[ARGS]... Command line arguments passed to the
+  # runner"). The forwarded --message-format=json-render-diagnostics makes the
+  # original compile emit the cargo JSON message stream on stdout. The stream
+  # is captured to a scratch file (stderr: rendered diagnostics, visible).
+  # The resource guard then derives the exe from that stream and qualifies all
+  # four trees (sealed sources + compiled mirrors) before the bundle step.
+  $tauriOutput = Join-Path $Scratch ("tauri-build-{0}.json" -f [guid]::NewGuid().ToString('N'))
+  $previousPreference = $ErrorActionPreference
+  $ErrorActionPreference = 'Continue'
+  Push-Location $TauriDir
+  try {
+    & cargo @('tauri', 'build', '--no-bundle', '--', '--message-format=json-render-diagnostics') > $tauriOutput
+    $tauriExit = $LASTEXITCODE
+  } finally {
+    $ErrorActionPreference = $previousPreference
+    Pop-Location
+  }
+  if ($tauriExit -ne 0) { throw "cargo tauri build failed with exit code $tauriExit" }
+
+  # Derive the artifact exe from the captured tauri-build stream.
+  $exe = Get-ArtifactExeFromCargoJson -ArtifactJsonPath $tauriOutput -Stream 'tauri-build'
+  $exeDir = Split-Path $exe
+
+  # The shared guard generates physical metadata and verifies the original CLI
+  # stream plus all four trees, with JSON-looking malformed lines still refused.
+  Assert-CompiledResourceMirrorsFromJson -ArtifactJsonPath $tauriOutput -Stream 'tauri-build'
+
+  # Bundle the qualified artifacts. No recompile: the bundle step packages
+  # the already-built binaries and reads the SOURCE trees (which the runtime
+  # stage sealed and the guard proved the mirrors match). Same env/profile.
+  Invoke-Checked 'cargo' @('tauri', 'bundle') $TauriDir
+  $nsis = Join-Path $exeDir 'bundle\nsis'
   if (Test-Path $nsis) {
     Write-Host "    installer output: $nsis" -ForegroundColor Green
     Get-ChildItem $nsis -File | ForEach-Object { Write-Host "      $($_.Name)  $([math]::Round($_.Length / 1MB, 2)) MB" }
@@ -1589,6 +1655,7 @@ function Test-Packaging {
     @{ Name = 'reviewed runtime lock inputs'; Path = (Join-Path $PackagingTests 'runtime-lock-inputs.test.mjs') }
     @{ Name = 'final runtime descriptor'; Path = (Join-Path $PackagingTests 'runtime-seal.test.mjs') }
     @{ Name = 'build order and safety'; Path = (Join-Path $PackagingTests 'build-script.test.mjs') }
+    @{ Name = 'compiled resource guard functions'; Path = (Join-Path $PackagingTests 'resource-guard-functions.test.ps1') }
     @{ Name = 'installer hook control flow'; Path = (Join-Path $PackagingTests 'nsis-hook-behavior.ps1') }
     @{ Name = 'installed qualification safety guards'; Path = (Join-Path $PackagingTests 'verify-installed-guards.ps1') }
     @{ Name = 'qualification gate contract'; Path = (Join-Path $PackagingTests 'gate-contract.test.mjs') }

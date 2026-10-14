@@ -480,6 +480,49 @@ test('runtime qualification isolates payload, manifest and interpreter observati
   assert.match(code, /Join-Path \$qualificationRoot 'node-identity.json'/)
 })
 
+test('both build lanes guard the original captured artifact stream before packaging', () => {
+  const core = code.slice(code.indexOf('function Build-Core'), code.indexOf('function Get-PayloadInputs'))
+  assert.match(core, /Get-CompiledResourceArtifactJson/)
+  assert.match(core, /Assert-CompiledResourceMirrorsFromJson/)
+  const bundle = code.slice(code.indexOf('function Build-Bundle'), code.indexOf('function Test-InterfaceFixtures'))
+  const compileAt = bundle.indexOf("'build', '--no-bundle'")
+  const guardAt = bundle.indexOf("Assert-CompiledResourceMirrorsFromJson -ArtifactJsonPath $tauriOutput -Stream 'tauri-build'")
+  const bundleAt = bundle.indexOf("Invoke-Checked 'cargo' @('tauri', 'bundle')")
+  assert.ok(compileAt >= 0 && guardAt > compileAt && bundleAt > guardAt)
+  assert.equal((bundle.match(/'tauri', 'build'/g) ?? []).length, 1, 'no second compilation after qualification')
+  assert.doesNotMatch(bundle, /Assert-CompiledResourceMirrorsFromTauriStream/)
+  assert.match(bundle, /\$nsis = Join-Path \$exeDir 'bundle\\nsis'/)
+})
+
+test('shared guard passes the same stream mode to executable derivation and verification', () => {
+  const helper = code.slice(code.indexOf('function Assert-CompiledResourceMirrorsFromJson'), code.indexOf('function Assert-CompiledResourceMirrorsForExe'))
+  assert.match(helper, /Get-ArtifactExeFromCargoJson -ArtifactJsonPath \$ArtifactJsonPath -Stream \$Stream/)
+  assert.match(helper, /'--stream', \$Stream/)
+  assert.match(helper, /Write-CombinedResourcePhysicalMetadata/)
+  assert.match(helper, /'--physical-metadata', \$manifestPath/)
+})
+
+test('bundle configuration refuses post-guard mutation and unsupported overlays before compilation', () => {
+  const helper = code.slice(code.indexOf('function Assert-BundleGuardConfiguration'), code.indexOf('function Build-Bundle'))
+  assert.match(helper, /TAURI_CONFIG/)
+  assert.match(helper, /tauri\.windows\.conf\.json5/)
+  assert.match(helper, /Tauri\.windows\.toml/)
+  assert.match(helper, /\$hook -isnot \[string\]/)
+  assert.doesNotMatch(helper, /\$hook\.Trim\(/, 'object-form hooks fail closed without a string-method crash')
+  const bundle = code.slice(code.indexOf('function Build-Bundle'), code.indexOf('function Test-InterfaceFixtures'))
+  assert.ok(bundle.indexOf('Assert-BundleGuardConfiguration') < bundle.indexOf("'build', '--no-bundle'"))
+})
+
+test('physical metadata walks canonical roots without dot-prefixed children or quadratic accumulation', () => {
+  const helper = code.slice(code.indexOf('function Get-ResourceTreePhysicalMetadata'), code.indexOf('function Use-IsolatedHarnessHome'))
+  assert.match(helper, /\$Root = \[System\.IO\.Path\]::GetFullPath\(\$Root\)/)
+  assert.match(helper, /\$stack\.Push\(\$Root\)/)
+  assert.doesNotMatch(helper, /Join-Path \$Root '\.'/)
+  assert.doesNotMatch(helper, /Get-ChildItem[^\n]*-Recurse/)
+  assert.doesNotMatch(helper, /\$entries \+=/)
+  assert.match(helper, /entries = @\(Get-ResourceTreePhysicalMetadata/)
+})
+
 const windowsOnly = { skip: process.platform !== 'win32' }
 const invokeQualification = (stage, name) => {
   const scratch = join(portRoot, '.scratch')

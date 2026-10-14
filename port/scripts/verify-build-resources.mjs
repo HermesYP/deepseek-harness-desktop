@@ -396,11 +396,21 @@ async function qualifyMirror(label, sourceDir, mirrorDir) {
  */
 const PHYSICAL_METADATA_SCHEMA_VERSION = 1
 
-async function applyPhysicalMetadataManifest(manifestPath, trees) {
-  const manifestRaw = JSON.parse(await readFile(manifestPath, 'utf8'))
-  if (manifestRaw.schemaVersion !== PHYSICAL_METADATA_SCHEMA_VERSION) {
-    throw refused(`physical metadata manifest schemaVersion is ${manifestRaw.schemaVersion}, expected ${PHYSICAL_METADATA_SCHEMA_VERSION}`)
+async function readPhysicalMetadataManifest(manifestPath) {
+  // Decode PowerShell's BOM and reject malformed metadata before any hashing.
+  // Never echo JSON.parse's input fragment: manifest content is not diagnostic.
+  const { text } = decodeMaybeBom(await readFile(manifestPath))
+  let manifestRaw
+  try { manifestRaw = JSON.parse(text) } catch {
+    throw refused('malformed physical metadata JSON; content is never echoed')
   }
+  if (manifestRaw?.schemaVersion !== PHYSICAL_METADATA_SCHEMA_VERSION) {
+    throw refused(`physical metadata manifest schemaVersion is ${manifestRaw?.schemaVersion}, expected ${PHYSICAL_METADATA_SCHEMA_VERSION}`)
+  }
+  return manifestRaw
+}
+
+async function applyPhysicalMetadataManifest(manifestRaw, manifestPath, trees) {
   const ALLOWED_TOKENS = new Set(['Directory', 'Archive', 'ReadOnly', 'NotContentIndexed'])
   const sections = {}
   for (const key of ['sourceDsh', 'sourceUi', 'mirrorDsh', 'mirrorUi']) {
@@ -536,6 +546,9 @@ export async function run(argv) {
   try {
     assertNoStagedSegment('--source-dsh', args.sourceDsh)
     assertNoStagedSegment('--source-ui', args.sourceUi)
+    const physicalManifest = args.physicalMetadata === null
+      ? null
+      : await readPhysicalMetadataManifest(args.physicalMetadata)
 
     let exe = args.exe
     if (exe === null) {
@@ -571,7 +584,7 @@ export async function run(argv) {
     // an honest limited-pass (the Node-only helper cannot see NTFS SparseFile
     // or the full ReparsePoint class).
     if (args.physicalMetadata !== null) {
-      record.physicalMetadata = await applyPhysicalMetadataManifest(args.physicalMetadata, {
+      record.physicalMetadata = await applyPhysicalMetadataManifest(physicalManifest, args.physicalMetadata, {
         sourceDsh: { dir: args.sourceDsh, walked: dsh.walked.source, kinds: dsh.kinds.source },
         sourceUi: { dir: args.sourceUi, walked: ui.walked.source, kinds: ui.kinds.source },
         mirrorDsh: { dir: mirrorDsh, walked: dsh.walked.mirror, kinds: dsh.kinds.mirror },

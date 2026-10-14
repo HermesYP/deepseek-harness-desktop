@@ -41,11 +41,16 @@ import {
   REQUIRED_CHECK_IDS,
   SETTINGS_MARKER_KEY,
   SETTINGS_MARKER_VALUE,
+  TERMINAL_CLOSE_EXPRESSION,
+  TERMINAL_OPEN_EXPRESSION,
+  TERMINAL_STATE_EXPRESSION,
   buildChildEnvironment,
   buildFixturePatch,
   computeVerdict,
   deriveIsolationPaths,
   evaluateShellUsability,
+  findNodeDescendant,
+  findPtyChild,
   gracefulQuit,
   identityIsComplete,
   isBootReady,
@@ -57,6 +62,7 @@ import {
   runAcceptance,
   runOnboardingScenario,
   truncateHash,
+  ptyTerminateFixPresent,
 } from './native-acceptance-runner.mjs'
 import { findSecretLikeLeaks } from '../native-cdp/native-cdp-probe.mjs'
 
@@ -448,7 +454,7 @@ function makeFakeChild(pid) {
  * `variant` 1 walks the onboarding flow; variant 2 (post-restart) has no
  * onboarding region and answers the marker read.
  */
-function makeFakeConnection({ gatewayOrigin, child, identityRegistry, variant, fixtureState }) {
+function makeFakeConnection({ gatewayOrigin, child, identityRegistry, variant, fixtureState, ptyState }) {
   let onboardingStage = 0
   const hostFacts = () => ({
     record: 'host-facts',
@@ -512,11 +518,17 @@ function makeFakeConnection({ gatewayOrigin, child, identityRegistry, variant, f
       }
       if (expression.includes('chat-observe')) return { record: 'chat-observe', fixtureReplyVisible: true, composerEnabled: true }
       if (expression.includes('settings-open')) return { record: 'settings-open', clicked: true }
+      if (expression.includes('terminal-open')) { ptyState.visible = true; return { record: 'terminal-open', clicked: true } }
+      if (expression.includes('terminal-state')) return { record: 'terminal-state', surfacePresent: ptyState.visible, inputPresent: ptyState.visible }
+      if (expression.includes('terminal-close')) { ptyState.visible = false; return { record: 'terminal-close', clicked: true, matched: 'close' } }
       if (expression.includes('surface-facts')) {
         return { record: 'surface-facts', textLength: 4000, accountSurfaceMentioned: true, updatesSurfaceMentioned: true, settingsSurfaceMounted: true }
       }
       if (expression.includes('update-status')) {
         return { record: 'update-status', bridge: true, resolved: true, phase: 'idle', phaseKnown: true }
+      }
+      if (expression.includes('runtime-digest')) {
+        return { record: 'runtime-digest', bridge: true, resolved: true, state: 'ready', lastErrorPresent: false, startedAtDigest: 'aaaa1111' }
       }
       if (expression.includes('settings-marker') && expression.includes('read')) {
         return { record: 'settings-marker-read', bridge: true, resolved: true, valueMatches: true }
@@ -597,7 +609,7 @@ test('I1: the full mocked run is green only on the complete happy path, leaks no
       }
     }
 
-    const args = parseArgs(['--exe', exePath, '--sha256', sha256, '--repo', repo, '--stamp', 'mock1'])
+    const args = parseArgs(['--exe', exePath, '--sha256', sha256, '--repo', repo, '--stamp', 'mock1', '--without-pty-lane'])
     const record = await runAcceptance(args, {
       fetchImpl: async () => ({ json: async () => ({ Browser: 'Edg/120.0' }) }),
       sleepImpl: async () => {},
@@ -673,7 +685,7 @@ test('I3: missing runtime payload is a refusal, never a launch attempt', async (
     await writeFile(exePath, bytes)
     const sha256 = createHash('sha256').update(bytes).digest('hex')
     let spawnCalls = 0
-    const args = parseArgs(['--exe', exePath, '--sha256', sha256, '--repo', repo, '--stamp', 'mock3'])
+    const args = parseArgs(['--exe', exePath, '--sha256', sha256, '--repo', repo, '--stamp', 'mock3', '--runtime-dir', join(repo, 'absent-payload')])
     const record = await runAcceptance(args, {
       spawnImpl: async () => { spawnCalls += 1; throw new Error('must never spawn') },
       sleepImpl: async () => {},
@@ -746,6 +758,139 @@ test('K1: the staged patch is a plain-YAML overlay bound to the fixture origin',
   assert.equal(baseURLs[0], 'baseURL: http://127.0.0.1:9471/v1')
   assert.ok(!patch.includes(FIXTURE_API_KEY), 'the key value must never appear in staged config')
   assert.ok(patch.includes(`apiKeyEnv: ${FIXTURE_KEY_ENV}`), 'the credential reference must be the env-var NAME')
+})
+
+test('I5: exe-relative default mode proves the packaged node and the PTY termination lane end to end', async () => {
+  const repo = await mkdtemp(join(tmpdir(), 'dsh-acc-repo-'))
+  try {
+    // The candidate exe BESIDE its packaged payload: <exeDir>/dsh/... (the
+    // resources the build copies into the Medium target root).
+    const candidateDir = join(repo, 'candidate')
+    const payloadDir = join(candidateDir, 'dsh')
+    const exePath = join(candidateDir, 'dsh-desktop.exe')
+    const bytes = Buffer.from('MZ mocked debug candidate (packaged beside payload)')
+    await mkdir(candidateDir, { recursive: true })
+    await writeFile(exePath, bytes)
+    const sha256 = createHash('sha256').update(bytes).digest('hex')
+    await mkdir(join(payloadDir, 'node'), { recursive: true })
+    await writeFile(join(payloadDir, 'adapter.mjs'), 'export default 1\n')
+    const nodeBytes = Buffer.from('mock packaged interpreter')
+    await writeFile(join(payloadDir, 'node', 'node.exe'), nodeBytes)
+    await writeFile(join(payloadDir, 'desktop-runtime.json'), JSON.stringify({ node: { version: '22.20.0', target: 'x86_64-pc-windows-msvc' } }))
+    // A node-pty Windows agent in the PATCHED shape (every kill drains).
+    await mkdir(join(payloadDir, 'node_modules', 'node-pty', 'lib'), { recursive: true })
+    await writeFile(join(payloadDir, 'node_modules', 'node-pty', 'lib', 'windowsPtyAgent.js'), [
+      'function conpty() {',
+      '  this._ptyNative.kill(this._pty, this._useConptyDll);',
+      '  this._conoutSocketWorker.dispose();',
+      '}',
+    ].join('\n'))
+    const shellDir = join(repo, 'port', 'ui', 'dist')
+    await mkdir(shellDir, { recursive: true })
+    await writeFile(join(shellDir, 'index.html'), '<html></html>')
+
+    const identityRegistry = new Map()
+    const envCaptures = []
+    const HOST_PID = 5100
+    const NODE_PID = 5101
+    const PWSH_PID = 5102
+    const ptyState = { visible: false }
+    const spawnImpl = async ({ exe, env }) => {
+      envCaptures.push({ ...env })
+      const child = makeFakeChild(HOST_PID)
+      identityRegistry.set(child.pid, { exited: false })
+      await writeFile(env.DSH_DESKTOP_DEV_URL_FILE, `http://127.0.0.1:3099/?token=${FAKE_TOKEN}\n`, 'utf8')
+      await writeFile(env.DSH_DESKTOP_DEV_BOOT_FILE, JSON.stringify({
+        streamBaseUrl: 'http://127.0.0.1:3099', bootstrapBatchUrl: 'http://127.0.0.1:3099/x.js?rev=abc', graphRevision: 'abc',
+      }), 'utf8')
+      await mkdir(env.DSH_DESKTOP_USER_DATA_DIR, { recursive: true })
+      await writeFile(join(env.DSH_DESKTOP_USER_DATA_DIR, 'settings.json'), JSON.stringify({
+        schemaVersion: 1, settings: { [SETTINGS_MARKER_KEY]: SETTINGS_MARKER_VALUE },
+      }), 'utf8')
+      return {
+        child,
+        identityAtSpawn: { available: true, status: 'present', pid: child.pid, exe, creationTicks: '133900000000005100' },
+      }
+    }
+    const identityImpl = async pid => {
+      const entry = identityRegistry.get(pid)
+      if (!entry || !entry.exited) {
+        return { available: true, status: 'present', pid, exe: exePath, creationTicks: '133900000000005100' }
+      }
+      return { available: false, status: 'absent', pid: null, exe: null, creationTicks: null, reason: 'no process with that pid exists' }
+    }
+    const tableImpl = async () => {
+      const rows = [
+        { pid: HOST_PID, parentPid: 0, creationTicks: '133900000000005100', exe: exePath, name: 'dsh-desktop.exe' },
+        { pid: NODE_PID, parentPid: HOST_PID, creationTicks: '133900000000005101', exe: join(payloadDir, 'node', 'node.exe'), name: 'node.exe' },
+      ]
+      if (ptyState.visible) {
+        rows.push({ pid: PWSH_PID, parentPid: HOST_PID, creationTicks: '133900000000005102', exe: 'C:\\Program Files\\PowerShell\\7\\pwsh.exe', name: 'pwsh.exe' })
+      }
+      return { available: true, rows, rejected: 0, truncated: false, observedAtTicks: 134000000000000000n }
+    }
+    const fixtureState = {
+      requestCount: 0, authAcceptedCount: 2, badAuthCount: 0, toolRoundAnswers: 0,
+      finalReplies: 1, cancelMarkerRequests: 1, cancelledCount: 0, completedSlowStreamCount: 0,
+      lastFinishReason: 'stop', lastModelWasFixture: true, errorCount: 0, closed: false,
+      providerLabel: 'fixture-acceptance (LOCAL TEST FIXTURE)', protocol: 'openai-completions',
+    }
+    const fixtureFactory = async () => ({
+      origin: 'http://127.0.0.1:9471', port: 9471, facts: () => ({ ...fixtureState }), close: async () => {},
+    })
+    let attachCalls = 0
+    const firstChildRef = { current: null }
+    const secondChildRef = { current: null }
+    const cdpAttach = async ({ canonicalOwnedOrigin }) => {
+      attachCalls += 1
+      assert.equal(canonicalOwnedOrigin, 'http://127.0.0.1:3099')
+      const child = attachCalls === 1 ? firstChildRef.current : secondChildRef.current
+      return {
+        connection: makeFakeConnection({ gatewayOrigin: 'http://127.0.0.1:3099', child, identityRegistry, variant: attachCalls, fixtureState, ptyState }),
+        targetId: `t${attachCalls}`,
+      }
+    }
+
+    const args = parseArgs(['--exe', exePath, '--sha256', sha256, '--repo', repo, '--stamp', 'mock5'])
+    const record = await runAcceptance(args, {
+      fetchImpl: async () => ({ json: async () => ({ Browser: 'Edg/120.0' }) }),
+      sleepImpl: async () => {},
+      spawnImpl: async options => {
+        const launched = await spawnImpl(options)
+        if (firstChildRef.current === null) firstChildRef.current = launched.child
+        else secondChildRef.current = launched.child
+        return launched
+      },
+      identityImpl, tableImpl, fixtureFactory, cdpAttach,
+    })
+
+    assert.equal(record.verdict, 'pass', `expected pass, got ${record.verdict}; failed=${JSON.stringify(record.failedRequiredChecks)} missing=${JSON.stringify(record.missingRequiredChecks)}`)
+    assert.equal(record.runtime.mode, 'exe-relative-default')
+    assert.equal(record.runtime.packagedCandidate.present, true)
+    assert.equal(record.runtime.packagedCandidate.nodeSha256, createHash('sha256').update(nodeBytes).digest('hex'))
+    assert.equal(record.runtime.defaultNodeProven.observed, true)
+    assert.equal(record.runtime.defaultNodeProven.pid, NODE_PID)
+    assert.equal(record.runtime.payloadNodePty.ok, true)
+    assert.equal(record.scenarios.pty.child.pid, PWSH_PID)
+    assert.equal(record.scenarios.pty.terminatedCleanly, true)
+    // The child env carried NO runtime overrides: the app had to resolve its own.
+    assert.equal(envCaptures.length, 2)
+    for (const env of envCaptures) {
+      assert.equal(env.DSH_DESKTOP_RUNTIME_DIR, undefined)
+      assert.equal(env.DSH_DESKTOP_NODE, undefined)
+      assert.equal(env.DSH_DESKTOP_RUNTIME_ADAPTER, undefined)
+    }
+    const ptyCheck = check => record.checks.find(entry => entry.id === check)
+    for (const id of ['payload.pty_terminate_fix_present', 'runtime.default_node_executed', 'pty.lane_executed', 'pty.terminated_cleanly', 'pty.app_healthy_after']) {
+      assert.equal(ptyCheck(id).status, 'pass', `${id} must pass`)
+      assert.equal(ptyCheck(id).required, true, `${id} must be required in this mode`)
+    }
+    assert.deepEqual(findSecretLikeLeaks(record, {
+      allowedStrings: [...redactionAllowList(record), 'Fixture acceptance reply.', 'todo_write', 'fixture-model', 'fixture-acceptance'],
+    }), [])
+  } finally {
+    await rm(repo, { recursive: true, force: true })
+  }
 })
 
 // ---------------------------------------------------------------------------
@@ -993,4 +1138,97 @@ test('M6: refusal messages never carry a full 64-hex hash; the truncation passes
   assert.deepEqual(findSecretLikeLeaks({ refusalReason: `hash mismatch: expected ${truncated}, observed ${truncated}` }), [])
   assert.deepEqual(findSecretLikeLeaks({ refusalReason: `hash mismatch: expected ${full}, observed ${full}` }, { allowedStrings: [full] }).length >= 1, true,
     'the observed (non-allow-listed) hash must remain gate-worthy, so refusals must truncate')
+})
+
+// ---------------------------------------------------------------------------
+// N. Packaged-node proof + PTY termination lane primitives
+// ---------------------------------------------------------------------------
+
+test('N1: the pty fix fact requires EVERY native kill site to drain immediately', () => {
+  const patched = [
+    'function kill() {',
+    '  this._ptyNative.kill(this._pty, this._useConptyDll);',
+    '  this._conoutSocketWorker.dispose();',
+    '}',
+    'function otherBranch() {',
+    '  this._ptyNative.kill(this._pty, this._useConptyDll);',
+    '',
+    '  this._conoutSocketWorker.dispose();',
+    '}',
+  ].join('\n')
+  const patchedResult = ptyTerminateFixPresent(patched)
+  assert.equal(patchedResult.ok, true)
+  assert.equal(patchedResult.sites, 2)
+  assert.equal(patchedResult.sitesWithImmediateDispose, 2)
+
+  // The actual staged 0.2.1-alpha.2 shape: the ConPTY-DLL branch disposes only
+  // inside the first-data listener, so a no-output kill never drains.
+  const unpatched = [
+    'function conpty() {',
+    '  this._inSocket.destroy();',
+    '  this._ptyNative.kill(this._pty, this._useConptyDll);',
+    "  this._outSocket.on('data', function () {",
+    '    _this._conoutSocketWorker.dispose();',
+    '  });',
+    '}',
+  ].join('\n')
+  const result = ptyTerminateFixPresent(unpatched)
+  assert.equal(result.ok, false)
+  assert.equal(result.sites, 1)
+  assert.equal(result.sitesWithImmediateDispose, 0)
+})
+
+test('N2: exe-relative default mode strips every runtime override from the child env', () => {
+  const paths = deriveIsolationPaths({ repoRoot: 'C:\\repo', namespace: UUID, stamp: 'env2' })
+  const args = parseArgs(['--exe', EXE, '--sha256', SHA, '--cdp-port', '9333'])
+  const previousNode = process.env.DSH_DESKTOP_NODE
+  const previousPrimary = process.env.DSH_DESKTOP_PRIMARY_RUNTIME_DIR
+  process.env.DSH_DESKTOP_NODE = 'C:\\inherited\\node.exe'
+  process.env.DSH_DESKTOP_PRIMARY_RUNTIME_DIR = 'C:\\inherited'
+  try {
+    const env = buildChildEnvironment({
+      args, paths, nodePath: null, adapterPath: null, runtimeDir: null, shellDir: 'C:\\shell',
+      runtimeMode: 'exe-relative-default', handoffIndex: 1,
+    })
+    assert.equal(env.DSH_DESKTOP_RUNTIME_DIR, undefined)
+    assert.equal(env.DSH_DESKTOP_NODE, undefined)
+    assert.equal(env.DSH_DESKTOP_RUNTIME_ADAPTER, undefined)
+    assert.equal(env.DSH_DESKTOP_PRIMARY_RUNTIME_DIR, undefined, 'inherited overrides must be deleted, not kept')
+    assert.equal(env.DSH_HOME, paths.home)
+  } finally {
+    if (previousNode === undefined) delete process.env.DSH_DESKTOP_NODE
+    else process.env.DSH_DESKTOP_NODE = previousNode
+    if (previousPrimary === undefined) delete process.env.DSH_DESKTOP_PRIMARY_RUNTIME_DIR
+    else process.env.DSH_DESKTOP_PRIMARY_RUNTIME_DIR = previousPrimary
+  }
+  const explicit = buildChildEnvironment({
+    args, paths, nodePath: 'C:\\payload\\node\\node.exe', adapterPath: 'C:\\payload\\adapter.mjs',
+    runtimeDir: 'C:\\payload', shellDir: 'C:\\shell', runtimeMode: 'explicit-payload', handoffIndex: 1,
+  })
+  assert.equal(explicit.DSH_DESKTOP_NODE, 'C:\\payload\\node\\node.exe')
+  assert.equal(explicit.DSH_DESKTOP_RUNTIME_DIR, 'C:\\payload')
+})
+
+test('N3: node and PTY child attribution match only the right descendants', () => {
+  const rows = [
+    { pid: 10, parentPid: 0, creationTicks: '1', exe: 'C:\\app\\dsh-desktop.exe', name: 'dsh-desktop.exe' },
+    { pid: 11, parentPid: 10, creationTicks: '2', exe: 'C:\\app\\dsh\\node\\node.exe', name: 'node.exe' },
+    { pid: 12, parentPid: 10, creationTicks: '3', exe: 'C:\\Program Files\\PowerShell\\7\\pwsh.exe', name: 'pwsh.exe' },
+  ]
+  assert.equal(findNodeDescendant(rows, 'C:/app/dsh/node/node.exe')?.pid, 11, 'path comparison normalizes separators and case')
+  assert.equal(findNodeDescendant(rows, 'C:\\other\\node.exe'), null)
+  assert.equal(findPtyChild(rows, []).pid, 12)
+  assert.equal(findPtyChild(rows, [{ pid: 12, creationTicks: '3' }]), null, 'a baseline child is never the PTY child')
+  assert.equal(
+    findPtyChild([{ pid: 13, parentPid: 10, creationTicks: '4', exe: 'C:\\Windows\\notepad.exe', name: 'notepad.exe' }], []),
+    null,
+    'non-shell processes are never the PTY child',
+  )
+})
+
+test('N4: the terminal expressions are fixed constants without interpolation', () => {
+  for (const expression of [TERMINAL_OPEN_EXPRESSION, TERMINAL_STATE_EXPRESSION, TERMINAL_CLOSE_EXPRESSION]) {
+    assert.ok(!expression.includes('${'))
+    assert.doesNotThrow(() => new Function(`return ${expression}`))
+  }
 })

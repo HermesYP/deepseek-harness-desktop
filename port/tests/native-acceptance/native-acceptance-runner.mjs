@@ -71,6 +71,7 @@ import {
   EXIT,
   LIVE_GUI_PORT,
   NATIVE_BATTERY_EXPRESSION,
+  RUNTIME_DIGEST_EXPRESSION,
   assertCommandWhitelist,
   attach,
   boundedErrorKind,
@@ -108,6 +109,8 @@ export const NUMERIC_BOUNDS = Object.freeze({
   'onboarding-timeout-ms': [5000, 300000, 120000],
   'stage-timeout-ms': [5000, 300000, 90000],
   'chat-timeout-ms': [5000, 300000, 90000],
+  'pty-open-timeout-ms': [3000, 120000, 20000],
+  'pty-settle-timeout-ms': [2000, 60000, 15000],
   'quit-timeout-ms': [2000, 120000, 30000],
   'total-timeout-ms': [30000, 1800000, 600000],
 })
@@ -131,6 +134,11 @@ export const REQUIRED_CHECK_IDS = Object.freeze([
   'settings.marker_set',
   'updates.status_resolves',
   'account.surface_reachable',
+  'payload.pty_terminate_fix_present',
+  'runtime.default_node_executed',
+  'pty.lane_executed',
+  'pty.terminated_cleanly',
+  'pty.app_healthy_after',
   'teardown.graceful_exit',
   'teardown.relaunch_ready',
   'settings.persistence',
@@ -141,6 +149,65 @@ export const REQUIRED_CHECK_IDS = Object.freeze([
 /** Fixed, non-secret settings marker used for the persistence scenario. */
 export const SETTINGS_MARKER_KEY = 'acceptance.native-marker'
 export const SETTINGS_MARKER_VALUE = 'set-by-native-acceptance'
+
+/**
+ * Whether the payload's node-pty Windows agent carries the upstream patch's
+ * kill/drain fix: EVERY `native kill` site must be followed by an immediate
+ * `_conoutSocketWorker.dispose()` (within two source lines, before any output
+ * listener). The 0.2.1-alpha.2 patch targets exactly the ConPTY-DLL branch,
+ * where the dispose otherwise only happens inside the first-data listener —
+ * so a kill of a process that emits no further output never drains. Pure over
+ * the file text; tested against both shapes.
+ */
+export function ptyTerminateFixPresent(sourceText) {
+  const lines = String(sourceText ?? '').split(/\r?\n/u)
+  const killPattern = /this\._ptyNative\.kill\(this\._pty,\s*this\._useConptyDll\);/u
+  const sites = []
+  let sitesWithImmediateDispose = 0
+  for (let index = 0; index < lines.length; index += 1) {
+    if (!killPattern.test(lines[index])) continue
+    const following = []
+    for (let offset = 1; following.length < 2 && index + offset < lines.length; offset += 1) {
+      const line = lines[index + offset]
+      if (line.trim() !== '') following.push(line)
+    }
+    const immediate = following[0] !== undefined && following[0].includes('_conoutSocketWorker.dispose()')
+    sites.push(index + 1)
+    if (immediate) sitesWithImmediateDispose += 1
+  }
+  return {
+    ok: sites.length > 0 && sitesWithImmediateDispose === sites.length,
+    sites: sites.length,
+    sitesWithImmediateDispose,
+    killSiteLines: sites,
+  }
+}
+
+const normalizeExePath = path => String(path ?? '').replace(/\//gu, '\\').toLowerCase()
+
+/**
+ * The descendant row that proves the packaged interpreter actually executed:
+ * exact case-insensitive exe-path match against the exe-relative payload node.
+ */
+export function findNodeDescendant(rows, expectedExePath) {
+  const expected = normalizeExePath(expectedExePath)
+  return (Array.isArray(rows) ? rows : []).find(row => normalizeExePath(row.exe) === expected) ?? null
+}
+
+const PTY_CHILD_PATTERN = /^(?:pwsh|powershell)(?:\.exe)?$/iu
+
+/**
+ * The PTY terminal child: a NEW descendant (pid+creationTicks not in the
+ * baseline) running the Windows shell the terminal spawns. Read-only
+ * attribution; the harness never terminates it itself.
+ */
+export function findPtyChild(rows, baselineRows) {
+  const baseline = new Set((Array.isArray(baselineRows) ? baselineRows : []).map(row => `${row.pid}:${row.creationTicks}`))
+  const candidates = (Array.isArray(rows) ? rows : [])
+    .filter(row => !baseline.has(`${row.pid}:${row.creationTicks}`))
+    .filter(row => PTY_CHILD_PATTERN.test(String(row.name ?? row.exe ?? '').split('\\').pop()))
+  return candidates[0] ?? null
+}
 
 /** Messages sent to the fixture provider through the real composer. */
 export const FIXTURE_CHAT_MESSAGE = 'Acceptance streaming test: reply with your fixture text.'
@@ -179,7 +246,7 @@ export function parseArgs(argv) {
     'exe', 'sha256', 'repo', 'report', 'stamp', 'runtime-dir', 'shell-dir', 'node-exe',
     ...Object.keys(NUMERIC_BOUNDS),
   ])
-  const flagNames = new Set(['without-fixture-chat', 'dry-run', 'help'])
+  const flagNames = new Set(['without-fixture-chat', 'without-pty-lane', 'dry-run', 'help'])
 
   for (let index = 0; index < argv.length; index += 1) {
     const token = argv[index]
@@ -241,6 +308,7 @@ export function parseArgs(argv) {
     shellDir: values.has('shell-dir') ? resolve(values.get('shell-dir')) : null,
     nodeExe: values.has('node-exe') ? resolve(values.get('node-exe')) : null,
     withFixtureChat: !flags.has('without-fixture-chat'),
+    withPtyLane: !flags.has('without-pty-lane'),
     dryRun: flags.has('dry-run'),
     bounds: Object.freeze(bounds),
   }
@@ -723,6 +791,45 @@ export const SETTINGS_MARKER_GET_EXPRESSION = `(async () => {
   }
 })()`
 
+/** Open the terminal surface (the client's node-pty-backed terminal lane). */
+export const TERMINAL_OPEN_EXPRESSION = `(() => {
+  const elements = [...document.querySelectorAll('#root button, #root a, #root [role="button"], #root [aria-label]')];
+  const label = (el) => (el.getAttribute('aria-label') || '') + ' ' + (el.getAttribute('title') || '') + ' ' + (el.textContent || '');
+  const match = elements.find((el) => /(^|\\s)terminal($|\\s)/iu.test(label(el).trim()) || /^\\u7ec8\\u7aef$/u.test(label(el).trim()));
+  if (match) { match.click(); return { record: 'terminal-open', clicked: true }; }
+  return { record: 'terminal-open', clicked: false };
+})()`
+
+/** Terminal surface presence facts (structural markers only). */
+export const TERMINAL_STATE_EXPRESSION = `(() => {
+  const surface = document.querySelector('[class*="terminal"]');
+  const input = document.querySelector('.xterm textarea, [class*="terminal"] textarea, [class*="terminal"] [contenteditable="true"]');
+  return {
+    record: 'terminal-state',
+    surfacePresent: surface !== null,
+    inputPresent: input !== null,
+  };
+})()`
+
+/** Close/terminate the terminal session (its own close or kill control). */
+export const TERMINAL_CLOSE_EXPRESSION = `(() => {
+  const surface = document.querySelector('[class*="terminal"]');
+  if (!surface) return { record: 'terminal-close', clicked: false, reason: 'absent' };
+  const scope = surface.closest('[class*="sidebar"], [class*="panel"], body') ?? surface;
+  const elements = [...scope.querySelectorAll('button, [role="button"]')];
+  const label = (el) => (el.getAttribute('aria-label') || '') + ' ' + (el.getAttribute('title') || '') + ' ' + (el.textContent || '');
+  const priorities = [
+    /^(close terminal|close|kill terminal|kill|terminate|\\u5173\\u95ed\\u7ec8\\u7aef|\\u7ec8\\u6b62)$/iu,
+    /^(close|\\u5173\\u95ed)$/iu,
+    /^(kill|\\u7ec8\\u6b62|\\u505c\\u6b62)$/iu,
+  ];
+  for (const re of priorities) {
+    const match = elements.find((el) => re.test(label(el).trim()));
+    if (match) { match.click(); return { record: 'terminal-close', clicked: true, matched: re.source.slice(0, 40) }; }
+  }
+  return { record: 'terminal-close', clicked: false, reason: 'no-close-control' };
+})()`
+
 /** Read-only update status through the bridge. */
 export const UPDATE_STATUS_EXPRESSION = `(async () => {
   const PHASES = ['idle', 'checking', 'available', 'downloading', 'verifying', 'installing', 'ready', 'error'];
@@ -912,26 +1019,83 @@ export async function runAcceptance(args, inject = {}) {
     record.candidate.sizeBytes = candidate.sizeBytes
     push('identity.executable_hash', true, 'pass', `sha256 verified for ${candidate.sizeBytes} bytes`)
 
-    // -- 1. Runtime payload preflight + attested interpreter ----------------------
-    const runtimeDir = args.runtimeDir ?? join(repoRoot, 'port', 'runtime-payload', 'dsh')
+    // -- 1. Runtime mode, payload preflight + attested interpreter -----------------
+    // Two modes:
+    //   * explicit-payload (--runtime-dir given): the payload is preflighted and
+    //     its paths are exported to the child (previous behaviour).
+    //   * exe-relative-default (no --runtime-dir): the runner exports NO runtime
+    //     overrides, so the app must resolve `exe_dir/dsh` itself — the true
+    //     packaged default. The proof applies ONLY when the build actually
+    //     placed the payload beside the exe (packagedCandidate.present).
+    const runtimeMode = args.runtimeDir === null ? 'exe-relative-default' : 'explicit-payload'
     const shellDir = args.shellDir ?? join(repoRoot, 'port', 'ui', 'dist')
-    const nodePath = join(runtimeDir, 'node', 'node.exe')
-    const adapterPath = join(runtimeDir, 'adapter.mjs')
-    record.runtime = { runtimeDir, shellDir, nodePath, adapterPath, executionNode: null }
-    for (const [label, path] of [
-      ['runtime adapter', adapterPath],
-      ['pinned interpreter', nodePath],
-      ['shell assets (index.html)', join(shellDir, 'index.html')],
-    ]) {
-      try {
-        await access(path, fsConstants.F_OK)
-      } catch {
-        throw refusal(`${label} is missing at ${path}; assemble the candidate payload first. Nothing was launched.`)
+    const packagedCandidate = { present: false, adapterPath: null, nodePath: null, manifestPath: null, nodeSha256: null }
+    let runtimeDir
+    let nodePath
+    let adapterPath
+    if (runtimeMode === 'exe-relative-default') {
+      runtimeDir = join(dirname(args.exe), 'dsh')
+      nodePath = join(runtimeDir, 'node', 'node.exe')
+      adapterPath = join(runtimeDir, 'adapter.mjs')
+      const manifestPath = join(runtimeDir, 'desktop-runtime.json')
+      const exists = async path => {
+        try { await access(path, fsConstants.F_OK); return true } catch { return false }
       }
+      packagedCandidate.present = (await exists(adapterPath)) && (await exists(nodePath)) && (await exists(manifestPath))
+      packagedCandidate.adapterPath = adapterPath
+      packagedCandidate.nodePath = nodePath
+      packagedCandidate.manifestPath = manifestPath
+      packagedCandidate.nodeSha256 = packagedCandidate.present ? await sha256File(nodePath) : null
+    } else {
+      runtimeDir = args.runtimeDir
+      nodePath = join(runtimeDir, 'node', 'node.exe')
+      adapterPath = join(runtimeDir, 'adapter.mjs')
     }
-    const executionNode = await resolveExecutionNode({ payloadNodePath: nodePath, nodeExe: args.nodeExe })
-    record.runtime.executionNode = executionNode
-    log(`interpreter: ${executionNode.source} -> ${executionNode.executionPath} (sha256 ${truncateHash(executionNode.executionSha256)})`)
+    record.runtime = {
+      mode: runtimeMode,
+      runtimeDir, shellDir, nodePath, adapterPath,
+      executionNode: null,
+      packagedCandidate,
+      defaultNodeProven: null,
+    }
+    if (runtimeMode === 'explicit-payload') {
+      for (const [label, path] of [
+        ['runtime adapter', adapterPath],
+        ['pinned interpreter', nodePath],
+        ['shell assets (index.html)', join(shellDir, 'index.html')],
+      ]) {
+        try {
+          await access(path, fsConstants.F_OK)
+        } catch {
+          throw refusal(`${label} is missing at ${path}; assemble the candidate payload first. Nothing was launched.`)
+        }
+      }
+    } else if (packagedCandidate.present === false) {
+      log(`exe-relative payload absent at ${runtimeDir}: the app must still resolve its own runtime; the default-node proof will be not-requested`)
+    }
+    let executionNode = null
+    if (runtimeMode === 'explicit-payload' || packagedCandidate.present) {
+      executionNode = await resolveExecutionNode({ payloadNodePath: nodePath, nodeExe: args.nodeExe })
+      record.runtime.executionNode = executionNode
+      log(`interpreter: ${executionNode.source} -> ${executionNode.executionPath} (sha256 ${truncateHash(executionNode.executionSha256)})`)
+    }
+
+    // The node-pty Windows kill/drain fix is a REQUIRED payload fact whenever
+    // the payload carries node-pty (the staging policy pins it; a missing fix
+    // is a product finding, detected before any launch).
+    const nodePtyAgentPath = join(runtimeDir, 'node_modules', 'node-pty', 'lib', 'windowsPtyAgent.js')
+    try {
+      const ptyAgentSource = await readFile(nodePtyAgentPath, 'utf8')
+      const ptyFix = ptyTerminateFixPresent(ptyAgentSource)
+      record.runtime.payloadNodePty = { path: nodePtyAgentPath, ...ptyFix }
+      push('payload.pty_terminate_fix_present', true, ptyFix.ok ? 'pass' : 'fail',
+        ptyFix.ok
+          ? `all ${ptyFix.sites} native kill site(s) drain immediately (node-pty Windows agent)`
+          : `only ${ptyFix.sitesWithImmediateDispose} of ${ptyFix.sites} kill site(s) drain immediately; the ConPTY-DLL branch leaks its output worker on kill`)
+    } catch {
+      record.runtime.payloadNodePty = { path: nodePtyAgentPath, present: false }
+      push('payload.pty_terminate_fix_present', false, 'not-requested', 'the payload carries no node-pty Windows agent; the fix fact does not apply')
+    }
 
     // -- 2. Fresh isolation roots (checked read-only; nothing is created yet) ----
     await assertFreshRoots(paths)
@@ -977,7 +1141,7 @@ export async function runAcceptance(args, inject = {}) {
     }
 
     // -- 4. Launch (first run) ----------------------------------------------------------
-    const env = buildChildEnvironment({ args, paths, nodePath: executionNode.executionPath, adapterPath, runtimeDir, shellDir, handoffIndex: 1 })
+    const env = buildChildEnvironment({ args, paths, nodePath: executionNode?.executionPath ?? null, adapterPath: executionNode !== null ? adapterPath : null, runtimeDir: runtimeMode === 'explicit-payload' ? runtimeDir : null, shellDir, runtimeMode, handoffIndex: 1 })
     const launched = await spawnImpl({ exe: args.exe, env, log })
     child = launched.child
     identityAtSpawn = launched.identityAtSpawn
@@ -1034,6 +1198,25 @@ export async function runAcceptance(args, inject = {}) {
     record.scenarios.surface = { hostKind: host.kind, hostEvidence: host.evidence, ...pickFacts(hostFacts) }
     push('identity.native_host', true, host.kind === NATIVE_WEBVIEW ? 'pass' : 'fail', `${host.kind} (${host.evidence.join(', ')})`)
 
+    // Default-packaged-node proof: in exe-relative mode with a real candidate,
+    // a host descendant must actually EXECUTE the packaged interpreter.
+    if (runtimeMode === 'exe-relative-default' && packagedCandidate.present) {
+      const subtree = await liveSubtreeOf({ identityAtSpawn, tableImpl })
+      firstHost.liveSubtree = subtree
+      const nodeRow = findNodeDescendant(subtree, packagedCandidate.nodePath)
+      record.runtime.defaultNodeProven = nodeRow === null
+        ? { observed: false, expectedPath: packagedCandidate.nodePath }
+        : { observed: true, expectedPath: packagedCandidate.nodePath, pid: nodeRow.pid, creationTicks: String(nodeRow.creationTicks), exe: nodeRow.exe }
+      push('runtime.default_node_executed', true, nodeRow !== null ? 'pass' : 'fail',
+        nodeRow !== null
+          ? `a host descendant executes the exe-relative packaged interpreter (pid ${nodeRow.pid})`
+          : `no descendant executes the packaged interpreter at ${packagedCandidate.nodePath}`)
+    } else if (runtimeMode === 'exe-relative-default') {
+      push('runtime.default_node_executed', false, 'not-requested', 'no exe-relative payload candidate beside the exe; the packaged-default proof does not apply')
+    } else {
+      push('runtime.default_node_executed', false, 'not-requested', 'explicit payload mode: the interpreter is attested separately (payload preflight / --node-exe)')
+    }
+
     const battery = await connection.evaluate(NATIVE_BATTERY_EXPRESSION)
     const whitelist = assertCommandWhitelist(battery.commandsInvoked ?? [])
     const batteryOk = battery.bridge === true
@@ -1087,6 +1270,24 @@ export async function runAcceptance(args, inject = {}) {
     }
     push('settings.marker_set', true, marker.setResolved && marker.getResolved && marker.valueMatches ? 'pass' : 'fail',
       `set=${marker.setResolved} get=${marker.getResolved} valueMatches=${marker.valueMatches}`)
+
+    // -- 10b. Real PTY termination lane (client terminal UI → node-pty) --------------
+    // The registered model tool (pwsh) spawns ORDINARY subprocesses; node-pty is
+    // exercised by the client TERMINAL surface. The lane opens it, attributes the
+    // spawned shell as a host descendant, closes the session through its own
+    // control, and requires positive absence — the missing kill/drain fix would
+    // leave the shell alive.
+    if (args.withPtyLane) {
+      const pty = await runPtyTerminationLane({ connection, tableImpl, identityAtSpawn, args, sleepImpl, log })
+      record.scenarios.pty = pty.facts
+      push('pty.lane_executed', true, pty.laneStatus, pty.laneDetail)
+      push('pty.terminated_cleanly', true, pty.terminateStatus, pty.terminateDetail)
+      push('pty.app_healthy_after', true, pty.healthStatus, pty.healthDetail)
+    } else {
+      push('pty.lane_executed', false, 'not-requested', 'pty lane not requested (--without-pty-lane)')
+      push('pty.terminated_cleanly', false, 'not-requested', 'pty lane not requested (--without-pty-lane)')
+      push('pty.app_healthy_after', false, 'not-requested', 'pty lane not requested (--without-pty-lane)')
+    }
 
     // -- 11. Graceful quit #1 ---------------------------------------------------------------------------
     firstHost.liveSubtree = firstHost.liveSubtree ?? await liveSubtreeOf({ identityAtSpawn, tableImpl })
@@ -1184,14 +1385,22 @@ export async function runAcceptance(args, inject = {}) {
 }
 
 /** Assemble the child environment for launch `handoffIndex` (1 or 2). */
-export function buildChildEnvironment({ args, paths, nodePath, adapterPath, runtimeDir, shellDir, handoffIndex }) {
+export function buildChildEnvironment({ args, paths, nodePath, adapterPath, runtimeDir, shellDir, runtimeMode = 'explicit-payload', handoffIndex }) {
   const env = { ...process.env }
   env.DSH_HOME = paths.home
   env.DSH_DESKTOP_USER_DATA_DIR = paths.userData
-  env.DSH_DESKTOP_RUNTIME_DIR = runtimeDir
+  if (runtimeMode === 'exe-relative-default') {
+    // The packaged-default proof mode: NO runtime overrides. Inherited names
+    // are removed so the app can only resolve its own exe-relative payload.
+    for (const name of ['DSH_DESKTOP_RUNTIME_DIR', 'DSH_DESKTOP_NODE', 'DSH_DESKTOP_RUNTIME_ADAPTER', 'DSH_DESKTOP_PRIMARY_RUNTIME_DIR']) {
+      delete env[name]
+    }
+  } else {
+    env.DSH_DESKTOP_RUNTIME_DIR = runtimeDir
+    env.DSH_DESKTOP_NODE = nodePath
+    env.DSH_DESKTOP_RUNTIME_ADAPTER = adapterPath
+  }
   env.DSH_DESKTOP_SHELL_DIR = shellDir
-  env.DSH_DESKTOP_NODE = nodePath
-  env.DSH_DESKTOP_RUNTIME_ADAPTER = adapterPath
   env.DSH_DESKTOP_DEV_URL_FILE = join(paths.ownedRoot, `handoff-${handoffIndex}`, 'gateway-url.txt')
   env.DSH_DESKTOP_DEV_BOOT_FILE = join(paths.ownedRoot, `handoff-${handoffIndex}`, 'boot.json')
   env.DSH_DESKTOP_OWNED_CREDENTIAL_NAMESPACE = paths.namespace
@@ -1438,6 +1647,109 @@ export async function typeAndSend({ connection, text, sleepImpl }) {
   return { sent: true, path: fallback.clicked === true ? 'enter+send-button' : 'enter' }
 }
 
+/**
+ * The real PTY termination lane: open the client's terminal surface, attribute
+ * the spawned shell as a NEW host descendant (read-only CIM attribution; the
+ * harness never terminates the shell itself), close the session through the
+ * surface's own control, and require the shell's POSITIVE absence within a
+ * bounded settle window. A node-pty Windows agent missing the kill/drain fix
+ * leaves the shell alive and fails this lane.
+ */
+export async function runPtyTerminationLane({ connection, tableImpl, identityAtSpawn, args, sleepImpl, log }) {
+  const facts = {
+    openClicked: false,
+    surfacePresent: null,
+    child: null,
+    closeClicked: false,
+    closeReason: null,
+    terminatedCleanly: false,
+    tableAvailable: true,
+    appStateAfter: null,
+  }
+  let baselineChildren = []
+  try {
+    const baseline = await tableImpl()
+    facts.tableAvailable = baseline.available === true
+    if (baseline.available === true) {
+      baselineChildren = descendantsOf({ host: identityAtSpawn, table: baseline.rows, observedAtTicks: baseline.observedAtTicks })
+    }
+  } catch (error) {
+    facts.tableAvailable = false
+    facts.baselineErrorKind = boundedErrorKind(error)
+  }
+
+  const open = await connection.evaluate(TERMINAL_OPEN_EXPRESSION, { awaitPromise: false })
+  facts.openClicked = open.clicked === true
+
+  let child = null
+  const openDeadline = Date.now() + args.bounds['pty-open-timeout-ms']
+  while (Date.now() < openDeadline && child === null) {
+    try {
+      const snapshot = await tableImpl()
+      if (snapshot.available === true) {
+        const subtree = descendantsOf({ host: identityAtSpawn, table: snapshot.rows, observedAtTicks: snapshot.observedAtTicks })
+        child = findPtyChild(subtree, baselineChildren)
+      }
+    } catch { /* bounded retry */ }
+    if (child === null) await sleepImpl(500)
+  }
+  const state = await connection.evaluate(TERMINAL_STATE_EXPRESSION, { awaitPromise: false })
+  facts.surfacePresent = state.surfacePresent === true
+  if (child !== null) {
+    facts.child = { pid: child.pid, exe: child.exe, creationTicks: String(child.creationTicks) }
+  }
+  void log
+
+  if (child === null) {
+    const health = await connection.evaluate(RUNTIME_DIGEST_EXPRESSION).catch(() => ({ resolved: false, state: null }))
+    facts.appStateAfter = health.state ?? null
+    return {
+      facts,
+      laneStatus: 'fail',
+      laneDetail: `terminal surface opened=${facts.openClicked} but no new shell descendant appeared within ${args.bounds['pty-open-timeout-ms']} ms (surface present: ${facts.surfacePresent})`,
+      terminateStatus: 'unqualified',
+      terminateDetail: 'no terminal child was attributed, so termination could not be exercised',
+      healthStatus: health.resolved === true && health.state === 'ready' ? 'pass' : 'fail',
+      healthDetail: `app state after lane: ${health.state ?? 'unknown'}`,
+    }
+  }
+
+  const close = await connection.evaluate(TERMINAL_CLOSE_EXPRESSION, { awaitPromise: false })
+  facts.closeClicked = close.clicked === true
+  facts.closeReason = close.reason ?? null
+
+  let terminated = false
+  let lastTableAvailable = true
+  const settleDeadline = Date.now() + args.bounds['pty-settle-timeout-ms']
+  while (Date.now() < settleDeadline) {
+    let stillAlive = null
+    try {
+      const snapshot = await tableImpl()
+      lastTableAvailable = snapshot.available === true
+      if (snapshot.available === true) {
+        stillAlive = snapshot.rows.some(row => row.pid === child.pid && String(row.creationTicks) === String(child.creationTicks))
+      }
+    } catch { lastTableAvailable = false }
+    if (lastTableAvailable === true && stillAlive === false) { terminated = true; break }
+    await sleepImpl(400)
+  }
+  facts.terminatedCleanly = terminated
+
+  const health = await connection.evaluate(RUNTIME_DIGEST_EXPRESSION).catch(() => ({ resolved: false, state: null }))
+  facts.appStateAfter = health.state ?? null
+  return {
+    facts,
+    laneStatus: 'pass',
+    laneDetail: `terminal opened and the spawned shell was attributed (pid ${child.pid}, ${child.exe ?? 'unknown exe'})`,
+    terminateStatus: terminated ? 'pass' : 'fail',
+    terminateDetail: terminated
+      ? `the terminal shell reached positive absence within ${args.bounds['pty-settle-timeout-ms']} ms of the close request (last table available: ${lastTableAvailable})`
+      : `the terminal shell (pid ${child.pid}) survived the settle window${lastTableAvailable ? '' : ' (process table unreadable)'}`,
+    healthStatus: health.resolved === true && health.state === 'ready' ? 'pass' : 'fail',
+    healthDetail: `app state after lane: ${health.state ?? 'unknown'}`,
+  }
+}
+
 /** Settings surface + read-only update status + account reachability. */
 export async function runSettingsScenario({ connection, sleepImpl, log }) {
   const open = await connection.evaluate(SETTINGS_OPEN_EXPRESSION, { awaitPromise: false })
@@ -1669,6 +1981,8 @@ Optional:
   --cdp-port <1024-65535>   WebView2 remote-debugging port for THIS run (default 9333)
   --fixture-port <...>      local fixture-provider port (default 9471)
   --without-fixture-chat    record the chat checks as not-requested (never a pass)
+  --without-pty-lane        record the terminal PTY termination checks as
+                            not-requested (never a pass)
   --dry-run                 verify candidate hash, payload and fresh roots, then
                             stop BEFORE creating any directory or launching
   --boot-timeout-ms --attach-wait-ms --onboarding-timeout-ms --stage-timeout-ms

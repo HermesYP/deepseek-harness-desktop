@@ -334,7 +334,167 @@ function Invoke-Checked([string]$File, [string[]]$Arguments, [string]$WorkDir) {
 # whatever `$home` already held. That is how the port once ran an installed
 # application with `DSH_HOME=C:\Users\<user>` (finding F-36). The resolved value
 # is asserted to be under the scratch root before it is exported.
+# Compiled-resource qualification (built-in-only Node helper): the Tauri
+# build-script resource copy is a DIRECTORY MERGE -- files left behind by a
+# previous payload are never removed -- so a compile passing is not evidence
+# the shipped tree is current. The guard verifies exact file membership plus
+# byte identity of the compiled exe-relative `dsh` and `ui` mirrors against
+# the sealed published sources and refuses on missing, EXTRA (the stale-file
+# class) or content-mismatched files. Strictly read-only: no move, delete,
+# rename or write of any resource tree, and no file content is ever logged.
+#
+# ARTIFACT AUTHORITATIVENESS: the cargo message stream is captured from the
+# ORIGINAL compile itself (same arguments, workdir and features -- never a
+# second rebuild, which after a tauri build would use a different feature set
+# and could overwrite the very executable being qualified). Rendered compiler
+# diagnostics stay visible on stderr; only the JSON message stream is captured.
+
+function Get-CompiledResourceArtifactJson([string[]]$CargoArgs) {
+  $artifactJson = Join-Path $Scratch ("cargo-artifacts-{0}.json" -f [guid]::NewGuid().ToString('N'))
+  $previousPreference = $ErrorActionPreference
+  $ErrorActionPreference = 'Continue'
+  Push-Location $TauriDir
+  try {
+    & cargo @CargoArgs --message-format=json-render-diagnostics > $artifactJson
+    $cargoExit = $LASTEXITCODE
+  } finally {
+    $ErrorActionPreference = $previousPreference
+    Pop-Location
+  }
+  if ($cargoExit -ne 0) { throw "cargo build failed with exit code $cargoExit" }
+  return $artifactJson
+}
+
+# Parse the captured cargo JSON stream for the dsh-desktop bin executable.
+# Fail-closed: zero or multiple distinct executables refuse. Malformed line
+# CONTENT is never echoed (sensitive compiler/build-script text).
+function Get-ArtifactExeFromCargoJson([string]$ArtifactJsonPath) {
+  $exePaths = @()
+  $lineNumber = 0
+  foreach ($line in (Get-Content -LiteralPath $ArtifactJsonPath)) {
+    $lineNumber += 1
+    if ([string]::IsNullOrWhiteSpace($line)) { continue }
+    try { $entry = $line | ConvertFrom-Json } catch { throw "malformed cargo JSON at line $lineNumber; line content is never echoed" }
+    if ($entry.reason -eq 'compiler-artifact' -and $entry.target.name -eq 'dsh-desktop' -and
+        $entry.target.kind -contains 'bin' -and $entry.executable) {
+      $exePaths += $entry.executable
+    }
+  }
+  if ($exePaths.Count -eq 0) { throw 'no dsh-desktop bin artifact found in the captured cargo JSON' }
+  # Force @() so Select-Object -Unique on a single-element string array
+  # returns an array, not the string itself (whose [0] would be a character).
+  $distinct = @($exePaths | Select-Object -Unique)
+  if ($distinct.Count -gt 1) { throw "ambiguous: $($distinct.Count) distinct dsh-desktop executables in the cargo JSON" }
+  return $distinct[0]
+}
+
+function Assert-CompiledResourceMirrorsFromJson([string]$ArtifactJsonPath) {
+  $verifier = Join-Path $PortRoot 'scripts\verify-build-resources.mjs'
+  $payloadNode = Join-Path $PortRoot 'runtime-payload\dsh\node\node.exe'
+  if (-not (Test-Path -LiteralPath $payloadNode -PathType Leaf)) {
+    throw "The resource guard needs the published payload interpreter at $payloadNode; run the runtime stage (or drop -SkipResourceStages) first. Nothing was qualified."
+  }
+  $guardNode = (Resolve-DshTrustedExecutionNodeCached -StagedExecutable $payloadNode).Path
+  # Derive the artifact exe, then generate physical-metadata manifests for ALL
+  # FOUR trees (sealed sources + compiled mirrors).
+  $exe = Get-ArtifactExeFromCargoJson $ArtifactJsonPath
+  $exeDir = Split-Path $exe
+  $manifestPath = "$ArtifactJsonPath.physical-metadata.json"
+  Write-CombinedResourcePhysicalMetadata `
+    (Join-Path $PortRoot 'runtime-payload\dsh') `
+    (Join-Path $UiDir 'dist') `
+    (Join-Path $exeDir 'dsh') `
+    (Join-Path $exeDir 'ui') `
+    $manifestPath
+  Invoke-Checked $guardNode @(
+    $verifier,
+    '--artifact-json', $ArtifactJsonPath,
+    '--source-dsh', (Join-Path $PortRoot 'runtime-payload\dsh'),
+    '--source-ui', (Join-Path $UiDir 'dist'),
+    '--physical-metadata', $manifestPath
+  ) $PortRoot
+  Write-Host '    compiled resource mirrors qualified (exact membership + byte identity + physical metadata)' -ForegroundColor Green
+}
+
+function Assert-CompiledResourceMirrorsForExe([string]$ExePath) {
+  $verifier = Join-Path $PortRoot 'scripts\verify-build-resources.mjs'
+  $payloadNode = Join-Path $PortRoot 'runtime-payload\dsh\node\node.exe'
+  if (-not (Test-Path -LiteralPath $payloadNode -PathType Leaf)) {
+    throw "The resource guard needs the published payload interpreter at $payloadNode; run the runtime stage (or drop -SkipResourceStages) first. Nothing was qualified."
+  }
+  $guardNode = (Resolve-DshTrustedExecutionNodeCached -StagedExecutable $payloadNode).Path
+  $exeDir = Split-Path $ExePath
+  $manifestPath = "$ExePath.physical-metadata.json"
+  Write-CombinedResourcePhysicalMetadata `
+    (Join-Path $PortRoot 'runtime-payload\dsh') `
+    (Join-Path $UiDir 'dist') `
+    (Join-Path $exeDir 'dsh') `
+    (Join-Path $exeDir 'ui') `
+    $manifestPath
+  Invoke-Checked $guardNode @(
+    $verifier,
+    '--exe', $ExePath,
+    '--source-dsh', (Join-Path $PortRoot 'runtime-payload\dsh'),
+    '--source-ui', (Join-Path $UiDir 'dist'),
+    '--physical-metadata', $manifestPath
+  ) $PortRoot
+  Write-Host '    compiled resource mirrors qualified (exact membership + byte identity + physical metadata)' -ForegroundColor Green
+}
+
+# Read-only physical-metadata manifest generator: uses an EXPLICIT directory
+# stack (no Get-ChildItem -Recurse, which can follow junctions on PS5) with
+# Get-Item + attribute check BEFORE enqueueing dirs, and refuses SparseFile,
+# ReparsePoint, Encrypted or any attribute token outside the allowlist.
+# Generates a manifest for ONE tree; the caller combines them. No content is
+# read or logged.
+function Get-ResourceTreePhysicalMetadata([string]$Root) {
+  $allowed = @('Directory', 'Archive', 'ReadOnly', 'NotContentIndexed')
+  $entries = @()
+  $stack = [System.Collections.Generic.Stack[string]]::new()
+  $stack.Push((Join-Path $Root '.'))
+  $rootItem = Get-Item -LiteralPath $Root -Force
+  foreach ($token in ($rootItem.Attributes.ToString().Split(','))) {
+    $t = $token.Trim()
+    if ($t -eq '') { continue }
+    if ($allowed -notcontains $t) { throw "resource tree root '$Root' carries unknown attribute '$t' (SparseFile, ReparsePoint, Encrypted etc. are refused); nothing was qualified." }
+  }
+  $entries += @{ path = '.'; kind = 'directory'; attributes = $rootItem.Attributes.ToString() }
+  while ($stack.Count -gt 0) {
+    $dir = $stack.Pop()
+    foreach ($child in [System.IO.Directory]::EnumerateFileSystemEntries($dir)) {
+      $item = Get-Item -LiteralPath $child -Force
+      foreach ($token in ($item.Attributes.ToString().Split(','))) {
+        $t = $token.Trim()
+        if ($t -eq '') { continue }
+        if ($allowed -notcontains $t) { throw "resource tree entry '$child' carries unknown attribute '$t' (SparseFile, ReparsePoint, Encrypted etc. are refused); nothing was qualified." }
+      }
+      $rel = $child.Substring($Root.Length).TrimStart('\', '/').Replace('\', '/')
+      if ($item.PSIsContainer) {
+        $entries += @{ path = $rel; kind = 'directory'; attributes = $item.Attributes.ToString() }
+        $stack.Push($child)
+      } else {
+        $entries += @{ path = $rel; kind = 'file'; attributes = $item.Attributes.ToString() }
+      }
+    }
+  }
+  return $entries
+}
+
+# Generate the COMBINED physical-metadata manifest for all four trees, bound
+# to canonical roots (schemaVersion 1, per-section {root, entries}).
+function Write-CombinedResourcePhysicalMetadata([string]$SourceDsh, [string]$SourceUi, [string]$MirrorDsh, [string]$MirrorUi, [string]$ManifestPath) {
+  $manifest = @{
+    schemaVersion = 1
+    sourceDsh = @{ root = [System.IO.Path]::GetFullPath($SourceDsh); entries = (Get-ResourceTreePhysicalMetadata $SourceDsh) }
+    sourceUi = @{ root = [System.IO.Path]::GetFullPath($SourceUi); entries = (Get-ResourceTreePhysicalMetadata $SourceUi) }
+    mirrorDsh = @{ root = [System.IO.Path]::GetFullPath($MirrorDsh); entries = (Get-ResourceTreePhysicalMetadata $MirrorDsh) }
+    mirrorUi = @{ root = [System.IO.Path]::GetFullPath($MirrorUi); entries = (Get-ResourceTreePhysicalMetadata $MirrorUi) }
+  }
+  $manifest | ConvertTo-Json -Depth 4 | Set-Content -LiteralPath $ManifestPath -Encoding utf8
+}
+
 function Use-IsolatedHarnessHome([string]$Purpose) {
+
   $isolatedHome = Join-Path $Scratch "$Purpose-home"
   $null = New-Item -ItemType Directory -Force -Path $isolatedHome
   $resolved = (Resolve-Path -LiteralPath $isolatedHome).Path
@@ -502,9 +662,16 @@ function Build-Core {
   # Never repair the source-controlled dependency lock as a side effect of a
   # product build. The test/lint gates reuse the resolved build dependencies and
   # must remain offline and strict; a passing cargo build alone is not this gate.
+  # The message stream of THIS compile (same arguments, workdir and features) is
+  # the authoritative artifact source for the resource guard -- never a second
+  # rebuild.
   $cargoArgs = @('build', '--workspace', '--locked')
   if ($Release) { $cargoArgs += '--release' }
-  Invoke-Checked 'cargo' $cargoArgs $TauriDir
+  $artifactJson = Get-CompiledResourceArtifactJson $cargoArgs
+  # Compiled-resource qualification: the merge-style resource copy passes even
+  # when stale files from a previous payload ride along; verify the compiled
+  # mirrors byte-exactly right after the compile (finding: 800 stale extras).
+  Assert-CompiledResourceMirrorsFromJson $artifactJson
   Invoke-Checked 'cargo' @('test', '--workspace', '--locked', '--offline') $TauriDir
   Invoke-Checked 'cargo' @('clippy', '--workspace', '--all-targets', '--locked', '--offline', '--', '-D', 'warnings') $TauriDir
 }
@@ -1361,6 +1528,15 @@ function Build-Bundle {
     throw "Another cargo/rustc process is running ($($running.Count) of them): $(($running | ForEach-Object { "$($_.ProcessName)($($_.Id))" }) -join ', '). A bundling build needs the target directory to itself; wait for it to finish."
   }
 
+  # INTEGRATION GAP (honest): the bundle stage compiles the shell AND copies
+  # the resource mirrors in one step. The tauri CLI does not re-emit the cargo
+  # message stream, and a second cargo build could change the feature set and
+  # overwrite the packaged executable. The CORE stage's full resource
+  # qualification (exact membership + byte identity + physical metadata on all
+  # four trees) is the authoritative gate; the bundle stage builds from the
+  # same already-qualified source trees. A narrow bundle-stage guard requires
+  # tauri-CLI stream forwarding or a validated physical-metadata manifest, both
+  # of which need further integration work outside this scope.
   Invoke-Checked 'cargo' @('tauri', 'build') $TauriDir
   $nsis = Join-Path $TauriDir 'target\release\bundle\nsis'
   if (Test-Path $nsis) {

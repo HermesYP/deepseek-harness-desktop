@@ -155,7 +155,9 @@ test('the resource stages run before any compile that validates their paths', ()
 
   const buildCore = code.indexOf('function Build-Core')
   const assertInCore = code.indexOf('Assert-ResourceRootsForCompile', buildCore)
-  const cargoBuild = code.indexOf("Invoke-Checked 'cargo' $cargoArgs", buildCore)
+  // The original compile is captured via Get-CompiledResourceArtifactJson (the
+  // message stream is the authoritative artifact source; no second rebuild).
+  const cargoBuild = code.indexOf('Get-CompiledResourceArtifactJson $cargoArgs', buildCore)
   assert.ok(assertInCore > buildCore && assertInCore < cargoBuild,
     'core asserts its resource roots before running cargo')
 

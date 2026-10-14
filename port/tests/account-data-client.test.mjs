@@ -37,9 +37,13 @@ function harness(source,{onboarding=false}={}){
  }
  // Account-only cases omit the independent overlay. The onboarding case below
  // executes the real registration, controller and credit button as well.
- const anchor='\t\t\tif ("dshDesktop" in globalThis) {'
- assert.equal(source.split(anchor).length,2)
- runInNewContext(onboarding?source:source.replace(anchor,'\t\t\tif (false) {'),{
+ // 0.2.1-alpha.3 replaced the desktop gate with a `const desktop = ...` value;
+ // the alpha.2 wording is kept so both reviewed releases stay executable here.
+ const gate=source.includes('\t\t\tconst desktop = "dshDesktop" in globalThis;')
+  ? ['\t\t\tconst desktop = "dshDesktop" in globalThis;','\t\t\tconst desktop = false;']
+  : ['\t\t\tif ("dshDesktop" in globalThis) {','\t\t\tif (false) {']
+ assert.equal(source.split(gate[0]).length,2)
+ runInNewContext(onboarding?source:source.replace(gate[0],gate[1]),{
   dshDesktop:{},window:{
    __ModuleLoader__:{load:row=>{module=row.factory(name=>{assert.ok(name in framework);return framework[name]})}},
    addEventListener:(event,handler)=>browserEvents.set(event,handler),removeEventListener:event=>browserEvents.delete(event),

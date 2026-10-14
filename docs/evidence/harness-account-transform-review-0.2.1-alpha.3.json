@@ -1,0 +1,169 @@
+{
+  "schemaVersion": 1,
+  "generatedAt": "2026-10-14T17:12:00.000Z",
+  "kind": "account-transform-review",
+  "targetRelease": "0.2.1-alpha.3",
+  "previousReviewedRelease": "0.2.1-alpha.2",
+  "reviewScope": "Emitted behavioral regions of the two account artifacts the runtime payload stages. Re-reviewed block by block against the compiled 0.2.1-alpha.3 bytes and diffed against the compiled 0.2.1-alpha.2 bytes; no pin was refreshed without reading the changed body.",
+  "artifacts": [
+    {
+      "role": "host",
+      "package": "@deepseek-ai/dsh-deepseek-account-platform",
+      "path": "packages/credentials/deepseek-account-platform/lib/index.js",
+      "alpha3": {
+        "version": "0.2.1-alpha.3",
+        "bytes": 43214,
+        "sha256": "d41ea0625024677a3f3b31a0084f085695317d8a5d42dc14d4c690d745cfc40b"
+      },
+      "alpha2": {
+        "version": "0.2.1-alpha.2",
+        "bytes": 42352,
+        "sha256": "7173c2929d7e002f4b12bc0a5c1c089690cb7ed1bb42cdb5e12d27607c06ed20"
+      }
+    },
+    {
+      "role": "client",
+      "package": "@deepseek-ai/dsh-client-ui-settings-account",
+      "path": "packages/client/ui-settings-account/lib/client.js",
+      "alpha3": {
+        "version": "0.2.1-alpha.3",
+        "bytes": 3415196,
+        "sha256": "78902c55fac06a403bb80a2d46ff207f8e135baf6066f9619b6e07804026ba29"
+      },
+      "alpha2": {
+        "version": "0.2.1-alpha.2",
+        "bytes": 5280270,
+        "sha256": "7e5a98253d8b858a8c70589c8e286ac8f509c615586459929cc3ad9da1b4b19f"
+      }
+    }
+  ],
+  "blockReview": [
+    {
+      "block": "host:zod profile object (`const user = z.object({` .. `\\nconst decimal =`)",
+      "anchor": "const user = z.object({",
+      "alpha2Sha256": "8d5f2bf44712c9e338a60497b65859abaa1d4df7405d8ab253a7d6a12a44ec1b",
+      "alpha3Sha256": "8d5f2bf44712c9e338a60497b65859abaa1d4df7405d8ab253a7d6a12a44ec1b",
+      "verdict": "unchanged",
+      "portMutation": "email/mobile/mobile_number become nullish and the object gains the identity refine; every mutation anchor still occurs exactly once."
+    },
+    {
+      "block": "host:getState (`\\tasync getState() {` .. `\\n\\tasync getProfile(client) {`)",
+      "anchor": "\\tasync getState() {",
+      "alpha2Sha256": "6eda70585f440348ebc0da3aa1523649174eeda24939fb20cc8995fec4618cfb",
+      "alpha3Sha256": "6eda70585f440348ebc0da3aa1523649174eeda24939fb20cc8995fec4618cfb",
+      "verdict": "unchanged",
+      "portMutation": "credential-lifetime re-read and `portSessionId` are unchanged."
+    },
+    {
+      "block": "host:platformRequest (`async function platformRequest(url, init, signal) {` .. `\\n/**\\n* Accept a browser-accessible`)",
+      "anchorAlpha2": "\\tconsole.info(\"[deepseek-account] response\", {\\n\\t\\tpath,\\n\\t\\tstatus: response.status\\n\\t});",
+      "anchorAlpha3": "if (response.status === 401 && new Headers(init.headers).has(\"x-dsh-auth-token\")) {",
+      "alpha2Sha256": "13ce7456fc971c58c8f95d212957dadb8b117a8a48e07753ba3786a41ca4b87a",
+      "alpha3Sha256": "9cfe20e68a4581a5f109115870ab98ee258d309fcbc5950c02ec405bb005835c",
+      "verdict": "changed-re-reviewed",
+      "alpha3Delta": [
+        "Upstream removed the request/response/response-codes/envelope-rejected `console.info` reports and now reports failures through `console.error(\"[deepseek-account] request failed\", ...)` gated by a new `callerCancelled(signal)` helper, with errorCode `expired` (401 branch), `network` (!ok / null body) and `no-response` (fetch rejection).",
+        "Envelope issues moved into the `response rejected` error log via hoisted `codes` / `validationError`."
+      ],
+      "portMutation": "The verification-required guard (`accountResponseMetadata(response)` plus the unchanged condition `metadata.verification !== null && !(401 && x-dsh-auth-token)`, body cancel, `PlatformAuthError(\"network\")`, `accountReason = \"verification-required\"`) is INSERTED BEFORE the alpha.3 401 branch. The alpha.3 body deliberately keeps NO per-response info log, and this port does not restore one. The alpha.2/rc.2 entries keep their reviewed enriched response log."
+    },
+    {
+      "block": "host:readAccountDetail (`async function readAccountDetail(field, origin, token, signal, headers) {` .. `\\n/**\\n* Read the unnotified`)",
+      "anchor": "async function readAccountDetail(field, origin, token, signal, headers) {",
+      "alpha2Sha256": "fbeb9bdd2badaa4acad429778e0753a06b68985a578a7c6c94f3b1121675c8e1",
+      "alpha3Sha256": "fbeb9bdd2badaa4acad429778e0753a06b68985a578a7c6c94f3b1121675c8e1",
+      "verdict": "unchanged",
+      "portMutation": "`return { status: \"failed\" }` gains `reason: accountFailureReason(error)`; the failure reason surface is unchanged."
+    },
+    {
+      "block": "host:startSignIn (`\\tasync startSignIn(client, callbackOrigin, loginSource) {` .. `\\n\\tasync cancelSignIn(id) {`)",
+      "anchor": "const origin = loginOrigin(callbackOrigin);",
+      "alpha2Sha256": "f9a87137ba5112e4e7ce2d6b839368b1977e97cf9c04ee51b70026437ee2aeb7",
+      "alpha3Sha256": "a7a354ced7b25f553e25ab87e3037f9761fb52a2262709f72cba0c502fce4ca2",
+      "verdict": "changed-re-reviewed",
+      "alpha3Delta": [
+        "Exactly one line: the \"sign-in failed\" report moved from `console.info` to `console.error`."
+      ],
+      "portMutation": "Unchanged. The CallbackOrigin pair `const origin = loginOrigin(callbackOrigin);` is byte-identical and still occurs exactly once, so the caller-validated origin is preserved and only the native Host callback origin is substituted (`desktopCallbackOrigin`, DSH_PORT_DESKTOP_CALLBACK)."
+    },
+    {
+      "block": "host:getProfile (`\\tasync getProfile(client) {` .. `\\n\\tgetBalance(client) {`)",
+      "anchor": "\\tasync getProfile(client) {",
+      "alpha2Sha256": "3628899fd423bb6838586f915d7da7ee5b96de6e371546f95a4944ec4f3f97b2",
+      "alpha3Sha256": "3628899fd423bb6838586f915d7da7ee5b96de6e371546f95a4944ec4f3f97b2",
+      "verdict": "unchanged",
+      "portMutation": "Cached-profile presentation and background refresh are unchanged; the legacy portable disk fallback stays accepted for 0.1.7-rc.2 only."
+    },
+    {
+      "block": "client:AccountSection (`function AccountSection({` .. `\\n\\t\\t//#endregion`)",
+      "anchorAlpha2": "function AccountSection({ t, useAccount, useTheme, start, cancel, openPlatformPage })",
+      "anchorAlpha3": "function AccountSection({ t, useAccount, useTheme, start, cancel, openPlatformPage, avatarFailed })",
+      "alpha2Sha256": "b77d0878eae2e44ca4883a45a05d601261646ec57202a54d2c7af631594e79d1",
+      "alpha3Sha256": "941d715a4843073861fe6137a0917331091ee73c21e04f0aa8456de7289fb595",
+      "verdict": "changed-re-reviewed",
+      "alpha3Delta": [
+        "Upstream added the avatar feature: the component takes `avatarFailed`, destructures `avatar`, renders `AccountAvatar` and stamps `data-avatar-status`."
+      ],
+      "portMutation": "The `refreshAccount` prop is added to the alpha.3 signature AFTER `avatarFailed` (the alpha.2/rc.2 signature is unchanged). The retry-status insertion point (`section` / `aria-label: t(\"nav\")` / `children: [`) and the signed-in name/contact line still occur exactly once."
+    },
+    {
+      "block": "client:apply (`function apply(ctx) {` .. `\\n\\t\\t//#endregion`)",
+      "anchor": "function apply(ctx) {",
+      "alpha2Sha256": "30703f0fd642d3381c77bcc29152abbd81a3999bcccbcb77db0d06edfd924b37",
+      "alpha3Sha256": "465a20ded55034be319f537156bb975841da9235a32110547981565dd428c661",
+      "verdict": "changed-re-reviewed",
+      "alpha3Delta": [
+        "Upstream added the avatar loader (`AccountAvatarLoader`, `avatar: void 0` in the snapshot, `avatar.reset()` per frame, `avatar: void 0` beside `details: void 0`, `accountClientMetadata(..., \"0.2.1-alpha.3\")`). Apply grew 332 -> 368 lines."
+      ],
+      "portMutation": "All six other anchor-based client mutations still apply unchanged (helper embed, `settledAccountDetail`, same-session guard, details preservation, notice gating, native `openPlatformPage`). Upstream's avatar reset/clearing is deliberately left alone: the new loader re-fetches the picture, and no port behavior depends on blanking it."
+    },
+    {
+      "block": "client:en / client:zh (`const en = {` / `const zh = {` .. `\\n\\t\\t//#endregion`)",
+      "alpha2Sha256": "3f3ce636669ce75254e5bfffcaded7cf4d1c196e09326c58e4ae02243e7259c4 / e162549f2b24d3fa850b9d00301b92ee536716da045f1a2e332c48e9974e83a5",
+      "alpha3Sha256": "3f3ce636669ce75254e5bfffcaded7cf4d1c196e09326c58e4ae02243e7259c4 / e162549f2b24d3fa850b9d00301b92ee536716da045f1a2e332c48e9974e83a5",
+      "verdict": "unchanged",
+      "portMutation": "Retry/verification copy still applies unchanged."
+    }
+  ],
+  "reviewedVersionMap": {
+    "policy": "Explicit release literals, never TARGET_RELEASE.release: a release retarget is a re-review, not a hash refresh.",
+    "entries": [
+      "0.1.7-rc.2",
+      "0.2.1-alpha.2",
+      "0.2.1-alpha.3"
+    ],
+    "alpha2EntryBytesForAlpha3": "rejected (Unreviewed account-data semantics / Unreviewed account login semantics)"
+  },
+  "errorSemantics": {
+    "noResponse": "preserved: a rejected fetch still surfaces `no-response` off 0.1.7-rc.2",
+    "expired": "preserved: 401 with the auth token, and code 40003, still raise AccountUnauthorizedError ahead of any recovery",
+    "verificationRequired": "preserved: an allowlisted WAF/verification marker still cancels the body and raises PlatformAuthError(\"network\") with accountReason=\"verification-required\"",
+    "staleGrant": "preserved: a resolved-credential session id and the details-lifetime guard are unchanged"
+  },
+  "credentialWatch": {
+    "ownership": "parent lane (adapter publisher `watch: true` plus awaited update tracking); not part of these three transform files",
+    "note": "The reviewed host blocks keep reading the credential store through `this.ctx.credentials.readRecord(KEY)`; no flat env/file fake store is assumed anywhere in the transforms or their fixtures."
+  },
+  "tests": {
+    "command": "node --test port/tests/account-data-runtime.test.mjs port/tests/account-login-runtime.test.mjs port/tests/account-profile-runtime.test.mjs",
+    "fixtures": "genuine compiled upstream artifacts via port/tests/helpers/account-upstream.mjs (_upstream = the 0.2.1-alpha.3 qualification checkout); the alpha.2 entry is exercised against the genuine alpha.2 checkout through DSH_UPSTREAM_ROOT_PREVIOUS",
+    "result": {
+      "tests": 17,
+      "pass": 16,
+      "fail": 0,
+      "skipped": 1,
+      "skippedReason": "the packaged-runtime getProfile test requires DSH_TEST_ACCOUNT_RUNTIME (pre-existing, unrelated skip)"
+    },
+    "newNegativeGuards": [
+      "alpha.3 host/client bytes are rejected by the alpha.2 entry",
+      "a moved alpha.3 401 branch is rejected",
+      "a changed alpha.3 AccountSection signature is rejected",
+      "the alpha.3 login body is rejected by the alpha.2 login pin",
+      "both reviewed release literals reach the profile shape guard"
+    ]
+  },
+  "notEstablished": [
+    "No compile, staging, launch or native acceptance was performed or claimed here.",
+    "The account browser-automation lanes (avatar failure presentation, real platform sign-in) remain separately gated real steps."
+  ]
+}

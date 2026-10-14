@@ -530,7 +530,16 @@ function installDesktopUpdateTaskControl(ctx) {
   }
 }
 
-/** Platform-session publisher (transcribed from apps/desktop-host/src/platform-session.ts). */
+/**
+ * Platform-session publisher (transcribed from
+ * apps/desktop-host/src/platform-session.ts at dsh-v0.2.1-alpha.3).
+ *
+ * Identity-only account wakeups are subscribed (`watch(signal, true)`, so a
+ * profile-ID change surfaces as a session re-publication), and the disposer is
+ * asynchronous: it aborts the lifetime, publishes the private-session clear,
+ * and then AWAITS the subscription loop's unwind, so no in-flight session
+ * publication can survive disposal.
+ */
 function installPlatformSessionPublisher(ctx, publish) {
   ctx.inject(['deepseekAccount'], (accountCtx) => {
     const account = accountCtx.deepseekAccount
@@ -538,9 +547,10 @@ function installPlatformSessionPublisher(ctx, publish) {
       const lifetime = new AbortController()
       const updates = (async () => {
         try {
-          for await (const _state of account.watch(lifetime.signal)) {
+          for await (const _state of account.watch(lifetime.signal, true)) {
             if (lifetime.signal.aborted) break
             const session = await account.getPlatformSession()
+            // Disposal can abort during the credential read.
             if (!lifetime.signal.aborted) publish(session)
           }
         } catch {
@@ -549,7 +559,11 @@ function installPlatformSessionPublisher(ctx, publish) {
           if (!lifetime.signal.aborted) publish(null)
         }
       })()
-      return async () => { lifetime.abort(); publish(null); void updates }
+      return async () => {
+        lifetime.abort()
+        publish(null)
+        await updates
+      }
     })
   })
 }

@@ -62,13 +62,18 @@ test('actual repaired request preserves credential expiry ahead of WAF recovery 
  const errors=source.slice(source.indexOf('var PlatformAuthError'),source.indexOf('/**\n* Accept HTTPS'))
  const requestStart=source.indexOf('async function platformRequest(url, init, signal) {')
  const request=source.slice(requestStart,source.indexOf('\n/**\n* Accept a browser-accessible',requestStart))
+ // 0.2.1-alpha.3 gates its failure reports through `callerCancelled(signal)` and
+ // logs them with `console.error`; both are part of the exercised surface, so the
+ // fixture slice must carry the helper and the stub must accept `error`.
+ const helperStart=source.indexOf('function callerCancelled')
+ const helpers=helperStart<0?'':source.slice(helperStart,requestStart)
  const require=createRequire(join(accountUpstreamRoot,'packages/credentials/deepseek-account-platform/lib/index.js'))
  let response,transportError=false
  const logs=[]
- const runtime=runInNewContext(`${errors}\n${request}\n({platformRequest,AccountUnauthorizedError})`,{
+ const runtime=runInNewContext(`${errors}\n${helpers}\n${request}\n({platformRequest,AccountUnauthorizedError})`,{
   URL,Headers,Buffer,z:require('zod').z,accountResponseMetadata,
   fetch:async()=>{if(transportError)throw new Error('private-fixture-transport');return response},
-  console:{info:(...values)=>logs.push(values)},
+  console:{info:(...values)=>logs.push(values),error:(...values)=>logs.push(values)},
  })
  const invoke=()=>runtime.platformRequest('https://fixture.invalid/auth-api/v0/users/current?private=query',{
   method:'GET',headers:{'x-dsh-auth-token':'private-fixture-grant'},
@@ -105,4 +110,33 @@ test('reviewed Host and client transforms preserve authentic loader boundaries a
  assert.throws(()=>repairAccountDataClient(client+'unreviewed',helper,accountUpstreamVersion))
  assert.throws(()=>repairAccountDataClient(client.replace('revision++;','revision += 2;'),helper,accountUpstreamVersion))
  assert.doesNotThrow(()=>repairAccountDataClient(client.replaceAll('C:\\Users\\Yoova\\OneDrive','D:\\CleanCheckout'),helper,accountUpstreamVersion),'build-location metadata must not reject the reviewed account semantics')
+})
+
+test('reviewed pins are version-exact: alpha.3 bytes are never approved by an alpha.2 entry',()=>{
+ const host=readAccountUpstream('packages/credentials/deepseek-account-platform/lib/index.js')
+ const client=readAccountUpstream('packages/client/ui-settings-account/lib/client.js')
+ const helper=readFileSync(new URL('../ui/account-data/client-state.mjs',import.meta.url),'utf8')
+ if(accountUpstreamVersion!=='0.2.1-alpha.3')return
+ // The explicit literals are the point: the alpha.2 pins must reject alpha.3 bytes.
+ assert.throws(()=>repairAccountDataRuntime(host,'0.2.1-alpha.2'),/Unreviewed account-data semantics/,'the host request pin may not be shared across releases')
+ assert.throws(()=>repairAccountDataClient(client,helper,'0.2.1-alpha.2'),/Unreviewed account-data semantics/,'the client pins may not be shared across releases')
+ // Both new alpha.3 anchors are guarded: a moved 401 branch and a changed
+ // AccountSection signature must fail the review rather than pass silently.
+ assert.throws(()=>repairAccountDataRuntime(host.replace('if (response.status === 401 && new Headers(init.headers).has("x-dsh-auth-token")) {','if (response.status === 403) {'),accountUpstreamVersion),/Unreviewed account-data (semantics|anchor)/)
+ assert.throws(()=>repairAccountDataClient(client.replace('function AccountSection({ t, useAccount, useTheme, start, cancel, openPlatformPage, avatarFailed }) {','function AccountSection({ t }) {'),helper,accountUpstreamVersion),/Unreviewed account-data (semantics|anchor)/)
+})
+
+const previousRoot=process.env.DSH_UPSTREAM_ROOT_PREVIOUS
+test('the alpha.2 entry still repairs the genuine alpha.2 bodies, response log included',{skip:!previousRoot},()=>{
+ const read=relative=>readFileSync(join(previousRoot,relative),'utf8')
+ const version=JSON.parse(read('package.json')).version
+ assert.equal(version,'0.2.1-alpha.2','the previous-upstream fixture must be the alpha.2 checkout')
+ const host=read('packages/credentials/deepseek-account-platform/lib/index.js')
+ const client=read('packages/client/ui-settings-account/lib/client.js')
+ const helper=readFileSync(new URL('../ui/account-data/client-state.mjs',import.meta.url),'utf8')
+ const repaired=repairAccountDataRuntime(host,version)
+ assert.ok(repaired.source.includes('error.accountReason = "verification-required"'))
+ assert.ok(repaired.source.includes('console.info("[deepseek-account] response", { path, status: response.status, ...metadata });'),'the alpha.2 entry keeps its own response log')
+ assert.throws(()=>repairAccountDataRuntime(repaired.source,version),/reviewed base once/)
+ assert.ok(repairAccountDataClient(client,helper,version).source.includes('details: sameSession ? snapshot.details : void 0'))
 })

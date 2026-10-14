@@ -21,6 +21,7 @@ test('actual pinned provider retains caller/PKCE validation and refuses changed 
  assert.ok(result.source.includes('timingSafeEqual'))
  assert.throws(()=>repairAccountLoginRuntime(source,'next'))
  assert.throws(()=>repairAccountLoginRuntime(source.replace('const origin = loginOrigin(callbackOrigin);','const origin = callbackOrigin;'),accountUpstreamVersion))
+ if(accountUpstreamVersion==='0.2.1-alpha.3') assert.throws(()=>repairAccountLoginRuntime(source,'0.2.1-alpha.2'),/Unreviewed account login semantics/,'the alpha.3 body is never approved by the alpha.2 pin')
 })
 
 test('the official stage owns and pins the login transform before the inventory seal',()=>{

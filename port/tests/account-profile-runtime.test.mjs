@@ -41,6 +41,9 @@ test('a failed or invalid update preserves the last complete cache',()=>{
 test('overlay refuses unsupported versions and generated shapes',()=>{
  assert.throws(()=>repairAccountProfileRuntime('', 'unknown'))
  assert.throws(()=>repairAccountProfileRuntime('', '0.1.7-rc.2'))
+ // Both reviewed release literals must be known: an empty body then fails the
+ // SHAPE guard, never the version guard.
+ for(const version of ['0.2.1-alpha.2','0.2.1-alpha.3']) assert.throws(()=>repairAccountProfileRuntime('',version),/Unreviewed account getProfile shape/,'a reviewed release literal must reach the shape guard')
 })
 
 const runtime=process.env.DSH_TEST_ACCOUNT_RUNTIME

@@ -747,6 +747,59 @@ fn resolve_shell_directory(
     )
 }
 
+/// The WebView2 arguments wry 0.55.1 installs when a caller supplies none.
+///
+/// Supplying `additional_browser_args` REPLACES this default (wry's own warning
+/// on `WebviewWindowBuilder::additional_browser_args` says so), so the
+/// owned-debug acceptance arguments must carry it verbatim.
+const WRY_DEFAULT_BROWSER_ARGS: &str =
+    "--disable-features=msWebOOUI,msPdfOOUI,msSmartScreenProtection";
+
+/// Environment variable naming the owned-debug acceptance CDP port.
+///
+/// It is consumed ONLY to append a loopback debugging port on a DEBUG build that
+/// already passed the owned-credential namespace fence, and its value is never
+/// used as arbitrary browser arguments: it must be plain decimal digits that
+/// parse as a `u16` inside `1024..=65535`, and the arguments are assembled here
+/// from fixed literals.
+const DEV_CDP_PORT_ENV: &str = "DSH_DESKTOP_DEV_CDP_PORT";
+
+/// The additional WebView2 arguments for the owned-debug acceptance lane.
+///
+/// `None` means "leave wry's default arguments alone", which is the answer for a
+/// release build, for a run without the validated owned-credential namespace
+/// fence, with no requested port, or with a port that is not plain decimal
+/// digits inside `1024..=65535`. Only when every gate passes are the debugging
+/// arguments appended, and they stay loopback-only (`--remote-debugging-address=127.0.0.1`)
+/// with wry's own defaults preserved in front of them.
+///
+/// Pure: every input is injected, so the decision is unit-tested without an
+/// environment, a filesystem or a window.
+fn dev_cdp_browser_args(
+    debug_build: bool,
+    fence_namespace: Option<&str>,
+    requested_port: Option<&str>,
+) -> Option<String> {
+    if !debug_build {
+        return None;
+    }
+    if fence_namespace.map(str::is_empty).unwrap_or(true) {
+        return None;
+    }
+    // Plain decimal digits only: no sign, no radix prefix, no surrounding text.
+    let requested = requested_port?;
+    if requested.is_empty() || !requested.bytes().all(|byte| byte.is_ascii_digit()) {
+        return None;
+    }
+    let port: u16 = requested.parse().ok()?;
+    if !(1024..=65535).contains(&port) {
+        return None;
+    }
+    Some(format!(
+        "{WRY_DEFAULT_BROWSER_ARGS} --remote-debugging-address=127.0.0.1 --remote-debugging-port={port} --remote-allow-origins=*"
+    ))
+}
+
 /// Report a startup failure that happens before the shell state exists.
 ///
 /// [`fatal::report_fatal`] resolves locale, policy and the recovery loop through
@@ -1138,7 +1191,18 @@ fn setup(app: &mut tauri::App) -> Result<(), dsh_core::error::DshError> {
         .map_err(|e: url::ParseError| {
             dsh_core::error::DshError::invalid_argument("url", e.to_string())
         })?;
-    let window = tauri::WebviewWindowBuilder::new(
+    // Owned-debug CDP: the acceptance lane may request ONE loopback debugging
+    // port. It is honoured only on a debug build that already passed the owned
+    // credential namespace fence, and only as a validated u16 — a release build,
+    // or a run without the fence, leaves wry's defaults untouched and no
+    // debugging port can be opened. Arbitrary `WEBVIEW2_*` arguments are never
+    // read here.
+    let dev_cdp_args = dev_cdp_browser_args(
+        cfg!(debug_assertions),
+        owned_namespace.as_deref(),
+        std::env::var(DEV_CDP_PORT_ENV).ok().as_deref(),
+    );
+    let mut window_builder = tauri::WebviewWindowBuilder::new(
         app,
         "main",
         tauri::WebviewUrl::External("about:blank".parse().expect("static empty webview URL")),
@@ -1176,9 +1240,13 @@ fn setup(app: &mut tauri::App) -> Result<(), dsh_core::error::DshError> {
             }
         }
     })
-    .initialization_script(init_script(effective))
-    .build()
-    .map_err(|e| dsh_core::error::DshError::other("window_create", e.to_string()))?;
+    .initialization_script(init_script(effective));
+    if let Some(additional_args) = dev_cdp_args.as_deref() {
+        window_builder = window_builder.additional_browser_args(additional_args);
+    }
+    let window = window_builder
+        .build()
+        .map_err(|e| dsh_core::error::DshError::other("window_create", e.to_string()))?;
 
     wire_window_events(&app_handle, &window);
     power_resume::install(&window)
@@ -1817,5 +1885,70 @@ mod shell_directory_resolver_tests {
         // Only a real file counts.
         std::fs::write(fixture.path().join("index.html"), "<html></html>").unwrap();
         assert!(shell_index_is_regular_file(fixture.path()));
+    }
+}
+
+#[cfg(test)]
+mod dev_cdp_args_tests {
+    use super::{dev_cdp_browser_args, WRY_DEFAULT_BROWSER_ARGS};
+
+    /// A canonical namespace value is opaque here: the fence has already accepted
+    /// it, so the helper only distinguishes present from absent.
+    const FENCE_NAMESPACE: &str = "6284973d-2f3f-4b79-b957-2d35df6e89df";
+
+    #[test]
+    fn owned_debug_appends_loopback_cdp_args_and_preserves_wry_defaults() {
+        let args = dev_cdp_browser_args(true, Some(FENCE_NAMESPACE), Some("9341")).unwrap();
+        assert!(
+            args.starts_with(WRY_DEFAULT_BROWSER_ARGS),
+            "wry's defaults must be preserved verbatim: {args}"
+        );
+        assert_eq!(args.matches("--disable-features=").count(), 1);
+        assert!(args.contains(" --remote-debugging-address=127.0.0.1"));
+        assert!(args.contains(" --remote-debugging-port=9341"));
+        assert!(args.contains(" --remote-allow-origins=*"));
+    }
+
+    #[test]
+    fn the_port_is_refused_without_the_validated_owned_namespace_fence() {
+        assert_eq!(dev_cdp_browser_args(true, None, Some("9341")), None);
+        assert_eq!(dev_cdp_browser_args(true, Some(""), Some("9341")), None);
+    }
+
+    #[test]
+    fn a_release_build_can_never_enable_the_port() {
+        assert_eq!(
+            dev_cdp_browser_args(false, Some(FENCE_NAMESPACE), Some("9341")),
+            None
+        );
+    }
+
+    #[test]
+    fn an_absent_malformed_or_out_of_range_port_is_refused() {
+        for port in [
+            None,
+            Some(""),
+            Some("   "),
+            Some(" 9341"),
+            Some("9341 "),
+            Some("\t9341"),
+            Some("abc"),
+            Some("9341x"),
+            Some("+9341"),
+            Some("-1"),
+            Some("0"),
+            Some("1023"),
+            Some("65536"),
+            Some("99999"),
+        ] {
+            assert_eq!(
+                dev_cdp_browser_args(true, Some(FENCE_NAMESPACE), port),
+                None,
+                "accepted {port:?}"
+            );
+        }
+        // The bounds themselves are inclusive.
+        assert!(dev_cdp_browser_args(true, Some(FENCE_NAMESPACE), Some("1024")).is_some());
+        assert!(dev_cdp_browser_args(true, Some(FENCE_NAMESPACE), Some("65535")).is_some());
     }
 }

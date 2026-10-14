@@ -1032,7 +1032,8 @@ test('J2: the child environment carries the fence, the CDP switch and the fixtur
   })
   assert.equal(env.DSH_DESKTOP_OWNED_CREDENTIAL_NAMESPACE, UUID)
   assert.equal(env.DSH_HOME, paths.home)
-  assert.equal(env.WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS, '--remote-debugging-port=9333 --remote-allow-origins=*')
+  assert.equal(env.DSH_DESKTOP_DEV_CDP_PORT, '9333')
+  assert.equal(env.WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS, undefined, 'no ambient browser-argument channel is exported')
   assert.equal(env.DSH_ACCEPTANCE_FIXTURE_KEY, FIXTURE_API_KEY)
   assert.equal(env.DSH_DESKTOP_DEV_URL_FILE, join(paths.ownedRoot, 'handoff-1', 'gateway-url.txt'))
   assert.equal(env.DSH_DESKTOP_DEV_BOOT_FILE, join(paths.ownedRoot, 'handoff-1', 'boot.json'))
@@ -1219,6 +1220,8 @@ test('I5: exe-relative default mode proves the packaged node and the PTY termina
       assert.equal(env.DSH_DESKTOP_SHELL_DIR, undefined, 'the inherited stale UI override must be deleted, not exported')
       assert.equal(env.DEEPSEEK_BASE_URL, undefined, 'an ambient endpoint override must never reach the real child env')
       assert.equal(env.DEEPSEEK_SEARCH_BASE_URL, undefined, 'the search shipping endpoint must never reach the real child env')
+      assert.equal(env.DSH_DESKTOP_DEV_CDP_PORT, '9333', 'the real child env carries the controlled CDP port')
+      assert.equal(env.WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS, undefined, 'the real child env carries no browser-argument text')
     }
     // The four fixture-owned roots were PHYSICALLY created before the launch the
     // mock recorded, so the real app can never fall back to an operator directory.
@@ -1949,6 +1952,7 @@ test('N2b: the child env is sanitized from a fake parent envelope, never inherit
     GITHUB_TOKEN: 'operator-token-value-0001',
     NODE_OPTIONS: '--require C:\\operator\\hook.js',
     WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS: '--remote-debugging-port=61234',
+    dsh_desktop_dev_cdp_port: '9123',
     // Ordinary platform variables are still passed through: the candidate is a
     // real product process and must keep the platform itself working.
     SystemRoot: 'C:\\Windows',
@@ -1965,11 +1969,11 @@ test('N2b: the child env is sanitized from a fake parent envelope, never inherit
   for (const name of ['DEEPSEEK_API_KEY', 'DEEPSEEK_BASE_URL', 'DEEPSEEK_SEARCH_BASE_URL', 'deepseek_search_base_url', 'SEARCH_BASE_URL', 'HTTPS_PROXY', 'GITHUB_TOKEN', 'NODE_OPTIONS']) {
     assert.equal(env[name], undefined, `${name} must never be inherited`)
   }
-  assert.equal(
-    env.WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS,
-    '--remote-debugging-port=9333 --remote-allow-origins=*',
-    'the ambient WebView2 switch is replaced by the runner-owned one, never inherited',
-  )
+  // No ambient browser-argument channel survives, and the ONLY CDP input is the
+  // runner-owned port variable carrying the validated CLI value.
+  assert.equal(env.WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS, undefined, 'an ambient WebView2 argument string must never be exported')
+  assert.equal(env.DSH_DESKTOP_DEV_CDP_PORT, '9333', 'the runner-owned CDP port is the CLI value')
+  assert.equal(env.dsh_desktop_dev_cdp_port, undefined, 'the ambient mixed-case CDP port must be denied, not merged')
   assert.equal(env.SystemRoot, 'C:\\Windows', 'the platform environment still passes through')
   assert.equal(env.PATH, 'C:\\Windows\\system32')
   // Every path the child can see is fixture-owned, absolute and inside the fence.
@@ -1987,7 +1991,8 @@ test('N2b: the child env is sanitized from a fake parent envelope, never inherit
   assert.equal(env.DSH_DESKTOP_DEV_BOOT_FILE, join(paths.ownedRoot, 'handoff-1', 'boot.json'))
   assert.equal(env.DSH_DESKTOP_OWNED_CREDENTIAL_NAMESPACE, UUID)
   assert.equal(env.DSH_ACCEPTANCE_FIXTURE_KEY, FIXTURE_API_KEY)
-  assert.ok(env.WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS.includes('--remote-debugging-port=9333'), 'the runner re-adds its own debugging switch')
+  assert.ok(Number.isInteger(Number(env.DSH_DESKTOP_DEV_CDP_PORT)), 'the app receives an integer CDP port, not argument text')
+  assert.ok(Number(env.DSH_DESKTOP_DEV_CDP_PORT) >= 1024 && Number(env.DSH_DESKTOP_DEV_CDP_PORT) <= 65535, 'the port is inside the unprivileged range the app accepts')
   assert.equal(env.DSH_DESKTOP_CONTROL_SOCKET, undefined)
   assert.equal(env.DSH_DESKTOP_CONTROL_TOKEN, undefined)
 })
@@ -2029,7 +2034,29 @@ test('N2c: both ambient endpoint overrides are suppressed, and the packaged defa
     assert.equal(env[name], undefined, `${name} must not reach the packaged-default child`)
   }
   assert.equal(env.DSH_DESKTOP_DEV_URL_FILE, join(paths.ownedRoot, 'handoff-1', 'gateway-url.txt'))
-  assert.equal(env.WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS, `--remote-debugging-port=9333 --remote-allow-origins=*`)
+  assert.equal(env.DSH_DESKTOP_DEV_CDP_PORT, '9333', 'the CDP port is exported in packaged-default mode too (the app gates it)')
+  assert.equal(env.WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS, undefined, 'no browser-argument string is exported in any mode')
+})
+
+test('R1: the debug CDP port is consumed only through the owned-debug builder lane', async () => {
+  const source = await readFile(new URL('../../src-tauri/app/src/lib.rs', import.meta.url), 'utf8')
+  // The dedicated variable is the only CDP input, and ambient browser-argument
+  // TEXT is never read by the app.
+  assert.ok(source.includes('DSH_DESKTOP_DEV_CDP_PORT'), 'the dedicated owned-debug variable must exist')
+  assert.ok(source.includes('const DEV_CDP_PORT_ENV'), 'the variable name must be a single declared constant')
+  assert.ok(!source.includes('WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS'), 'the app must never read ambient WebView2 argument text')
+  // The gates: debug build, the validated namespace fence, plain digits, u16 range.
+  assert.ok(source.includes('fn dev_cdp_browser_args('), 'the decision must live in one pure helper')
+  assert.ok(source.includes('cfg!(debug_assertions)'), 'the port is gated on a debug build')
+  assert.ok(source.includes('owned_namespace.as_deref()'), 'the port is gated on the validated owned-credential fence')
+  assert.ok(source.includes('is_ascii_digit()'), 'the port must be plain decimal digits')
+  assert.ok(source.includes('(1024..=65535).contains(&port)'), 'the port bounds must be enforced')
+  // The builder keeps wry's defaults and adds only loopback debugging.
+  assert.ok(source.includes('const WRY_DEFAULT_BROWSER_ARGS'), 'wry`s default arguments must be preserved verbatim')
+  assert.ok(source.includes('--disable-features=msWebOOUI,msPdfOOUI,msSmartScreenProtection'))
+  assert.ok(source.includes('--remote-debugging-address=127.0.0.1'), 'the port must stay loopback-only')
+  assert.ok(source.includes('--remote-debugging-port={port}'), 'only the validated port is interpolated')
+  assert.ok(source.includes('.additional_browser_args(additional_args)'), 'the arguments must be applied to the window builder')
 })
 
 test('N3: shell attribution matches the tab-reported name exactly, never a candidate list', () => {

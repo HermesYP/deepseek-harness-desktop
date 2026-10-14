@@ -43,8 +43,7 @@
  *     is dropped BY NAME, and the home, app-data, temp and XDG roots become
  *     fixture-owned paths under the fence root — and the finished object is
  *     re-asserted, so only the runner's intentional `DSH_DESKTOP_*` handoff keys
- *     and its single `WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS` switch reach the
- *     candidate.
+ *     and its single owned-debug CDP port variable reach the candidate.
  *   * The runner OWNS the processes it spawns: bounded launch/readiness/stage
  *     timeouts, an in-run watchdog that terminates the owned child, and
  *     termination only through helpers/process-authority.mjs (spawn-time
@@ -1799,7 +1798,7 @@ function runnerOnlyEnvViolations(env, ownedNames) {
  * runtime/interpreter override is dropped BY NAME, and the home, app-data, temp
  * and XDG roots become fixture-owned paths under `paths.ownedRoot`. Only the
  * runner's own intentional values — the controlled `DSH_DESKTOP_*` handoff,
- * namespace and fixture keys plus the one `WEBVIEW2_*` debugging switch — are
+ * namespace, fixture and owned-debug CDP port keys — are
  * written back, and the finished object is re-asserted before it can be spawned.
  * A violation is a refusal, so an ambient value can never quietly accompany the
  * run, and the packaged default still removes every runtime and UI override while
@@ -1848,7 +1847,12 @@ export function buildChildEnvironment({
   own('DSH_DESKTOP_DEV_URL_FILE', join(paths.ownedRoot, `handoff-${handoffIndex}`, 'gateway-url.txt'))
   own('DSH_DESKTOP_DEV_BOOT_FILE', join(paths.ownedRoot, `handoff-${handoffIndex}`, 'boot.json'))
   own('DSH_DESKTOP_OWNED_CREDENTIAL_NAMESPACE', paths.namespace)
-  own('WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS', `--remote-debugging-port=${args.bounds['cdp-port']} --remote-allow-origins=*`)
+  // The owned-debug CDP port is handed over as ONE validated integer in a
+  // runner-controlled variable. The app consumes it only on a debug build that
+  // passed the owned-credential namespace fence, so no `WEBVIEW2_*` argument
+  // string is exported at all: there is no ambient browser-argument channel to
+  // leak through, and a release build cannot open a debugging port from it.
+  own('DSH_DESKTOP_DEV_CDP_PORT', String(args.bounds['cdp-port']))
   own('DSH_ACCEPTANCE_FIXTURE_KEY', FIXTURE_API_KEY)
   own('RUST_LOG', 'info')
   const violations = [

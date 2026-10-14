@@ -28,7 +28,7 @@
 
 import assert from 'node:assert/strict'
 import { createHash, randomUUID } from 'node:crypto'
-import { mkdtemp, mkdir, writeFile, rm, readFile } from 'node:fs/promises'
+import { mkdtemp, mkdir, writeFile, rm, readdir, readFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { test } from 'node:test'
@@ -1176,6 +1176,177 @@ test('N1: the pty fix fact requires EVERY native kill site to drain immediately'
   assert.equal(result.ok, false)
   assert.equal(result.sites, 1)
   assert.equal(result.sitesWithImmediateDispose, 0)
+})
+
+// ---------------------------------------------------------------------------
+// N1b–N1g: the REAL artifact shapes. The earlier N1 fixture was synthetically
+// clean (no comment, one kill site); the reviewed artifact has FOUR kill sites,
+// two of them with a `catch { }` boundary and the patched one with a comment
+// between the kill and the dispose. The detector must accept that and must still
+// reject the exact pre-image, a sibling method's disposal and a callback-only
+// disposal.
+// ---------------------------------------------------------------------------
+
+/** The line the reviewed patch inserts before the dispose, used to derive the pre-image. */
+const PATCH_COMMENT = '            // Start draining even when the exited process has no more output.'
+
+/** The reviewed patched agent's four kill sites, transcribed from the real artifact. */
+const REAL_AGENT_LINES = [
+  'var WindowsPtyAgent = /** @class */ (function () {',
+  '    function WindowsPtyAgent() { }',
+  '    WindowsPtyAgent.prototype._completePtyConnection = function () {',
+  '        try {',
+  '            this._ptyNative.kill(this._pty, this._useConptyDll);',
+  '        }',
+  '        catch ( /* already gone */_c) { /* already gone */ }',
+  '        this._conoutSocketWorker.dispose();',
+  '        this._inSocket.destroy();',
+  '    };',
+  '    WindowsPtyAgent.prototype._failPtyConnection = function (error) {',
+  '        try {',
+  '            this._ptyNative.kill(this._pty, this._useConptyDll);',
+  '        }',
+  '        catch ( /* already gone */_a) { /* already gone */ }',
+  '        this._conoutSocketWorker.dispose();',
+  '        this._inSocket.destroy();',
+  '    };',
+  '    WindowsPtyAgent.prototype.kill = function () {',
+  '        if (this._useConptyDll) {',
+  '            this._ptyNative.kill(this._pty, this._useConptyDll);',
+  '            this._conoutSocketWorker.dispose();',
+  '        }',
+  '        else {',
+  '            // Close the input write handle to signal the end of session.',
+  '            this._inSocket.destroy();',
+  '            this._ptyNative.kill(this._pty, this._useConptyDll);',
+  PATCH_COMMENT,
+  '            this._conoutSocketWorker.dispose();',
+  "            this._outSocket.on('data', function () {",
+  '                _this._conoutSocketWorker.dispose();',
+  '            });',
+  '        }',
+  '    };',
+  '    return WindowsPtyAgent;',
+  '}());',
+]
+
+/** The exact pre-image: the same file minus the patch's two added lines. */
+function preimageOf(lines) {
+  const at = lines.indexOf(PATCH_COMMENT)
+  assert.ok(at > 0, 'the fixture carries the patch comment')
+  return [...lines.slice(0, at), ...lines.slice(at + 2)].join('\n')
+}
+
+test('N1b: the REAL four-site patched agent is accepted across comment and catch boundaries', () => {
+  const result = ptyTerminateFixPresent(REAL_AGENT_LINES.join('\n'))
+  assert.equal(result.ok, true, 'the reviewed patch must be recognised on its real shape')
+  assert.equal(result.sites, 4)
+  assert.equal(result.sitesWithImmediateDispose, 4)
+})
+
+test('N1c: the exact pre-image of the reviewed patch is rejected', () => {
+  const result = ptyTerminateFixPresent(preimageOf(REAL_AGENT_LINES))
+  assert.equal(result.ok, false, 'the unpatched ConPTY-DLL branch must not be accepted')
+  assert.equal(result.sites, 4)
+  assert.equal(result.sitesWithImmediateDispose, 3, 'only the ConPTY-DLL branch loses its drain')
+})
+
+test('N1d: a sibling method disposal never covers a kill that has none', () => {
+  const sibling = [
+    '    WindowsPtyAgent.prototype.kill = function () {',
+    '        this._ptyNative.kill(this._pty, this._useConptyDll);',
+    '    };',
+    '    WindowsPtyAgent.prototype.other = function () {',
+    '        this._conoutSocketWorker.dispose();',
+    '    };',
+  ].join('\n')
+  const result = ptyTerminateFixPresent(sibling)
+  assert.equal(result.ok, false, 'the brace boundary must stop the scan before the next method')
+  assert.equal(result.sites, 1)
+  assert.equal(result.sitesWithImmediateDispose, 0)
+})
+
+test('N1e: a disposal inside a callback body is never proof of draining', () => {
+  const callbackOnly = [
+    '    WindowsPtyAgent.prototype.kill = function () {',
+    '        this._ptyNative.kill(this._pty, this._useConptyDll);',
+    "        this._outSocket.on('data', function () {",
+    '            _this._conoutSocketWorker.dispose();',
+    '        });',
+    '    };',
+  ].join('\n')
+  assert.equal(ptyTerminateFixPresent(callbackOnly).ok, false)
+})
+
+/**
+ * Read a file, treating ONLY `ENOENT` as "absent". A permission or sharing
+ * failure must never be reported as an optional absence, because that would turn
+ * a real environment problem into a silent pass.
+ */
+async function readIfPresent(url) {
+  try {
+    return await readFile(url, 'utf8')
+  } catch (error) {
+    if (error?.code === 'ENOENT') return null
+    throw error
+  }
+}
+
+test('N1f: the reviewed patch bytes yield an accepted post-image and a rejected pre-image', async () => {
+  // The upstream checkout is optional; the reviewed patch is also a TRACKED
+  // adopted input under port/runtime-locks, so this case runs against real patch
+  // bytes even when no upstream checkout has been built.
+  const upstreamPatch = await readIfPresent(new URL('../../../_upstream/patches/node-pty@1.2.0-beta.15.patch', import.meta.url))
+  const trackedPatch = await readIfPresent(new URL('../../runtime-locks/windows-x64/patches/node-pty@1.2.0-beta.15.patch', import.meta.url))
+  const patch = upstreamPatch ?? trackedPatch
+  assert.ok(patch !== null,
+    'the reviewed node-pty patch bytes must be available: neither the upstream checkout nor the tracked reviewed input was readable')
+  if (upstreamPatch !== null && trackedPatch !== null) {
+    assert.equal(trackedPatch, upstreamPatch,
+      'the tracked reviewed patch must be byte-identical to the upstream patch it was adopted from')
+  }
+  const lines = patch.split(/\r?\n/u)
+  const start = lines.findIndex(line => line.startsWith('diff --git') && line.includes('windowsPtyAgent.js'))
+  assert.ok(start >= 0, 'the reviewed patch carries the Windows agent hunk')
+  const end = lines.findIndex((line, index) => index > start && line.startsWith('diff --git'))
+  const pre = []
+  const post = []
+  for (const line of lines.slice(start, end < 0 ? lines.length : end)) {
+    if (line.startsWith('+++') || line.startsWith('---') || line.startsWith('@@') || line.startsWith('index ')) continue
+    if (line.startsWith('+')) post.push(line.slice(1))
+    else if (line.startsWith('-')) pre.push(line.slice(1))
+    else if (line.startsWith(' ')) { pre.push(line.slice(1)); post.push(line.slice(1)) }
+  }
+  assert.equal(ptyTerminateFixPresent(post.join('\n')).ok, true, 'the patch post-image must be accepted')
+  assert.equal(ptyTerminateFixPresent(pre.join('\n')).ok, false, 'the patch pre-image must be rejected')
+})
+
+test('N1g: the installed patched agent, when present, is accepted', async (t) => {
+  const store = new URL('../../../_upstream/node_modules/.pnpm/', import.meta.url)
+  let entries
+  try {
+    entries = await readdir(store)
+  } catch (error) {
+    if (error?.code === 'ENOENT') {
+      t.skip('the upstream checkout has no installed .pnpm store, so the installed patched agent cannot be exercised')
+      return
+    }
+    throw error
+  }
+  const directory = entries.find(name => name.startsWith('node-pty@1.2.0-beta.15') && name.includes('_patc'))
+  if (directory === undefined) {
+    t.skip('the upstream store holds no patched node-pty@1.2.0-beta.15 install (the _patc variant)')
+    return
+  }
+  const agent = await readIfPresent(new URL(`${directory}/node_modules/node-pty/lib/windowsPtyAgent.js`, store))
+  if (agent === null) {
+    t.skip(`the installed patched node-pty (${directory}) has no lib/windowsPtyAgent.js`)
+    return
+  }
+  const result = ptyTerminateFixPresent(agent)
+  assert.equal(result.ok, true, 'the actually installed patched agent must be recognised')
+  assert.equal(result.sites, 4)
+  assert.equal(result.sitesWithImmediateDispose, 4)
 })
 
 test('N2: exe-relative default mode strips every runtime override from the child env', () => {

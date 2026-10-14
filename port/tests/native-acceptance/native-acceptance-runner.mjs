@@ -151,29 +151,101 @@ export const SETTINGS_MARKER_KEY = 'acceptance.native-marker'
 export const SETTINGS_MARKER_VALUE = 'set-by-native-acceptance'
 
 /**
+ * Remove comments and string/template bodies from one line so brace counting and
+ * callback detection read code only. `state` carries block-comment and quote state
+ * across lines.
+ */
+function codeOnly(line, state) {
+  let out = ''
+  for (let index = 0; index < line.length; index += 1) {
+    const char = line[index]
+    const next = line[index + 1]
+    if (state.blockComment === true) {
+      if (char === '*' && next === '/') { state.blockComment = false; index += 1 }
+      continue
+    }
+    if (state.quote !== null) {
+      if (char === '\\') { index += 1; continue }
+      if (char === state.quote) state.quote = null
+      continue
+    }
+    if (char === '/' && next === '*') { state.blockComment = true; index += 1; continue }
+    if (char === '/' && next === '/') break
+    if (char === '"' || char === "'" || char === '`') { state.quote = char; continue }
+    out += char
+  }
+  return out
+}
+
+const FUNCTION_OPENER = /function\s*[\w$]*\s*\(|\(function\b|=>\s*\{/u
+
+/** Brace depth before and after each line, plus whether the line opens a function body. */
+function codeShape(sourceText) {
+  const lines = String(sourceText ?? '').split(/\r?\n/u)
+  const state = { blockComment: false, quote: null }
+  const code = lines.map(line => codeOnly(line, state))
+  const depthBefore = new Array(code.length)
+  const depthAfter = new Array(code.length)
+  const opensFunction = new Array(code.length)
+  let depth = 0
+  for (let index = 0; index < code.length; index += 1) {
+    depthBefore[index] = depth
+    opensFunction[index] = FUNCTION_OPENER.test(code[index])
+    let delta = 0
+    for (const char of code[index]) {
+      if (char === '{') delta += 1
+      else if (char === '}') delta -= 1
+    }
+    depth += delta
+    depthAfter[index] = depth
+  }
+  return { code, depthBefore, depthAfter, opensFunction }
+}
+
+/**
  * Whether the payload's node-pty Windows agent carries the upstream patch's
- * kill/drain fix: EVERY `native kill` site must be followed by an immediate
- * `_conoutSocketWorker.dispose()` (within two source lines, before any output
- * listener). The 0.2.1-alpha.2 patch targets exactly the ConPTY-DLL branch,
- * where the dispose otherwise only happens inside the first-data listener —
- * so a kill of a process that emits no further output never drains. Pure over
- * the file text; tested against both shapes.
+ * kill/drain fix: EVERY native kill site must reach a `_conoutSocketWorker.dispose()`
+ * before the first-data listener and within the kill's own enclosing function body.
+ *
+ * The scan is deliberately structural rather than line-adjacent:
+ *   - comment and blank lines are skipped, and a `try`/`catch` boundary is stepped
+ *     over, because the real artifact puts the dispose after `catch { }` at two
+ *     sites and after a comment at the patched one;
+ *   - the scan stops when the enclosing function body closes, so a SIBLING
+ *     method's disposal can never be credited to a kill that has none;
+ *   - a disposal inside a nested function body (the first-data callback) is never
+ *     accepted, because that is exactly the unpatched shape: `kill()` followed by
+ *     `on('data', function () { dispose() })`, where a silently exiting process
+ *     never produces the event that would drain.
+ *
+ * Pure over the file text.
  */
 export function ptyTerminateFixPresent(sourceText) {
-  const lines = String(sourceText ?? '').split(/\r?\n/u)
+  const { code, depthBefore, depthAfter, opensFunction } = codeShape(sourceText)
   const killPattern = /this\._ptyNative\.kill\(this\._pty,\s*this\._useConptyDll\);/u
+  const disposePattern = /_conoutSocketWorker\.dispose\(\)/u
   const sites = []
   let sitesWithImmediateDispose = 0
-  for (let index = 0; index < lines.length; index += 1) {
-    if (!killPattern.test(lines[index])) continue
-    const following = []
-    for (let offset = 1; following.length < 2 && index + offset < lines.length; offset += 1) {
-      const line = lines[index + offset]
-      if (line.trim() !== '') following.push(line)
-    }
-    const immediate = following[0] !== undefined && following[0].includes('_conoutSocketWorker.dispose()')
+  for (let index = 0; index < code.length; index += 1) {
+    if (!killPattern.test(code[index])) continue
     sites.push(index + 1)
-    if (immediate) sitesWithImmediateDispose += 1
+    // The enclosing function body bounds the scan.
+    let stopDepth = 0
+    for (let above = index - 1; above >= 0; above -= 1) {
+      if (opensFunction[above] === true && depthAfter[above] <= depthBefore[index]) {
+        stopDepth = depthAfter[above]
+        break
+      }
+    }
+    let nestedFunctions = 0
+    let drained = false
+    for (let forward = index + 1; forward < code.length; forward += 1) {
+      if (depthBefore[forward] < stopDepth) break
+      if (opensFunction[forward] === true) nestedFunctions += 1
+      if (nestedFunctions === 0 && disposePattern.test(code[forward])) { drained = true; break }
+      if (depthAfter[forward] < stopDepth) break
+    }
+    if (drained) sitesWithImmediateDispose += 1
   }
   return {
     ok: sites.length > 0 && sitesWithImmediateDispose === sites.length,

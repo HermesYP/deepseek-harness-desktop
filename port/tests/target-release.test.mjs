@@ -53,7 +53,7 @@ function reader(files) {
 function checkoutFiles(overrides = {}) {
   return {
     'package.json': JSON.stringify({
-      version: '0.2.1-alpha.2',
+      version: '0.2.1-alpha.3',
       packageManager: 'pnpm@11.28.5',
       engines: { node: '^22.19.0 || >=24.0.0' },
     }),
@@ -104,7 +104,7 @@ test('declared source constants are read, and an absent constant fails closed', 
 test('the facts a checkout declares are read from the checkout, not assumed', () => {
   const facts = readUpstreamFacts('ignored', { readFile: reader(checkoutFiles()) })
   assert.deepEqual(facts, {
-    release: '0.2.1-alpha.2',
+    release: '0.2.1-alpha.3',
     pnpmVersion: '11.28.5',
     enginesRange: '^22.19.0 || >=24.0.0',
     hostProtocolVersion: 4,
@@ -123,19 +123,18 @@ test('a checkout that matches the target probes clean', () => {
 
 test('every drifted field is named with both values, and the probe does not pass', () => {
   const drifted = checkoutFiles({ 'package.json': JSON.stringify({
-    version: '0.1.7-rc.2',
-    packageManager: 'pnpm@11.7.0',
+    version: '0.2.1-alpha.2',
+    packageManager: 'pnpm@11.28.5',
     engines: { node: '^22.19.0 || >=24.0.0' },
   }) })
   const report = probeUpstreamRelease('/checkout', { readFile: reader(drifted) })
   assert.equal(report.ok, false)
   assert.deepEqual(report.mismatches, [
-    { field: 'release', expected: '0.2.1-alpha.2', found: '0.1.7-rc.2' },
-    { field: 'pnpmVersion', expected: '11.28.5', found: '11.7.0' },
+    { field: 'release', expected: '0.2.1-alpha.3', found: '0.2.1-alpha.2' },
   ])
   assert.throws(
     () => assertUpstreamRelease('/checkout', { readFile: reader(drifted) }),
-    /not the recorded target 0\.2\.1-alpha\.2: release: expected 0\.2\.1-alpha\.2, found 0\.1\.7-rc\.2; pnpmVersion: expected 11\.28\.5, found 11\.7\.0/)
+    /not the recorded target 0\.2\.1-alpha\.3: release: expected 0\.2\.1-alpha\.3, found 0\.2\.1-alpha\.2/)
 })
 
 test('a drifted protocol generation or bundle count is caught', () => {

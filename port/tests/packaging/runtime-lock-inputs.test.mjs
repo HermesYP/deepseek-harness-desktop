@@ -165,12 +165,12 @@ test('descriptor uses stable relative tarball paths and pins local tarball integ
   } finally { rmSync(f.root, { recursive: true, force: true }) }
 })
 
-const patchedCommit = 'd743267388641bc76f17c45ce8b4c231aed1d32c'
+const patchedCommit = '2fbf4359b82fb94c03dcce0b831660d87f12ea5c'
 function patchedFixture() {
   const f = fixture()
   f.upstreamCommit = patchedCommit
-  const selectors = ['@earendil-works/pi-ai@1.0.2', 'node-pty@1.2.0-beta.15']
-  const paths = ['patches/@earendil-works__pi-ai@1.0.2.patch', 'patches/node-pty@1.2.0-beta.15.patch']
+  const selectors = ['@earendil-works/pi-ai@1.1.0', 'node-pty@1.2.0-beta.15']
+  const paths = ['patches/@earendil-works__pi-ai@1.1.0.patch', 'patches/node-pty@1.2.0-beta.15.patch']
   const patches = selectors.map((selector, index) => {
     const bytes = readFileSync(new URL(`../../../_upstream/${paths[index]}`, import.meta.url))
     for (const directory of [f.project, f.inputs]) {
@@ -179,7 +179,7 @@ function patchedFixture() {
     }
     return { selector, path: paths[index], bytes: bytes.length, sha256: digest(bytes) }
   })
-  const patchedPolicy = `${policy}overrides:\n  "@earendil-works/pi-ai": "1.0.2"\n  node-pty: "1.2.0-beta.15"\npatchedDependencies:\n${patches.map(record => `  "${record.selector}": "${record.path}"\n`).join('')}`
+  const patchedPolicy = `${policy}overrides:\n  "@earendil-works/pi-ai": "1.1.0"\n  node-pty: "1.2.0-beta.15"\npatchedDependencies:\n${patches.map(record => `  "${record.selector}": "${record.path}"\n`).join('')}`
   const metadata = { schemaVersion: 1, sourcePolicySha256: 'b'.repeat(64), sourceLockSha256: 'c'.repeat(64), patches }
   const lock = `${readFileSync(join(f.inputs, 'pnpm-lock.yaml'), 'utf8')}patchedDependencies:\n${patches.map(record => `  "${record.selector}": ${record.sha256}\n`).join('')}snapshots:\n${patches.map(record => `  "${record.selector}(patch_hash=${record.sha256})": {}\n`).join('')}`
   for (const directory of [f.project, f.inputs]) {
@@ -231,7 +231,7 @@ for (const [label, mutate] of [
   ['extra reviewed patch', f => writeFileSync(join(f.inputs, 'patches/extra.patch'), 'extra')],
   ['altered source metadata', f => writeFileSync(join(f.inputs, 'runtime-dependency-policy.json'), readFileSync(join(f.inputs, 'runtime-dependency-policy.json'), 'utf8').replace('b'.repeat(64), 'd'.repeat(64)))],
   ['absent applied lock patch', f => writeFileSync(join(f.inputs, 'pnpm-lock.yaml'), readFileSync(join(f.inputs, 'pnpm-lock.yaml'), 'utf8').replaceAll('(patch_hash=', '(omitted_patch='))],
-  ['changed patch version pin', f => writeFileSync(join(f.project, 'pnpm-workspace.yaml'), readFileSync(join(f.project, 'pnpm-workspace.yaml'), 'utf8').replace('"1.0.2"', '"1.1.0"'))],
+  ['changed patch version pin', f => writeFileSync(join(f.project, 'pnpm-workspace.yaml'), readFileSync(join(f.project, 'pnpm-workspace.yaml'), 'utf8').replace('"1.1.0"', '"1.0.2"'))],
   ['missing patch policy metadata', f => rmSync(join(f.project, 'runtime-dependency-policy.json'))],
   ['unsafe patch path', f => writeFileSync(join(f.project, 'runtime-dependency-policy.json'), readFileSync(join(f.project, 'runtime-dependency-policy.json'), 'utf8').replace('patches/node-pty@1.2.0-beta.15.patch', '../outside.patch'))],
   ['unknown patch selector', f => writeFileSync(join(f.project, 'runtime-dependency-policy.json'), readFileSync(join(f.project, 'runtime-dependency-policy.json'), 'utf8').replace('node-pty@1.2.0-beta.15"', 'node-pty@1.2.0-beta.16"'))],

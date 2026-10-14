@@ -23,19 +23,20 @@ export const TARGET_RELEASE_SCHEMA_VERSION = 1
  * The supported target release.
  *
  * `uiEsbuildVersion` is the esbuild release the target's own Web build resolves.
- * It is NOT the root lockfile's newest esbuild: `apps/web` declares
- * `vite: ^6.4.3`, the linked `vite@6.4.3` declares `esbuild: ^0.25.0`, and the
- * installed `@esbuild/win32-x64` set (0.21.5, 0.25.12, 0.28.1, 0.28.2) leaves
- * exactly `0.25.12` satisfying that range. The UI qualification derives this
- * value from the linked Vite package and refuses an ambiguous resolution; this
- * field records the result for the target.
+ * It is NOT the root lockfile's newest esbuild and is never inferred from one:
+ * the target's `apps/web` declares `vite: ^6.4.3`, the linked Vite package
+ * declares `esbuild: ^0.25.0`, and exactly one `@esbuild/win32-x64` entry in the
+ * target's installed set satisfies that range. The UI qualification derives the
+ * resolved release from the linked Vite package at build time and refuses an
+ * ambiguous or unsatisfiable resolution; this field records that derivation for
+ * the target and is cross-checked on every use rather than trusted.
  */
 export const TARGET_RELEASE = Object.freeze({
   schemaVersion: TARGET_RELEASE_SCHEMA_VERSION,
-  release: '0.2.1-alpha.2',
+  release: '0.2.1-alpha.3',
   channel: 'alpha',
-  upstreamTag: 'dsh-v0.2.1-alpha.2',
-  upstreamCommit: 'd743267388641bc76f17c45ce8b4c231aed1d32c',
+  upstreamTag: 'dsh-v0.2.1-alpha.3',
+  upstreamCommit: '2fbf4359b82fb94c03dcce0b831660d87f12ea5c',
   pnpmVersion: '11.28.5',
   nodeVersion: '22.20.0',
   enginesRange: '^22.19.0 || >=24.0.0',

@@ -60,11 +60,11 @@ function relativeTarball(record) {
   return `desktop-packages/${record.file}`
 }
 
-const PATCHED_WINDOWS_UPSTREAM = 'd743267388641bc76f17c45ce8b4c231aed1d32c'
+const PATCHED_WINDOWS_UPSTREAM = '2fbf4359b82fb94c03dcce0b831660d87f12ea5c'
 const DEPENDENCY_POLICY_FILE = 'runtime-dependency-policy.json'
 const PATCH_PATH = /^patches\/[A-Za-z0-9@._+-]+\.patch$/u
 const REQUIRED_PATCHES = new Map([
-  ['@earendil-works/pi-ai@1.0.2', ['patches/@earendil-works__pi-ai@1.0.2.patch', '1cc211bc358d30cb58bd975f39c03e296f8a277c3de845514d12f9ae77ebab5f']],
+  ['@earendil-works/pi-ai@1.1.0', ['patches/@earendil-works__pi-ai@1.1.0.patch', '66eaf960054f10441b93ac3857114e96c1901f6d183713e2f21437b007111644']],
   ['node-pty@1.2.0-beta.15', ['patches/node-pty@1.2.0-beta.15.patch', '9d30053266d0f39d3debe894c675867f6782da6bcadbc94a693b3cfb9eff8ed0']],
 ])
 

@@ -1,21 +1,26 @@
-// Carry the two upstream runtime dependency patches into the generated runtime
-// project.
+// Carry the reviewed upstream runtime dependency patches into the generated
+// runtime project.
 //
-// Upstream patches two runtime dependencies, and the generated Desktop project
-// policy (`apps/desktop/src/project-manager.ts` `workspaceFile()`) neither
-// pins their versions nor carries `patchedDependencies`. The port therefore
-// resolves newer releases and applies no patch at all, silently losing reviewed
-// behaviour:
+// At `dsh-v0.2.1-alpha.3` (2fbf4359b82fb94c03dcce0b831660d87f12ea5c) upstream's
+// own workspace declares eight `patchedDependencies`, but the generated Desktop
+// project policy (`apps/desktop/src/project-manager.ts` `workspaceFile()`) still
+// carries none of them and pins none of their versions. Six declare packaging
+// and tooling releases absent from the desktop runtime closure; exactly two are
+// runtime-relevant, and without carrying them the port would silently lose
+// reviewed behaviour:
 //
-//   * `@earendil-works/pi-ai`  the reviewed release is 1.0.2 WITH a patch. The
-//     patch removes the per-delta `parseStreamingJson(...)` assignment to
-//     `block.arguments` in six provider adapters, so a partially streamed
-//     tool-call JSON is no longer reparsed on every delta. Version 1.1.0 still
-//     performs it, so the newer release does not carry the fix.
-//   * `node-pty`  the reviewed release is 1.2.0-beta.15 WITH a patch whose
-//     Windows hunk disposes the ConPTY output socket worker immediately after
-//     `kill()`. Without it, a process that exits silently never produces the
-//     `data` event that disposer waits for, so the worker stays alive.
+//   * `@earendil-works/pi-ai@1.1.0`  upstream itself now patches 1.1.0 (the
+//     0.2.1-alpha.3 workspace and lock record the patch), and the reviewed patch
+//     carries the SAME fix as the alpha.2-era 1.0.2 patch: it removes the
+//     per-delta `parseStreamingJson(...)` assignment to `block.arguments` in six
+//     provider adapters, so a partially streamed tool-call JSON is no longer
+//     reparsed on every delta. The override pins the resolution to exactly
+//     1.1.0 so the declared range cannot drift past the patched release.
+//   * `node-pty@1.2.0-beta.15`  the patch is byte-identical to the
+//     0.2.1-alpha.2 reviewed bytes (same sha256), and its Windows hunk disposes
+//     the ConPTY output socket worker immediately after `kill()`. Without it, a
+//     process that exits silently never produces the `data` event the disposer
+//     waits for, so the worker stays alive.
 //
 // The patch bytes are reviewed and asserted, not trusted by name. Each recorded
 // `sha256` is also the `patch_hash` pnpm wrote in the upstream lockfile for that
@@ -41,10 +46,10 @@ export const RUNTIME_DEPENDENCY_POLICY_RECORD = 'runtime-dependency-policy.json'
  */
 export const REVIEWED_UPSTREAM_RUNTIME_PATCHES = Object.freeze([
   Object.freeze({
-    selector: '@earendil-works/pi-ai@1.0.2',
-    name: '@earendil-works__pi-ai@1.0.2.patch',
+    selector: '@earendil-works/pi-ai@1.1.0',
+    name: '@earendil-works__pi-ai@1.1.0.patch',
     bytes: 4477,
-    sha256: '1cc211bc358d30cb58bd975f39c03e296f8a277c3de845514d12f9ae77ebab5f',
+    sha256: '66eaf960054f10441b93ac3857114e96c1901f6d183713e2f21437b007111644',
   }),
   Object.freeze({
     selector: 'node-pty@1.2.0-beta.15',
@@ -86,18 +91,18 @@ function readReviewedPatch(upstreamRoot, record) {
 /**
  * Exact external version overrides for the reviewed patched dependencies.
  *
- * An override is what moves the resolution back to the patched release; without
- * it the declared ranges (`^1.0.2`, `^3.1.0`) admit newer releases and
+ * An override is what moves the resolution to exactly the patched release;
+ * without it the declared ranges (`^1.1.0`, `^3.1.0`) admit newer releases and
  * `patchedDependencies` would have no matching dependency to patch.
  */
 export const REVIEWED_EXACT_EXTERNAL_OVERRIDES = Object.freeze({
-  '@earendil-works/pi-ai': '1.0.2',
+  '@earendil-works/pi-ai': '1.1.0',
   'node-pty': '1.2.0-beta.15',
 })
 
 /** `patchedDependencies` entries, keyed by the reviewed selector. */
 export const REVIEWED_PATCHED_DEPENDENCIES = Object.freeze({
-  '@earendil-works/pi-ai@1.0.2': 'patches/@earendil-works__pi-ai@1.0.2.patch',
+  '@earendil-works/pi-ai@1.1.0': 'patches/@earendil-works__pi-ai@1.1.0.patch',
   'node-pty@1.2.0-beta.15': 'patches/node-pty@1.2.0-beta.15.patch',
 })
 

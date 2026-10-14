@@ -108,11 +108,11 @@ test('applying the policy pins the reviewed releases and copies the exact patche
   assert.equal(result.changed, true)
 
   const policy = readFileSync(join(root, 'pnpm-workspace.yaml'), 'utf8')
-  for (const [name, spec] of Object.entries({ '@earendil-works/pi-ai': '1.0.2', 'node-pty': '1.2.0-beta.15' })) {
+  for (const [name, spec] of Object.entries({ '@earendil-works/pi-ai': '1.1.0', 'node-pty': '1.2.0-beta.15' })) {
     assert.ok(policy.includes(`"${name}": "${spec}"`), `${name} must be pinned to ${spec}`)
   }
   assert.match(policy, /^patchedDependencies:$/mu)
-  assert.match(policy, /^ {2}'@earendil-works\/pi-ai@1\.0\.2': patches\/@earendil-works__pi-ai@1\.0\.2\.patch$/mu)
+  assert.match(policy, /^ {2}'@earendil-works\/pi-ai@1\.1\.0': patches\/@earendil-works__pi-ai@1\.1\.0\.patch$/mu)
   assert.match(policy, /^ {2}'node-pty@1\.2\.0-beta\.15': patches\/node-pty@1\.2\.0-beta\.15\.patch$/mu)
 
   // Everything the stage and the descriptor rely on survives unchanged.
@@ -138,7 +138,7 @@ test('applying the policy pins the reviewed releases and copies the exact patche
   assert.equal(record.sourcePolicySha256, sha256(readFileSync(join(checkout, 'pnpm-workspace.yaml'))))
   assert.equal(record.sourceLockSha256, sha256(readFileSync(join(checkout, 'pnpm-lock.yaml'))))
   assert.deepEqual(record.patches.map(entry => entry.selector),
-    ['@earendil-works/pi-ai@1.0.2', 'node-pty@1.2.0-beta.15'], 'patches are recorded in selector order')
+    ['@earendil-works/pi-ai@1.1.0', 'node-pty@1.2.0-beta.15'], 'patches are recorded in selector order')
   for (const entry of record.patches) {
     assert.deepEqual(Object.keys(entry).sort(), ['bytes', 'path', 'selector', 'sha256'])
     assert.match(entry.path, /^patches\/[^/]+\.patch$/u)
@@ -168,7 +168,7 @@ test('a tampered, missing or non-regular patch source is refused', {
   // Not a regular file. A directory junction exercises the non-regular branch
   // without needing elevation; a file symlink needs Developer Mode on Windows, so
   // a plain directory is the fallback when even junction creation is denied.
-  const linked = upstreamWithPatches({ symlink: '@earendil-works__pi-ai@1.0.2.patch' })
+  const linked = upstreamWithPatches({ symlink: '@earendil-works__pi-ai@1.1.0.patch' })
   assert.throws(() => applyUpstreamRuntimeDependencyPolicy({ upstreamRoot: linked, projectRoot: project() }),
     /must be a regular, non-linked file/)
 
@@ -183,9 +183,9 @@ test('the amendment refuses a conflicting override and a pre-applied policy', {
 }, () => {
   const conflicting = project(generatedPolicy({
     extra: 'overrides:\n',
-  }).replace('overrides:\n', 'overrides:\n  "@earendil-works/pi-ai": "1.1.0"\n'))
+  }).replace('overrides:\n', 'overrides:\n  "@earendil-works/pi-ai": "1.0.2"\n'))
   assert.throws(() => applyUpstreamRuntimeDependencyPolicy({ upstreamRoot: checkout, projectRoot: conflicting }),
-    /already overrides @earendil-works\/pi-ai to "1\.1\.0"/)
+    /already overrides @earendil-works\/pi-ai to "1\.0\.2"/)
 
   const applied = project(generatedPolicy({ extra: 'patchedDependencies:\n' }))
   assert.throws(() => applyUpstreamRuntimeDependencyPolicy({ upstreamRoot: checkout, projectRoot: applied }),

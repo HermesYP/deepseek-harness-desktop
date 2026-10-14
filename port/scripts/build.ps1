@@ -1224,7 +1224,7 @@ function Get-PayloadInputs([string]$StageRoot) {
   # them imports TARGET_RELEASE from it to decide which release's reviewed hashes
   # apply. Sealing the transforms without it would leave the input that governs
   # the accepted target version outside the manifest.
-  foreach ($helper in @('seal-runtime.mjs', 'runtime-locks.mjs', 'runtime-payload.psm1', 'payload-manifest.psm1', 'config-editor-runtime-import.mjs', 'target-release.mjs', 'account-profile-runtime.mjs', 'account-login-runtime.mjs', 'account-data-runtime.mjs')) {
+  foreach ($helper in @('seal-runtime.mjs', 'runtime-locks.mjs', 'runtime-payload.psm1', 'payload-manifest.psm1', 'config-editor-runtime-import.mjs', 'target-release.mjs', 'upstream-runtime-dependency-policy.mjs', 'account-profile-runtime.mjs', 'account-login-runtime.mjs', 'account-data-runtime.mjs')) {
     $inputs["packagingHelper:$helper"] = (Get-FileHash -LiteralPath (Join-Path $PSScriptRoot "lib\$helper") -Algorithm SHA256).Hash.ToLowerInvariant()
   }
   $inputs['accountProfileCache'] = (Get-FileHash -LiteralPath (Join-Path $TauriDir 'runtime\account-profile-cache.mjs') -Algorithm SHA256).Hash.ToLowerInvariant()

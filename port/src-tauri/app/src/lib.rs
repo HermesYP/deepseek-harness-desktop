@@ -672,19 +672,79 @@ fn executable_directory() -> Result<std::path::PathBuf, dsh_core::error::DshErro
         })
 }
 
+/// True only when `directory/index.html` exists AND is a regular file.
+///
+/// A missing path, or a directory named `index.html`, is not a bundled UI. The
+/// probe follows links (`std::fs::metadata`), so a symlinked entry point counts
+/// as present, matching how the shell later reads it.
+fn shell_index_is_regular_file(directory: &std::path::Path) -> bool {
+    std::fs::metadata(directory.join("index.html"))
+        .map(|metadata| metadata.is_file())
+        .unwrap_or(false)
+}
+
+/// Choose the shell (client UI) directory from injected inputs.
+///
+/// Order, and why:
+///   1. an explicit `DSH_DESKTOP_SHELL_DIR` always wins (development override);
+///   2. otherwise the UI bundled BESIDE THE EXECUTABLE wins whenever its
+///      `index.html` is a regular file — in debug AND release builds, so a
+///      packaged debug candidate proves its own assembled UI instead of a
+///      checkout source tree;
+///   3. only when no bundled UI exists does a debug build fall back to the
+///      checkout source directory (development without an assembled bundle);
+///   4. a release build falls back to `resource_dir()/ui` (the Tauri bundle).
+///
+/// Pure: every input — including the regular-file probe result and the resource
+/// directory outcome — is injected, so the decision can be unit-tested without
+/// touching the filesystem or the process environment.
+fn select_shell_directory(
+    explicit: Option<std::path::PathBuf>,
+    bundled_ui: Option<std::path::PathBuf>,
+    bundled_ui_present: bool,
+    development_source: Option<std::path::PathBuf>,
+    release_fallback: Result<std::path::PathBuf, dsh_core::error::DshError>,
+) -> Result<std::path::PathBuf, dsh_core::error::DshError> {
+    if let Some(directory) = explicit {
+        return Ok(directory);
+    }
+    if let Some(directory) = bundled_ui.filter(|_| bundled_ui_present) {
+        return Ok(directory);
+    }
+    if let Some(directory) = development_source {
+        return Ok(directory);
+    }
+    release_fallback
+}
+
 fn resolve_shell_directory(
     app: &tauri::App,
 ) -> Result<std::path::PathBuf, dsh_core::error::DshError> {
-    if let Ok(directory) = std::env::var("DSH_DESKTOP_SHELL_DIR") {
-        return Ok(std::path::PathBuf::from(directory));
-    }
-    if cfg!(debug_assertions) {
-        return Ok(std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../ui/dist"));
-    }
-    app.path()
+    let bundled_ui = executable_directory()
+        .ok()
+        .map(|directory| directory.join("ui"));
+    let bundled_ui_present = bundled_ui
+        .as_deref()
+        .map(shell_index_is_regular_file)
+        .unwrap_or(false);
+    // A debug build without an assembled bundle still runs from the checkout; a
+    // release build never reads the source tree.
+    let development_source = cfg!(debug_assertions)
+        .then(|| std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../ui/dist"));
+    let release_fallback = app
+        .path()
         .resource_dir()
         .map(|directory| directory.join("ui"))
-        .map_err(|error| dsh_core::error::DshError::other("resource_dir", error.to_string()))
+        .map_err(|error| dsh_core::error::DshError::other("resource_dir", error.to_string()));
+    select_shell_directory(
+        std::env::var("DSH_DESKTOP_SHELL_DIR")
+            .ok()
+            .map(std::path::PathBuf::from),
+        bundled_ui,
+        bundled_ui_present,
+        development_source,
+        release_fallback,
+    )
 }
 
 /// Report a startup failure that happens before the shell state exists.
@@ -1625,5 +1685,137 @@ mod desktop_node_resolver_tests {
         assert_eq!(resolved, runtime.join("node").join("node.exe"));
         #[cfg(not(target_os = "windows"))]
         assert_eq!(resolved, runtime.join("node").join("bin").join("node"));
+    }
+}
+
+#[cfg(test)]
+mod shell_directory_resolver_tests {
+    use super::{select_shell_directory, shell_index_is_regular_file};
+    use std::path::{Path, PathBuf};
+
+    fn path(parts: &[&str]) -> PathBuf {
+        let mut result = PathBuf::new();
+        for part in parts {
+            result.push(part);
+        }
+        result
+    }
+
+    #[test]
+    fn bundled_ui_beside_the_executable_wins_in_debug_and_release() {
+        let bundled = path(&["candidate", "ui"]);
+        let development = path(&["checkout", "port", "ui", "dist"]);
+        let installed = path(&["installed", "resources", "ui"]);
+        // DEBUG: the assembled UI beside the executable outranks the checkout.
+        assert_eq!(
+            select_shell_directory(
+                None,
+                Some(bundled.clone()),
+                true,
+                Some(development),
+                Ok(installed.clone()),
+            )
+            .unwrap(),
+            bundled
+        );
+        // RELEASE: identical preference; no development source is even offered.
+        assert_eq!(
+            select_shell_directory(None, Some(bundled.clone()), true, None, Ok(installed)).unwrap(),
+            bundled
+        );
+    }
+
+    #[test]
+    fn explicit_override_always_wins() {
+        let explicit = path(&["explicit", "ui"]);
+        for bundled_ui_present in [true, false] {
+            assert_eq!(
+                select_shell_directory(
+                    Some(explicit.clone()),
+                    Some(path(&["candidate", "ui"])),
+                    bundled_ui_present,
+                    Some(path(&["checkout", "port", "ui", "dist"])),
+                    Ok(path(&["installed", "resources", "ui"])),
+                )
+                .unwrap(),
+                explicit
+            );
+        }
+    }
+
+    #[test]
+    fn absent_bundled_ui_falls_back_to_the_checkout_in_debug() {
+        let development = path(&["checkout", "port", "ui", "dist"]);
+        assert_eq!(
+            select_shell_directory(
+                None,
+                Some(path(&["candidate", "ui"])),
+                false,
+                Some(development.clone()),
+                Ok(path(&["installed", "resources", "ui"])),
+            )
+            .unwrap(),
+            development
+        );
+        // Not knowing the executable directory is the same as having no bundle.
+        assert_eq!(
+            select_shell_directory(
+                None,
+                None,
+                false,
+                Some(development.clone()),
+                Ok(path(&["installed", "resources", "ui"])),
+            )
+            .unwrap(),
+            development
+        );
+    }
+
+    #[test]
+    fn release_falls_back_to_the_resource_directory_and_keeps_its_error() {
+        let installed = path(&["installed", "resources", "ui"]);
+        assert_eq!(
+            select_shell_directory(
+                None,
+                Some(path(&["candidate", "ui"])),
+                false,
+                None,
+                Ok(installed.clone()),
+            )
+            .unwrap(),
+            installed
+        );
+        let error = select_shell_directory(
+            None,
+            None,
+            false,
+            None,
+            Err(dsh_core::error::DshError::other(
+                "resource_dir",
+                "unavailable",
+            )),
+        )
+        .unwrap_err();
+        assert!(
+            error.to_string().contains("resource_dir"),
+            "the resource_dir failure must be retained: {error}"
+        );
+    }
+
+    #[test]
+    fn only_a_regular_index_html_counts_as_a_bundled_ui() {
+        assert!(!shell_index_is_regular_file(
+            &Path::new("directory-that-does-not-exist").join("ui")
+        ));
+        let fixture = tempfile::tempdir().unwrap();
+        // No index.html at all.
+        assert!(!shell_index_is_regular_file(fixture.path()));
+        // An index.html that is a DIRECTORY is not a regular file.
+        std::fs::create_dir(fixture.path().join("index.html")).unwrap();
+        assert!(!shell_index_is_regular_file(fixture.path()));
+        std::fs::remove_dir(fixture.path().join("index.html")).unwrap();
+        // Only a real file counts.
+        std::fs::write(fixture.path().join("index.html"), "<html></html>").unwrap();
+        assert!(shell_index_is_regular_file(fixture.path()));
     }
 }

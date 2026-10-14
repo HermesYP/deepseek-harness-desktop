@@ -35,6 +35,9 @@ import { test } from 'node:test'
 
 import { FIXTURE_API_KEY, FIXTURE_KEY_ENV, FIXTURE_MODEL_ID, FIXTURE_ROUTE, parseFixturePort } from './fixture-provider.mjs'
 import {
+  ACCOUNT_MENU_CLOSE_EXPRESSION,
+  ACCOUNT_MENU_EXPRESSION,
+  ACCOUNT_MENU_OPEN_EXPRESSION,
   ACCOUNT_NAV_CLICK_EXPRESSION,
   ACCOUNT_PANEL_EXPRESSION,
   CHAT_OBSERVE_EXPRESSION,
@@ -43,20 +46,27 @@ import {
   REQUIRED_CHECK_IDS,
   SETTINGS_MARKER_KEY,
   SETTINGS_MARKER_VALUE,
+  SIDEBAR_RIGHT_OPEN_EXPRESSION,
+  SIDEBAR_RIGHT_STATE_EXPRESSION,
   TERMINAL_CLOSE_EXPRESSION,
+  TERMINAL_ENTRY_EXPRESSION,
+  TERMINAL_FOCUS_EXPRESSION,
   TERMINAL_OPEN_EXPRESSION,
+  TERMINAL_ROWS_EXPRESSION,
   TERMINAL_STATE_EXPRESSION,
   TERMINAL_TAB_IDS_EXPRESSION,
   buildChildEnvironment,
   buildFixturePatch,
   computeVerdict,
   deriveIsolationPaths,
+  derivePlainShellName,
+  evaluateAccountMenu,
   evaluateAccountPanel,
   evaluateStaysCompleted,
   evaluateShellUsability,
   findNewTabCloseId,
   findNodeDescendant,
-  findPtyChild,
+  findShellChild,
   gracefulQuit,
   identityIsComplete,
   isBootReady,
@@ -65,10 +75,14 @@ import {
   preflightCandidate,
   redactionAllowList,
   resolveExecutionNode,
+  resolveShellDirPlan,
   runAcceptance,
   runOnboardingScenario,
   runPtyTerminationLane,
+  runSettingsScenario,
+  closeAccountMenu,
   terminalCloseExpressionForTab,
+  terminalTabTitleExpressionForTab,
   truncateHash,
   ptyTerminateFixPresent,
 } from './native-acceptance-runner.mjs'
@@ -570,10 +584,17 @@ async function buildMockRepo() {
   await mkdir(join(runtimeDir, 'node'), { recursive: true })
   await writeFile(join(runtimeDir, 'adapter.mjs'), 'export default 1\n')
   await writeFile(join(runtimeDir, 'node', 'node.exe'), 'mock node')
+  // The SOURCE-tree UI lane: what the repo carries and what an explicit
+  // `--shell-dir` / explicit-payload run exports.
   const shellDir = join(repo, 'port', 'ui', 'dist')
   await mkdir(shellDir, { recursive: true })
   await writeFile(join(shellDir, 'index.html'), '<html></html>')
-  return { repo, exePath, sha256 }
+  // The PACKAGED default lane: an assembled candidate carries its UI BESIDE the
+  // executable, and a packaged-default run refuses preflight without it.
+  const packagedShellDir = join(exeDir, 'ui')
+  await mkdir(packagedShellDir, { recursive: true })
+  await writeFile(join(packagedShellDir, 'index.html'), '<html><body>packaged-ui</body></html>')
+  return { repo, exePath, sha256, packagedShellDir }
 }
 
 function makeFakeChild(pid) {
@@ -610,6 +631,8 @@ function makeFakeConnection({ gatewayOrigin, child, identityRegistry, variant, f
   // clicks; removing it is the tab close.
   const pty = ptyState ?? { visible: false, tabIds: [] }
   if (!Array.isArray(pty.tabIds)) pty.tabIds = []
+  if (pty.typed === undefined) pty.typed = null
+  if (pty.entered === undefined) pty.entered = false
   const openTerminalSession = () => {
     pty.visible = true
     if (!pty.tabIds.includes('tab-terminal-1')) pty.tabIds.push('tab-terminal-1')
@@ -640,8 +663,10 @@ function makeFakeConnection({ gatewayOrigin, child, identityRegistry, variant, f
   let sendsSeen = 0
   // The settings surface is a shortcut modal: the registered `settings.open`
   // (primary+Comma) opens it and Escape closes it, so the mock tracks the key
-  // events instead of answering "mounted" unconditionally.
+  // events instead of answering "mounted" unconditionally. The account launcher's
+  // popover is tracked the same way (the real one closes on Escape too).
   let settingsModalOpen = false
+  let accountMenuOpen = false
   return {
     evaluate: async expression => {
       if (expression === HOST_FACTS_EXPRESSION) {
@@ -660,15 +685,51 @@ function makeFakeConnection({ gatewayOrigin, child, identityRegistry, variant, f
           affordance: settingsModalOpen ? 'sign-in-control' : null,
         }
       }
+      // The always-mounted account launcher (`settings.launcher` AccountMenu): its
+      // popover is openable without any stored credential and carries the sign-in row.
+      if (expression.includes('account-menu-open')) {
+        const alreadyOpen = accountMenuOpen
+        accountMenuOpen = true
+        return { record: 'account-menu-open', triggerPresent: true, clicked: !alreadyOpen, alreadyOpen, ariaLabel: 'Account menu' }
+      }
+      if (expression.includes('account-menu-close')) {
+        const wasOpen = accountMenuOpen
+        accountMenuOpen = false
+        return { record: 'account-menu-close', closed: true, reason: wasOpen ? 'trigger-toggled' : 'already-collapsed' }
+      }
+      if (expression.includes('account-menu')) {
+        return accountMenuOpen
+          ? { record: 'account-menu', accountMenuPresent: true, itemCount: 3, itemLabels: ['Settings', 'Feedback', 'Sign in'], signInItemPresent: true, signInItemLabel: 'Sign in', signOutItemPresent: false }
+          : { record: 'account-menu', accountMenuPresent: false, itemCount: 0, itemLabels: [], signInItemPresent: false, signInItemLabel: null, signOutItemPresent: false }
+      }
       // Terminal records are answered BEFORE the sidebar ones: the entry, state,
       // tab-id and close expressions all name the right-sidebar panel attributes.
       if (expression.includes('terminal-tab-ids')) return { record: 'terminal-tab-ids', panelPresent: true, ids: [...pty.tabIds] }
+      if (expression.includes('terminal-tab-title')) {
+        const literal = /const target = (.+);/u.exec(expression)?.[1] ?? null
+        let tabId = null
+        if (literal !== null) { try { tabId = JSON.parse(literal) } catch { tabId = null } }
+        const present = pty.visible === true && tabId !== null && pty.tabIds.includes(tabId)
+        // The live 0.2.1-alpha.2 chip title IS the host-resolved shell name.
+        return { record: 'terminal-tab-title', tabId, chipPresent: present, title: present ? 'cmd.exe' : null, closeHookId: present ? tabId : null }
+      }
       if (expression.includes('terminal-open')) {
         openTerminalSession()
         return { record: 'terminal-open', clicked: true, via: expression.includes('right-sidebar-entry') ? 'right-sidebar-entry' : 'entry' }
       }
       if (expression.includes('terminal-state')) {
         return { record: 'terminal-state', panelPresent: true, surfacePresent: pty.visible, inputPresent: pty.visible }
+      }
+      if (expression.includes('terminal-focus')) {
+        return pty.visible ? { record: 'terminal-focus', focused: true } : { record: 'terminal-focus', focused: false, reason: 'no-terminal-input' }
+      }
+      if (expression.includes('terminal-rows')) {
+        // Emulate a real cmd session: the typed command is echoed on its own row and
+        // its output returns as a separate row, with blank spacer rows after it.
+        const echoed = pty.typed === null ? [] : [`C:\\Windows\\system32>${pty.typed}`]
+        const output = pty.typed !== null && pty.entered === true ? [pty.typed.replace(/^echo /u, '')] : []
+        const rows = ['Microsoft Windows [Version 10.0.19045.3803]', ...echoed, ...output, '', '', '']
+        return { record: 'terminal-rows', rowsPresent: true, rowCount: rows.length, texts: rows }
       }
       if (expression.includes('terminal-close')) {
         // The scoped close expression embeds its captured tab id as a JSON literal;
@@ -750,10 +811,12 @@ function makeFakeConnection({ gatewayOrigin, child, identityRegistry, variant, f
     },
     send: async (method, params) => {
       if (method === 'Input.dispatchKeyEvent' && params?.key === ',') settingsModalOpen = true
-      if (method === 'Input.dispatchKeyEvent' && params?.key === 'Escape') settingsModalOpen = false
+      if (method === 'Input.dispatchKeyEvent' && params?.key === 'Escape') { settingsModalOpen = false; accountMenuOpen = false }
       // The registered `terminal.new` shortcut (Ctrl+Backquote) opens a session
       // too, so the lane's documented alternative entry is faithful here.
       if (method === 'Input.dispatchKeyEvent' && params?.code === 'Backquote') openTerminalSession()
+      if (method === 'Input.insertText' && typeof params?.text === 'string') pty.typed = params.text
+      if (method === 'Input.dispatchKeyEvent' && params?.key === 'Enter') pty.entered = true
       return {}
     },
     close: async () => {},
@@ -764,8 +827,10 @@ test('I1: the full mocked run is green only on the complete happy path, leaks no
   const { repo, exePath, sha256 } = await buildMockRepo()
   try {
     const identityRegistry = new Map()
+    const envCaptures = []
     let nextPid = 4200
     const spawnImpl = async ({ exe, env }) => {
+      envCaptures.push({ ...env })
       const child = makeFakeChild(++nextPid)
       identityRegistry.set(child.pid, { exited: false })
       // The mocked "app" writes the dev handoff exclusively, like the real one.
@@ -819,7 +884,8 @@ test('I1: the full mocked run is green only on the complete happy path, leaks no
       }
     }
 
-    const args = parseArgs(['--exe', exePath, '--sha256', sha256, '--repo', repo, '--stamp', 'mock1', '--without-pty-lane'])
+    const explicitShellDir = join(repo, 'port', 'ui', 'dist')
+    const args = parseArgs(['--exe', exePath, '--sha256', sha256, '--repo', repo, '--stamp', 'mock1', '--without-pty-lane', '--shell-dir', explicitShellDir])
     const record = await runAcceptance(args, {
       fetchImpl: async () => ({ json: async () => ({ Browser: 'Edg/120.0' }) }),
       sleepImpl: async () => {},
@@ -844,6 +910,16 @@ test('I1: the full mocked run is green only on the complete happy path, leaks no
     assert.equal(record.nativeAcceptance, true)
     assert.equal(record.exitCode, 0)
     assert.equal(record.identityComplete, true)
+    // The explicit --shell-dir is the override lane: it is labelled as such and
+    // exported UNCHANGED to every launch (both handoffs), never dropped in favour
+    // of the packaged default.
+    assert.equal(record.runtime.shellDirSource, 'explicit-arg')
+    assert.equal(record.runtime.shellDir, explicitShellDir)
+    assert.equal(record.runtime.shellAssets.envOverride, true)
+    assert.equal(envCaptures.length, 2, 'both handoffs must be captured')
+    for (const env of envCaptures) {
+      assert.equal(env.DSH_DESKTOP_SHELL_DIR, explicitShellDir, 'an explicit UI override must be preserved, not deleted')
+    }
     assert.equal(record.checksSummary.fail, 0)
     assert.equal(record.checksSummary.unqualified, 0)
     assert.equal(record.scenarios.onboarding.status, 'pass')
@@ -972,6 +1048,10 @@ test('K1: the staged patch is a plain-YAML overlay bound to the fixture origin',
 
 test('I5: exe-relative default mode proves the packaged node and the PTY termination lane end to end', async () => {
   const repo = await mkdtemp(join(tmpdir(), 'dsh-acc-repo-'))
+  // A stale inherited UI override must be DELETED, never passed through: pollute
+  // the parent environment so the packaged-default lane has to remove it.
+  const inheritedShellDir = process.env.DSH_DESKTOP_SHELL_DIR
+  process.env.DSH_DESKTOP_SHELL_DIR = 'C:\\inherited-stale-ui'
   try {
     // The candidate exe BESIDE its packaged payload: <exeDir>/dsh/... (the
     // resources the build copies into the Medium target root).
@@ -995,15 +1075,18 @@ test('I5: exe-relative default mode proves the packaged node and the PTY termina
       '  this._conoutSocketWorker.dispose();',
       '}',
     ].join('\n'))
-    const shellDir = join(repo, 'port', 'ui', 'dist')
+    // The packaged layout the build assembles in the Medium target root: the UI
+    // must sit BESIDE the executable (`<exe_dir>/ui`), never in the repo source
+    // tree — a repo-source UI would prove nothing about the assembled product.
+    const shellDir = join(candidateDir, 'ui')
     await mkdir(shellDir, { recursive: true })
-    await writeFile(join(shellDir, 'index.html'), '<html></html>')
+    await writeFile(join(shellDir, 'index.html'), '<html><body>packaged-ui</body></html>')
 
     const identityRegistry = new Map()
     const envCaptures = []
     const HOST_PID = 5100
     const NODE_PID = 5101
-    const PWSH_PID = 5102
+    const SHELL_PID = 5102
     const ptyState = { visible: false, tabIds: [] }
     const spawnImpl = async ({ exe, env }) => {
       envCaptures.push({ ...env })
@@ -1035,7 +1118,9 @@ test('I5: exe-relative default mode proves the packaged node and the PTY termina
         { pid: NODE_PID, parentPid: HOST_PID, creationTicks: '133900000000005101', exe: join(payloadDir, 'node', 'node.exe'), name: 'node.exe' },
       ]
       if (ptyState.visible) {
-        rows.push({ pid: PWSH_PID, parentPid: HOST_PID, creationTicks: '133900000000005102', exe: 'C:\\Program Files\\PowerShell\\7\\pwsh.exe', name: 'pwsh.exe' })
+        // The live default: the host resolves %ComSpec% -> cmd.exe, and the tab
+        // chip title carries that same resolved name.
+        rows.push({ pid: SHELL_PID, parentPid: HOST_PID, creationTicks: '133900000000005102', exe: 'C:\\Windows\\system32\\cmd.exe', name: 'cmd.exe' })
       }
       return { available: true, rows, rejected: 0, truncated: false, observedAtTicks: 134000000000000000n }
     }
@@ -1076,20 +1161,35 @@ test('I5: exe-relative default mode proves the packaged node and the PTY termina
 
     assert.equal(record.verdict, 'pass', `expected pass, got ${record.verdict}; failed=${JSON.stringify(record.failedRequiredChecks)} missing=${JSON.stringify(record.missingRequiredChecks)}`)
     assert.equal(record.runtime.mode, 'exe-relative-default')
+    // The recorded UI source is the EXE-SIBLING one, labelled as such, with no
+    // exported override — the whole point of the packaged proof.
+    assert.equal(record.runtime.shellDirSource, 'exe-relative')
+    assert.equal(record.runtime.shellDir, join(candidateDir, 'ui'))
+    assert.equal(record.runtime.shellAssets.source, 'exe-relative')
+    assert.equal(record.runtime.shellAssets.envOverride, false)
+    assert.equal(record.runtime.shellAssets.indexHtmlPresent, true, 'the fixture provisions the exe-sibling ui the run records')
     assert.equal(record.runtime.packagedCandidate.present, true)
     assert.equal(record.runtime.packagedCandidate.nodeSha256, createHash('sha256').update(nodeBytes).digest('hex'))
     assert.equal(record.runtime.defaultNodeProven.observed, true)
     assert.equal(record.runtime.defaultNodeProven.pid, NODE_PID)
     assert.equal(record.runtime.payloadNodePty.ok, true)
-    assert.equal(record.scenarios.pty.child.pid, PWSH_PID)
+    assert.equal(record.scenarios.pty.child.pid, SHELL_PID)
     assert.equal(record.scenarios.pty.terminatedCleanly, true)
     // The lane PASSED on a POSITIVELY MOUNTED terminal surface (xterm screen and
-    // input) that the guide entry opened, and on a positively clicked terminal-tab
-    // close control while the shell was provably alive.
+    // input) that the guide entry opened, on a descendant attributed by the shell
+    // name the tab itself reported, and on a positively clicked terminal-tab close
+    // control while the shell was provably alive.
     assert.equal(record.scenarios.pty.openClicked, true)
     assert.equal(record.scenarios.pty.openVia, 'right-sidebar-entry')
     assert.equal(record.scenarios.pty.surfacePresent, true)
     assert.equal(record.scenarios.pty.inputPresent, true)
+    assert.equal(record.scenarios.pty.terminalTabTitle, 'cmd.exe')
+    assert.equal(record.scenarios.pty.expectedShellName, 'cmd')
+    assert.equal(record.scenarios.pty.echoTyped, true)
+    assert.equal(record.scenarios.pty.terminalInputFocused, true)
+    assert.equal(record.scenarios.pty.echoRowsPresent, true)
+    assert.equal(record.scenarios.pty.echoOutputRowObserved, true, 'the shell executed the echo nonce as its own output row')
+    assert.ok(record.scenarios.pty.echoOutputRowIndex >= 0)
     assert.equal(record.scenarios.pty.presentBeforeClose, true)
     assert.equal(record.scenarios.pty.closeClicked, true)
     assert.equal(record.scenarios.pty.closeVia, 'captured-new-tab-id')
@@ -1103,6 +1203,7 @@ test('I5: exe-relative default mode proves the packaged node and the PTY termina
       assert.equal(env.DSH_DESKTOP_RUNTIME_DIR, undefined)
       assert.equal(env.DSH_DESKTOP_NODE, undefined)
       assert.equal(env.DSH_DESKTOP_RUNTIME_ADAPTER, undefined)
+      assert.equal(env.DSH_DESKTOP_SHELL_DIR, undefined, 'the inherited stale UI override must be deleted, not exported')
     }
     const ptyCheck = check => record.checks.find(entry => entry.id === check)
     for (const id of ['payload.pty_terminate_fix_present', 'runtime.default_node_executed', 'pty.lane_executed', 'pty.terminated_cleanly', 'pty.app_healthy_after']) {
@@ -1112,6 +1213,139 @@ test('I5: exe-relative default mode proves the packaged node and the PTY termina
     assert.deepEqual(findSecretLikeLeaks(record, {
       allowedStrings: [...redactionAllowList(record), 'Fixture acceptance reply.', 'todo_write', 'fixture-model', 'fixture-acceptance'],
     }), [])
+  } finally {
+    if (inheritedShellDir === undefined) delete process.env.DSH_DESKTOP_SHELL_DIR
+    else process.env.DSH_DESKTOP_SHELL_DIR = inheritedShellDir
+    await rm(repo, { recursive: true, force: true })
+  }
+})
+
+// ---------------------------------------------------------------------------
+// I6/I7. UI-source plan: the packaged default is exe-relative and NEVER exported
+// ---------------------------------------------------------------------------
+
+test('I6: the UI source plan records <exe_dir>/ui by default and labels explicit overrides', () => {
+  const exe = 'C:\\qual\\candidate\\dsh-desktop.exe'
+  const explicit = resolveShellDirPlan({ explicitShellDir: 'C:\\explicit\\ui', runtimeMode: 'exe-relative-default', repoRoot: 'C:\\repo', exe })
+  assert.equal(explicit.source, 'explicit-arg')
+  assert.equal(explicit.shellDir, 'C:\\explicit\\ui')
+  assert.equal(explicit.envOverride, true)
+  // The packaged default: THE RECORDED PATH IS BESIDE THE EXE and nothing is exported.
+  const packaged = resolveShellDirPlan({ runtimeMode: 'exe-relative-default', repoRoot: 'C:\\repo', exe })
+  assert.equal(packaged.source, 'exe-relative')
+  assert.equal(packaged.shellDir, join('C:\\qual\\candidate', 'ui'))
+  assert.equal(packaged.envOverride, false)
+  // The explicit-payload lane keeps the repository source tree it always had.
+  const repoDefault = resolveShellDirPlan({ runtimeMode: 'explicit-payload', repoRoot: 'C:\\repo', exe })
+  assert.equal(repoDefault.source, 'repo-default')
+  assert.equal(repoDefault.shellDir, join('C:\\repo', 'port', 'ui', 'dist'))
+  assert.equal(repoDefault.envOverride, true)
+  // An empty string is not an override; absent/null stays on the default lane.
+  assert.equal(resolveShellDirPlan({ explicitShellDir: '', runtimeMode: 'exe-relative-default', repoRoot: 'C:\\repo', exe }).source, 'exe-relative')
+  assert.equal(resolveShellDirPlan({ explicitShellDir: null, runtimeMode: 'explicit-payload', repoRoot: 'C:\\repo', exe }).source, 'repo-default')
+})
+
+test('I7: the packaged-default child env DELETES an inherited UI override; explicit lanes keep theirs', () => {
+  const paths = deriveIsolationPaths({ repoRoot: 'C:\\repo', namespace: UUID, stamp: 'shellplan' })
+  const args = parseArgs(['--exe', EXE, '--sha256', SHA, '--cdp-port', '9333'])
+  const previous = process.env.DSH_DESKTOP_SHELL_DIR
+  process.env.DSH_DESKTOP_SHELL_DIR = 'C:\\inherited-stale-ui'
+  try {
+    const packagedDefault = buildChildEnvironment({
+      args, paths, nodePath: null, adapterPath: null, runtimeDir: null, shellDir: 'C:\\candidate\\ui',
+      runtimeMode: 'exe-relative-default', shellDirSource: 'exe-relative', handoffIndex: 1,
+    })
+    assert.equal(packagedDefault.DSH_DESKTOP_SHELL_DIR, undefined, 'an inherited UI override must be deleted, never exported, in the packaged-default lane')
+
+    const explicit = buildChildEnvironment({
+      args, paths, nodePath: null, adapterPath: null, runtimeDir: null, shellDir: 'C:\\explicit\\ui',
+      runtimeMode: 'exe-relative-default', shellDirSource: 'explicit-arg', handoffIndex: 1,
+    })
+    assert.equal(explicit.DSH_DESKTOP_SHELL_DIR, 'C:\\explicit\\ui', 'an explicit --shell-dir must win over an inherited value')
+
+    const repoDefault = buildChildEnvironment({
+      args, paths, nodePath: 'C:\\payload\\node\\node.exe', adapterPath: 'C:\\payload\\adapter.mjs',
+      runtimeDir: 'C:\\payload', shellDir: 'C:\\repo\\port\\ui\\dist', runtimeMode: 'explicit-payload', handoffIndex: 1,
+    })
+    assert.equal(repoDefault.DSH_DESKTOP_SHELL_DIR, 'C:\\repo\\port\\ui\\dist', 'the explicit-payload lane keeps the repo source UI exported')
+
+    // With no source supplied, the legacy default follows the runtime mode.
+    const legacyDefault = buildChildEnvironment({
+      args, paths, nodePath: null, adapterPath: null, runtimeDir: null, shellDir: 'C:\\candidate\\ui',
+      runtimeMode: 'exe-relative-default', handoffIndex: 1,
+    })
+    assert.equal(legacyDefault.DSH_DESKTOP_SHELL_DIR, undefined)
+  } finally {
+    if (previous === undefined) delete process.env.DSH_DESKTOP_SHELL_DIR
+    else process.env.DSH_DESKTOP_SHELL_DIR = previous
+  }
+})
+
+// ---------------------------------------------------------------------------
+// I8. The packaged default REFUSES when the assembled UI is missing
+// ---------------------------------------------------------------------------
+
+test('I8: a packaged default with no <exe_dir>/ui refuses preflight — even with a repo UI present — and can never dry-run green', async () => {
+  const repo = await mkdtemp(join(tmpdir(), 'dsh-acc-repo-'))
+  try {
+    const exeDir = join(repo, 'candidate')
+    await mkdir(exeDir, { recursive: true })
+    const exePath = join(exeDir, 'dsh-desktop.exe')
+    const bytes = Buffer.from('MZ mocked debug candidate (packaged UI deliberately absent)')
+    await writeFile(exePath, bytes)
+    const sha256 = createHash('sha256').update(bytes).digest('hex')
+    // The runtime payload IS beside the exe, so the ONLY missing packaged resource
+    // is the UI: the refusal must name the UI, never mask it behind another fact.
+    await mkdir(join(exeDir, 'dsh', 'node'), { recursive: true })
+    await writeFile(join(exeDir, 'dsh', 'adapter.mjs'), 'export default 1\n')
+    await writeFile(join(exeDir, 'dsh', 'node', 'node.exe'), 'mock node')
+    await writeFile(join(exeDir, 'dsh', 'desktop-runtime.json'), JSON.stringify({ node: { version: '22.20.0', target: 'x86_64-pc-windows-msvc' } }))
+    // A tempting, PRESENT repo-source UI must never become a silent fallback: the
+    // packaged default is a claim about the ASSEMBLED product, so the run has to
+    // refuse rather than borrow <repo>/port/ui/dist.
+    await mkdir(join(repo, 'port', 'ui', 'dist'), { recursive: true })
+    await writeFile(join(repo, 'port', 'ui', 'dist', 'index.html'), '<html><body>repo-source-ui</body></html>')
+
+    let spawnCalls = 0
+    const inject = {
+      spawnImpl: async () => { spawnCalls += 1; throw new Error('must never spawn') },
+      sleepImpl: async () => {},
+    }
+    const base = ['--exe', exePath, '--sha256', sha256, '--repo', repo, '--stamp', 'noui']
+    const record = await runAcceptance(parseArgs(base), inject)
+    assert.equal(record.verdict, 'refused')
+    assert.equal(record.exitCode, 2, 'a preflight refusal uses the existing refused exit')
+    assert.equal(record.refusalCode, 'packaged-ui-missing', 'the refusal must carry its specific machine code')
+    assert.ok(/packaged default UI is missing/u.test(record.refusalReason))
+    assert.ok(record.refusalReason.includes(join(exeDir, 'ui', 'index.html')), 'the refusal names the exact missing UI path')
+    assert.ok(!record.refusalReason.includes(join(repo, 'port', 'ui', 'dist')), 'a present repo-source UI is never offered as the missing packaged UI')
+    assert.equal(record.nativeAcceptance, false)
+
+    // The dry run is a PREFLIGHT report: it must refuse identically rather than
+    // return dry-run-ok while the shell assets it would need do not exist.
+    const dry = await runAcceptance(parseArgs([...base, '--dry-run']), inject)
+    assert.equal(dry.verdict, 'refused')
+    assert.equal(dry.exitCode, 2)
+    assert.equal(dry.refusalCode, 'packaged-ui-missing')
+    assert.equal(dry.dryRun, undefined)
+    assert.equal(dry.dryRunChecks, undefined)
+
+    // Nothing was created and nothing was launched in either preflight.
+    assert.equal(spawnCalls, 0)
+    const { access } = await import('node:fs/promises')
+    const { constants } = await import('node:fs')
+    await assert.rejects(() => access(record.isolation.ownedRoot, constants.F_OK), 'the owned root must not exist after a refused preflight')
+    await assert.rejects(() => access(record.isolation.runRoot, constants.F_OK), 'the run root must not exist after a refused preflight')
+
+    // The SAME candidate with its packaged UI present proceeds past preflight and
+    // reports the exe-relative source truthfully: the refusal was about the UI.
+    await mkdir(join(exeDir, 'ui'), { recursive: true })
+    await writeFile(join(exeDir, 'ui', 'index.html'), '<html><body>packaged-ui</body></html>')
+    const dryOk = await runAcceptance(parseArgs([...base, '--dry-run']), inject)
+    assert.equal(dryOk.verdict, 'dry-run-ok')
+    assert.equal(dryOk.dryRunChecks.shellAssetsPresent, true)
+    assert.equal(dryOk.runtime.shellDirSource, 'exe-relative')
+    assert.equal(dryOk.runtime.shellDir, join(exeDir, 'ui'))
   } finally {
     await rm(repo, { recursive: true, force: true })
   }
@@ -1658,6 +1892,7 @@ test('N2: exe-relative default mode strips every runtime override from the child
     assert.equal(env.DSH_DESKTOP_NODE, undefined)
     assert.equal(env.DSH_DESKTOP_RUNTIME_ADAPTER, undefined)
     assert.equal(env.DSH_DESKTOP_PRIMARY_RUNTIME_DIR, undefined, 'inherited overrides must be deleted, not kept')
+    assert.equal(env.DSH_DESKTOP_SHELL_DIR, undefined, 'the packaged default exports no UI override at all')
     assert.equal(env.DSH_HOME, paths.home)
   } finally {
     if (previousNode === undefined) delete process.env.DSH_DESKTOP_NODE
@@ -1673,21 +1908,52 @@ test('N2: exe-relative default mode strips every runtime override from the child
   assert.equal(explicit.DSH_DESKTOP_RUNTIME_DIR, 'C:\\payload')
 })
 
-test('N3: node and PTY child attribution match only the right descendants', () => {
+test('N3: shell attribution matches the tab-reported name exactly, never a candidate list', () => {
   const rows = [
     { pid: 10, parentPid: 0, creationTicks: '1', exe: 'C:\\app\\dsh-desktop.exe', name: 'dsh-desktop.exe' },
     { pid: 11, parentPid: 10, creationTicks: '2', exe: 'C:\\app\\dsh\\node\\node.exe', name: 'node.exe' },
-    { pid: 12, parentPid: 10, creationTicks: '3', exe: 'C:\\Program Files\\PowerShell\\7\\pwsh.exe', name: 'pwsh.exe' },
+    { pid: 12, parentPid: 10, creationTicks: '3', exe: 'C:\\Windows\\system32\\cmd.exe', name: 'cmd.exe' },
+    { pid: 13, parentPid: 10, creationTicks: '4', exe: 'C:\\Program Files\\PowerShell\\7\\pwsh.exe', name: 'pwsh.exe' },
   ]
   assert.equal(findNodeDescendant(rows, 'C:/app/dsh/node/node.exe')?.pid, 11, 'path comparison normalizes separators and case')
   assert.equal(findNodeDescendant(rows, 'C:\\other\\node.exe'), null)
-  assert.equal(findPtyChild(rows, []).pid, 12)
-  assert.equal(findPtyChild(rows, [{ pid: 12, creationTicks: '3' }]), null, 'a baseline child is never the PTY child')
+  // The tab reported `cmd.exe`: only that descendant is adopted.
+  assert.equal(findShellChild(rows, [], 'cmd')?.pid, 12)
+  // A pwsh descendant is NOT adopted when the terminal reported cmd: no guess-list.
+  assert.equal(findShellChild(rows, [], 'pwsh')?.pid, 13)
+  assert.equal(findShellChild(rows, [{ pid: 12, creationTicks: '3' }], 'cmd'), null, 'a baseline child is never the terminal shell')
+  // An unusable expected name attributes nothing, even when a plausible shell exists.
+  assert.equal(findShellChild(rows, [], null), null)
+  assert.equal(findShellChild(rows, [], ''), null)
+  assert.equal(findShellChild(rows, [], 'my shell'), null)
+  // A one-shot `powershell.exe` probe can never be adopted as a cmd terminal.
   assert.equal(
-    findPtyChild([{ pid: 13, parentPid: 10, creationTicks: '4', exe: 'C:\\Windows\\notepad.exe', name: 'notepad.exe' }], []),
+    findShellChild([{ pid: 14, parentPid: 10, creationTicks: '5', exe: 'C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe', name: 'powershell.exe' }], [], 'cmd'),
     null,
-    'non-shell processes are never the PTY child',
+    'an unrelated powershell probe is never the cmd terminal shell',
   )
+})
+
+test('N3b: every PTY DOM expression returns an OBJECT, never a primitive', () => {
+  // The CDP evaluate seam is by-value-object only: a primitive (or null) return
+  // fails the evaluate with a shape error, so each expression must answer an object
+  // in EVERY branch, including the empty-document branch.
+  const emptyDocument = {
+    querySelector: () => null,
+    querySelectorAll: () => [],
+    activeElement: null,
+  }
+  const expressions = [
+    TERMINAL_OPEN_EXPRESSION, TERMINAL_STATE_EXPRESSION, TERMINAL_TAB_IDS_EXPRESSION, TERMINAL_CLOSE_EXPRESSION,
+    TERMINAL_FOCUS_EXPRESSION, TERMINAL_ROWS_EXPRESSION, SIDEBAR_RIGHT_OPEN_EXPRESSION, SIDEBAR_RIGHT_STATE_EXPRESSION,
+    TERMINAL_ENTRY_EXPRESSION, ACCOUNT_MENU_OPEN_EXPRESSION, ACCOUNT_MENU_EXPRESSION, ACCOUNT_MENU_CLOSE_EXPRESSION,
+  ]
+  for (const expression of expressions) {
+    const result = new Function('document', 'getComputedStyle', `return ${expression}`)(emptyDocument, () => ({ display: 'block', visibility: 'visible' }))
+    assert.equal(typeof result, 'object', `${expression.slice(0, 40)}… must return an object`)
+    assert.notEqual(result, null)
+  }
+  assert.equal(typeof terminalCloseExpressionForTab('tab3'), 'string')
 })
 
 test('N4: the terminal and account expressions are fixed constants without interpolation', () => {
@@ -1811,16 +2077,23 @@ function ptyLaneHarness({
   surface = true, input = true, shortcutOnly = false, closeClicked = true,
   vanishBeforeClose = false, tableUnavailableAtClose = false, baselineUnavailable = false,
   sidebarOpen = true, entryOpens = true, preexistingSession = false, shellAppearsLater = false,
+  sessionAppearsWithoutOpen = false,
+  shellTitle = 'cmd.exe', shellProcessName = null, echoWorks = true, focusInput = true,
   tabIdsBefore = ['guide-tab'], newTabIds = ['terminal-tab'],
 } = {}) {
   const HOST_PID = 9000
   const SHELL_PID = 9001
+  // The terminal tab chip and the process row share the shell name the host
+  // resolved (`info.title = shell.name`), exactly like the live capture.
+  const shellName = shellProcessName ?? shellTitle
   const state = {
     terminalOpen: preexistingSession,
     shellAlive: false,
     tabIds: preexistingSession ? [...tabIdsBefore, ...newTabIds] : [...tabIdsBefore],
     shortcutDispatches: 0,
     closeRequested: false,
+    typed: null,
+    entered: false,
   }
   let reads = 0
   const openSession = () => {
@@ -1831,13 +2104,40 @@ function ptyLaneHarness({
   const connection = {
     evaluate: async expression => {
       if (expression.includes('terminal-tab-ids')) return { record: 'terminal-tab-ids', panelPresent: true, ids: [...state.tabIds] }
+      if (expression.includes('terminal-tab-title')) {
+        const target = /const target = (.+);/u.exec(expression)?.[1] ?? null
+        let tabId = null
+        if (target !== null) { try { tabId = JSON.parse(target) } catch { tabId = null } }
+        const present = state.terminalOpen && tabId !== null && state.tabIds.includes(tabId)
+        return { record: 'terminal-tab-title', tabId, chipPresent: present, title: present ? shellTitle : null, closeHookId: present ? tabId : null }
+      }
       if (expression.includes('terminal-open')) {
-        if (shortcutOnly || !entryOpens) return { record: 'terminal-open', clicked: false, via: 'right-sidebar-entry' }
+        if (shortcutOnly || !entryOpens) {
+          // A terminal can appear without this lane's own click succeeding (another
+          // actor opened one). That is exactly the false-qualification the open gate
+          // exists for: the tab, the shell and the echo all become positive while
+          // `openClicked` stays false.
+          if (sessionAppearsWithoutOpen) openSession()
+          return { record: 'terminal-open', clicked: false, via: 'right-sidebar-entry' }
+        }
         openSession()
         return { record: 'terminal-open', clicked: true, via: 'right-sidebar-entry' }
       }
       if (expression.includes('terminal-state')) {
         return { record: 'terminal-state', panelPresent: true, surfacePresent: state.terminalOpen && surface, inputPresent: state.terminalOpen && input }
+      }
+      if (expression.includes('terminal-focus')) {
+        const focused = state.terminalOpen && input && focusInput
+        return { record: 'terminal-focus', focused, ...(focused ? {} : { reason: 'no-terminal-input' }) }
+      }
+      if (expression.includes('terminal-rows')) {
+        // A real shell echoes the typed command and then prints its output as its
+        // own row. The buffer keeps blank spacer rows after it, so this answers
+        // EVERY row (never a tail slice).
+        const echoed = state.typed === null ? [] : [`C:\\app>${state.typed}`]
+        const output = state.typed !== null && state.entered && echoWorks ? [state.typed.replace(/^echo /u, '')] : []
+        const rows = ['', 'Microsoft Windows [Version 10.0]', ...echoed, ...output, '', '', '']
+        return { record: 'terminal-rows', rowsPresent: true, rowCount: rows.length, texts: rows }
       }
       if (expression.includes('terminal-close')) {
         if (!closeClicked) return { record: 'terminal-close', clicked: false, reason: 'no-terminal-tab' }
@@ -1858,6 +2158,8 @@ function ptyLaneHarness({
         state.shortcutDispatches += 1
         if (shortcutOnly) openSession()
       }
+      if (method === 'Input.insertText' && typeof params?.text === 'string') state.typed = params.text
+      if (method === 'Input.dispatchKeyEvent' && params?.key === 'Enter') state.entered = true
       return {}
     },
     close: async () => {},
@@ -1876,12 +2178,12 @@ function ptyLaneHarness({
     if (shellAppearsLater && reads >= 2 && state.closeRequested !== true) state.shellAlive = true
     const rows = [{ pid: HOST_PID, parentPid: 0, creationTicks: '100', exe: 'C:\\app\\dsh-desktop.exe', name: 'dsh-desktop.exe' }]
     if (state.shellAlive) {
-      rows.push({ pid: SHELL_PID, parentPid: HOST_PID, creationTicks: '101', exe: 'C:\\Program Files\\PowerShell\\7\\pwsh.exe', name: 'pwsh.exe' })
+      rows.push({ pid: SHELL_PID, parentPid: HOST_PID, creationTicks: '101', exe: `C:\\Windows\\system32\\${shellName}`, name: shellName })
     }
     return { available: true, rows, rejected: 0, truncated: false, observedAtTicks: 500n }
   }
   const identityAtSpawn = { available: true, status: 'present', pid: HOST_PID, exe: 'C:\\app\\dsh-desktop.exe', creationTicks: '100' }
-  return { connection, tableImpl, identityAtSpawn, state, HOST_PID, SHELL_PID }
+  return { connection, tableImpl, identityAtSpawn, state, HOST_PID, SHELL_PID, shellTitle, shellName }
 }
 
 const runLane = harness => runPtyTerminationLane({
@@ -1947,22 +2249,24 @@ test('N11: an unreadable process table before the close is never a qualified ter
 
 test('N12: a NEW shell with a mounted terminal but NO positively opened terminal must not pass the lane', async () => {
   // The sidebar never opened and the entry click failed, so the shortcut was never
-  // dispatched; a terminal session was already mounted and a new shell appeared
-  // under the host anyway. Attribution plus UI alone must not qualify the lane.
+  // dispatched; a terminal tab, its matching shell descendant, the mounted surface
+  // and the echo all became positive anyway. Attribution plus UI plus execution
+  // must still not qualify the lane when the lane itself never opened the terminal.
   const harness = ptyLaneHarness({
     sidebarOpen: false,
     entryOpens: false,
-    preexistingSession: true,
-    shellAppearsLater: true,
+    sessionAppearsWithoutOpen: true,
   })
   const lane = await runLane(harness)
   assert.equal(lane.facts.openClicked, false)
   assert.equal(lane.facts.openVia, null)
   assert.equal(harness.state.shortcutDispatches, 0, 'no terminal.new shortcut may be sent when the sidebar is not open')
   assert.equal(lane.facts.tableAvailable, true)
+  assert.equal(lane.facts.terminalTabTitle, 'cmd.exe')
   assert.equal(lane.facts.child.pid, 9001, 'the new shell was attributed')
   assert.equal(lane.facts.surfacePresent, true)
   assert.equal(lane.facts.inputPresent, true)
+  assert.equal(lane.facts.echoOutputRowObserved, true)
   assert.equal(lane.laneStatus, 'fail', 'a terminal the lane never opened is not evidence that the client can open one')
   assert.match(lane.laneDetail, /open=false/u)
   // Cleanup, termination and health are unaffected by the failed qualification.
@@ -1985,4 +2289,445 @@ test('N13: an unknown pre-open baseline cannot qualify a later shell, even with 
   assert.equal(lane.facts.closeClicked, true)
   assert.equal(lane.terminateStatus, 'pass', 'the termination gates themselves stay intact')
   assert.equal(lane.healthStatus, 'pass')
+})
+
+test('N14: the expected shell name is derived from the tab title, and implausible titles are refused', () => {
+  // The live 0.2.1-alpha.2 shape: the chip reads `cmd.exe`.
+  assert.equal(derivePlainShellName('cmd.exe'), 'cmd')
+  assert.equal(derivePlainShellName('CMD.EXE'), 'cmd')
+  assert.equal(derivePlainShellName(' cmd '), 'cmd')
+  assert.equal(derivePlainShellName('pwsh.exe'), 'pwsh')
+  assert.equal(derivePlainShellName('powershell'), 'powershell')
+  assert.equal(derivePlainShellName('bash'), 'bash')
+  // Titles that are not one executable-shaped token are refused rather than guessed.
+  assert.equal(derivePlainShellName(''), null)
+  assert.equal(derivePlainShellName('   '), null)
+  assert.equal(derivePlainShellName('my shell'), null)
+  assert.equal(derivePlainShellName('Terminal (cmd.exe)'), null)
+  assert.equal(derivePlainShellName('C:\\Windows\\system32\\cmd.exe'), null)
+  assert.equal(derivePlainShellName(null), null)
+  assert.equal(derivePlainShellName(undefined), null)
+  assert.equal(derivePlainShellName('a'.repeat(65)), null)
+})
+
+test('N15: a cmd terminal qualifies the lane through the tab-reported shell name and a real echo', async () => {
+  const harness = ptyLaneHarness({ shellTitle: 'cmd.exe' })
+  const lane = await runLane(harness)
+  assert.equal(lane.laneStatus, 'pass')
+  assert.equal(lane.facts.terminalTabTitle, 'cmd.exe')
+  assert.equal(lane.facts.expectedShellName, 'cmd')
+  assert.equal(lane.facts.child.pid, harness.SHELL_PID)
+  assert.equal(lane.facts.child.exe.toLowerCase().endsWith('cmd.exe'), true)
+  assert.equal(lane.facts.terminalInputFocused, true)
+  assert.equal(lane.facts.echoTyped, true)
+  assert.equal(lane.facts.echoOutputRowObserved, true)
+  // The exact-row reader saw the whole buffer (the live viewport keeps blank
+  // spacer rows below the banner), not a fixed tail slice.
+  assert.equal(lane.facts.echoRowCount > 4, true)
+  assert.equal(lane.facts.echoOutputRowIndex >= 0, true)
+  assert.equal(lane.facts.closeClicked, true)
+  assert.equal(lane.terminateStatus, 'pass')
+})
+
+test('N16: the lane never adopts a descendant whose name differs from the tab-reported shell', async () => {
+  // The tab says cmd.exe while the only new descendant is a one-shot
+  // powershell.exe probe (the documents-directory resolution spawns exactly that):
+  // nothing may be attributed — no candidate list and no guessing.
+  const harness = ptyLaneHarness({ shellTitle: 'cmd.exe', shellProcessName: 'powershell.exe' })
+  const lane = await runLane(harness)
+  assert.equal(lane.facts.expectedShellName, 'cmd')
+  assert.equal(lane.facts.child, null)
+  assert.equal(lane.laneStatus, 'fail')
+  assert.match(lane.laneDetail, /no new descendant matching the terminal's own shell name "cmd"/u)
+  assert.equal(lane.terminateStatus, 'unqualified')
+})
+
+test('N17: a custom or implausible tab title attributes nothing and never passes', async () => {
+  const harness = ptyLaneHarness({ shellTitle: 'my build shell' })
+  const lane = await runLane(harness)
+  assert.equal(lane.facts.terminalTabTitle, 'my build shell')
+  assert.equal(lane.facts.expectedShellName, null)
+  assert.equal(lane.facts.child, null)
+  assert.equal(lane.laneStatus, 'fail')
+  assert.match(lane.laneDetail, /not a single executable shell name/u)
+  assert.equal(lane.terminateStatus, 'unqualified')
+})
+
+test('N18: a shell that does not execute the echo nonce cannot pass the lane, and is still cleaned up', async () => {
+  const harness = ptyLaneHarness({ echoWorks: false })
+  const lane = await runLane(harness)
+  assert.equal(lane.facts.echoTyped, true)
+  assert.equal(lane.facts.echoOutputRowObserved, false, 'the echoed command row is NOT execution evidence')
+  assert.equal(lane.facts.echoCommandRowIndex >= 0, true, 'the command WAS echoed, so the input reached the surface')
+  assert.equal(lane.laneStatus, 'fail')
+  assert.match(lane.laneDetail, /echoOutputRow=false/u)
+  // Cleanup, termination and health are unaffected by the failed qualification.
+  assert.equal(lane.facts.closeClicked, true)
+  assert.equal(lane.terminateStatus, 'pass')
+  assert.equal(lane.healthStatus, 'pass')
+})
+
+test('N19: the terminal DOM readers are object-shaped and read EVERY row, banner and spacers', () => {
+  // A mounted terminal: the section holds the xterm screen, its helper textarea
+  // and the row container, exactly as the real DOM does.
+  const rows = ['cmd.exe', 'C:\\app>echo DSHACC1234abcd', 'DSHACC1234abcd', '', '', '']
+  const active = { current: null }
+  const input = { focus() { active.current = input } }
+  const rowNodes = rows.map(text => ({ textContent: text }))
+  const rowsContainer = { children: rowNodes }
+  const screen = {
+    querySelector: selector => (selector.includes('textarea') || selector === 'textarea' ? input : null),
+  }
+  const section = {
+    querySelector: selector => (selector === '.xterm'
+      ? screen
+      : selector === '.xterm-rows'
+        ? rowsContainer
+        : (selector.includes('textarea') ? input : null)),
+  }
+  const panel = { querySelector: selector => (selector === '[data-sidebar-terminal]' ? section : null) }
+  const document = { querySelector: () => panel, get activeElement() { return active.current } }
+  const evaluate = expression => new Function('document', `return ${expression}`)(document)
+
+  const state = evaluate(TERMINAL_STATE_EXPRESSION)
+  assert.equal(state.panelPresent, true)
+  assert.equal(state.surfacePresent, true)
+  assert.equal(state.inputPresent, true)
+
+  const focus = evaluate(TERMINAL_FOCUS_EXPRESSION)
+  assert.equal(typeof focus, 'object')
+  assert.equal(focus.focused, true, 'focus is reported as {focused:boolean}, never a bare primitive')
+
+  const read = evaluate(TERMINAL_ROWS_EXPRESSION)
+  assert.equal(read.rowsPresent, true)
+  assert.equal(read.rowCount, rows.length, 'every row is read, including the blank spacers')
+  assert.deepEqual(read.texts, rows)
+  assert.equal(read.texts.findIndex(text => text === 'DSHACC1234abcd') >= 0, true)
+
+  // A title reader is only built for a usable captured id, and answers an object.
+  const chip = { textContent: 'cmd.exe', querySelector: () => ({ getAttribute: () => 'tab3' }) }
+  const titleDocument = {
+    querySelector: () => ({ querySelectorAll: () => [{ getAttribute: name => (name === 'data-dockkit-tab' ? 'tab3' : null), ...chip }] }),
+  }
+  const title = new Function('document', `return ${terminalTabTitleExpressionForTab('tab3')}`)(titleDocument)
+  assert.equal(typeof title, 'object')
+  assert.equal(title.chipPresent, true)
+  assert.equal(title.title, 'cmd.exe')
+  assert.equal(terminalTabTitleExpressionForTab(''), null)
+})
+
+// ---------------------------------------------------------------------------
+// P. Forced teardown uses the identity source with the REAL helper semantics
+// ---------------------------------------------------------------------------
+
+/** A child whose kill() settles the exit event on a microtask, as an OS kill does. */
+function makeKillableFakeChild(pid) {
+  const child = makeFakeChild(pid)
+  const kills = { count: 0 }
+  child.kill = () => {
+    kills.count += 1
+    queueMicrotask(() => child.simulateExit(0))
+  }
+  return { child, kills }
+}
+
+/**
+ * A PID-keyed identity source shaped like the runner's real one. The shared
+ * helper injects its `capture` as the RAW identity QUERY runner, which hands it a
+ * PowerShell script string; this source refuses anything that is not a process
+ * identifier, so the pre-fix call site (`capture: identityImpl`) surfaces as a
+ * refusal instead of a silent termination.
+ */
+function pidIdentitySource(registry, calls) {
+  return async pid => {
+    calls.push(pid)
+    if (!Number.isInteger(pid) || pid <= 0) {
+      return { available: false, status: 'unknown', pid: null, exe: null, creationTicks: null, reason: `pid ${String(pid)} is not a process identifier` }
+    }
+    const entry = registry.get(pid)
+    if (entry === undefined) {
+      return { available: false, status: 'absent', pid: null, exe: null, creationTicks: null, reason: 'no process with that pid exists' }
+    }
+    return { available: true, status: 'present', pid, exe: entry.exe, creationTicks: entry.creationTicks, reason: '' }
+  }
+}
+
+const ATTACH_FAIL_TICKS = '133900000000006100'
+
+/**
+ * Drive the runner into an early CDP-attach failure, which forces owned cleanup.
+ * The spawn-time identity always carries the candidate's REAL path; `registry`
+ * (when given) is populated with the same path so a PID-keyed identity source
+ * answers with the exe the fixture actually launched.
+ */
+async function runAttachFailure({ identityImpl, child, pid, registry = null, registryTicks = ATTACH_FAIL_TICKS }) {
+  const { repo, exePath, sha256 } = await buildMockRepo()
+  try {
+    const spawnImpl = async ({ exe, env }) => {
+      await writeFile(env.DSH_DESKTOP_DEV_URL_FILE, `http://127.0.0.1:3099/?token=${FAKE_TOKEN}\n`, 'utf8')
+      await writeFile(env.DSH_DESKTOP_DEV_BOOT_FILE, JSON.stringify({
+        streamBaseUrl: 'http://127.0.0.1:3099', bootstrapBatchUrl: 'http://127.0.0.1:3099/x.js?rev=abc', graphRevision: 'abc',
+      }), 'utf8')
+      if (registry !== null) registry.set(pid, { exe, creationTicks: registryTicks })
+      return { child, identityAtSpawn: { available: true, status: 'present', pid, exe, creationTicks: ATTACH_FAIL_TICKS } }
+    }
+    const args = parseArgs([
+      '--exe', exePath, '--sha256', sha256, '--repo', repo, '--stamp', 'attachfail',
+      '--without-fixture-chat', '--attach-wait-ms', '0',
+    ])
+    return await runAcceptance(args, {
+      spawnImpl,
+      identityImpl,
+      fetchImpl: async () => ({ json: async () => ({ Browser: 'Edg/120.0' }) }),
+      cdpAttach: async () => { throw new Error('no unique page target with the owned gateway origin') },
+      sleepImpl: async () => {},
+    })
+  } finally {
+    await rm(repo, { recursive: true, force: true })
+  }
+}
+
+test('P1: the forced cleanup identifies and terminates the owned child with the real capture semantics', async () => {
+  const pid = 6100
+  const calls = []
+  const registry = new Map()
+  const { child, kills } = makeKillableFakeChild(pid)
+  const record = await runAttachFailure({ identityImpl: pidIdentitySource(registry, calls), child, pid, registry })
+  assert.equal(record.verdict, 'target-selection-failed')
+  assert.equal(record.process.terminatedByHarness, true, 'the forced cleanup must identify and terminate the owned child')
+  assert.deepEqual(record.process.unresolvedRoots, [])
+  assert.ok(calls.length > 0, 'the identity source must be consulted')
+  assert.ok(calls.every(Number.isInteger), `the identity source takes a PID, but was called with ${JSON.stringify(calls.slice(0, 2))}`)
+  assert.equal(kills.count, 1)
+})
+
+test('P2: an unidentified child is never terminated: the forced cleanup records an unresolved root', async () => {
+  const pid = 6101
+  const { child, kills } = makeKillableFakeChild(pid)
+  const unanswered = async value => ({
+    available: false, status: 'unknown', pid: null, exe: null, creationTicks: null,
+    reason: `identity query failed for ${typeof value === 'string' ? 'a query string' : 'the pid'}: EPERM`,
+  })
+  const record = await runAttachFailure({ identityImpl: unanswered, child, pid })
+  assert.equal(record.process.terminatedByHarness, false, 'an unanswered identity query never authorises a kill')
+  assert.equal(record.process.unresolvedRoots.length, 1)
+  assert.match(record.process.unresolvedRoots[0].reason, /not established/u)
+  assert.equal(kills.count, 0)
+})
+
+test('P3: a reused pid is never terminated: the forced cleanup refuses the mismatched identity', async () => {
+  const pid = 6102
+  const calls = []
+  const registry = new Map()
+  const { child, kills } = makeKillableFakeChild(pid)
+  const record = await runAttachFailure({
+    identityImpl: pidIdentitySource(registry, calls), child, pid, registry, registryTicks: '133900000000009999',
+  })
+  assert.equal(record.process.terminatedByHarness, false)
+  assert.equal(record.process.unresolvedRoots.length, 1)
+  assert.match(record.process.unresolvedRoots[0].reason, /pid was reused/u)
+  assert.equal(kills.count, 0)
+})
+
+// ---------------------------------------------------------------------------
+// Q. Credential-free account surface through the always-mounted launcher menu
+// ---------------------------------------------------------------------------
+
+/** A fake `[role="menu"]` document with real source rows and click counters. */
+function fakeAccountMenuDom({ items = [], accountMenu = true } = {}) {
+  const nodes = items.map(({ label, disabled = false }) => ({
+    disabled,
+    textContent: label,
+    getAttribute: () => null,
+    clicked: 0,
+    click() { this.clicked += 1 },
+  }))
+  const menu = { querySelectorAll: selector => (selector === 'button[role="menuitem"]' ? nodes : []) }
+  const menus = accountMenu ? [menu] : []
+  return { document: { querySelectorAll: selector => (selector === '[role="menu"]' ? menus : []) }, nodes }
+}
+
+test('Q1: the account popover is identified by its own source rows, and no row is ever activated', () => {
+  const account = fakeAccountMenuDom({ items: [{ label: 'Settings' }, { label: 'Feedback' }, { label: 'Sign in' }] })
+  const probe = evaluatePanelExpression(ACCOUNT_MENU_EXPRESSION, account)
+  assert.equal(probe.accountMenuPresent, true)
+  assert.equal(probe.signInItemPresent, true)
+  assert.equal(probe.signInItemLabel, 'Sign in')
+  assert.equal(probe.signOutItemPresent, false)
+  assert.deepEqual(account.nodes.map(node => node.clicked), [0, 0, 0], 'the sign-in row is observed, never clicked')
+
+  // The Chinese copy is the same surface.
+  const zh = fakeAccountMenuDom({ items: [{ label: '设置' }, { label: '意见反馈' }, { label: '登录' }] })
+  const zhProbe = evaluatePanelExpression(ACCOUNT_MENU_EXPRESSION, zh)
+  assert.equal(zhProbe.accountMenuPresent, true)
+  assert.equal(zhProbe.signInItemLabel, '登录')
+  assert.deepEqual(zh.nodes.map(node => node.clicked), [0, 0, 0])
+
+  // Another menu (a model picker) is never mistaken for the account menu.
+  const other = fakeAccountMenuDom({ items: [{ label: 'Opus' }, { label: 'Sonnet' }] })
+  assert.equal(evaluatePanelExpression(ACCOUNT_MENU_EXPRESSION, other).accountMenuPresent, false)
+
+  // A disabled sign-in row is not an affordance.
+  const disabled = fakeAccountMenuDom({ items: [{ label: 'Settings' }, { label: 'Feedback' }, { label: 'Sign in', disabled: true }] })
+  const disabledProbe = evaluatePanelExpression(ACCOUNT_MENU_EXPRESSION, disabled)
+  assert.equal(disabledProbe.accountMenuPresent, true)
+  assert.equal(disabledProbe.signInItemPresent, false)
+
+  // The expressions that DO click only ever click the launcher trigger.
+  assert.ok(!ACCOUNT_MENU_EXPRESSION.includes('.click('), 'probing the popover must never activate anything')
+  for (const expression of [ACCOUNT_MENU_OPEN_EXPRESSION, ACCOUNT_MENU_CLOSE_EXPRESSION]) {
+    assert.equal((expression.match(/trigger\.click\(\)/gu) ?? []).length, 1)
+    assert.ok(!expression.includes('menuitem'), 'the launcher expressions never address a menu row')
+  }
+})
+
+test('Q2: the account-surface verdict is unqualified without a positively observed action row', () => {
+  const opened = { triggerPresent: true, clicked: true, ariaLabel: 'Account menu' }
+  const pass = evaluateAccountMenu({ openOutcome: opened, probe: { accountMenuPresent: true, signInItemPresent: true, signInItemLabel: 'Sign in', signOutItemPresent: false } })
+  assert.equal(pass.status, 'pass')
+  assert.equal(pass.how, 'account-menu-sign-in-item')
+
+  assert.equal(evaluateAccountMenu({ openOutcome: { triggerPresent: false }, probe: null }).status, 'unqualified')
+  assert.equal(evaluateAccountMenu({ openOutcome: { triggerPresent: true, clicked: false }, probe: null }).status, 'unqualified')
+  assert.equal(evaluateAccountMenu({ openOutcome: opened, probe: { accountMenuPresent: false } }).status, 'unqualified')
+  const noAction = evaluateAccountMenu({ openOutcome: opened, probe: { accountMenuPresent: true, signInItemPresent: false, signOutItemPresent: false } })
+  assert.equal(noAction.status, 'unqualified', 'a popover with no enabled account action is never a pass')
+  assert.equal(noAction.how, 'no-account-menu-action')
+  const signedInMenu = evaluateAccountMenu({ openOutcome: opened, probe: { accountMenuPresent: true, signInItemPresent: false, signOutItemPresent: true } })
+  assert.equal(signedInMenu.status, 'pass')
+  assert.equal(signedInMenu.how, 'account-menu-sign-out-item')
+})
+
+/**
+ * The Settings/account surface of a credential-free run: the modal with or
+ * without its credential-gated Account section, plus the always-mounted launcher.
+ */
+function settingsScenarioHarness({ sectionAvailable = false, menuOpens = true, signInItem = true, menuProbeFailsAfter = null } = {}) {
+  let settingsOpen = false
+  let menuOpen = false
+  let menuProbes = 0
+  const connection = {
+    evaluate: async expression => {
+      if (expression.includes('settings-mounted')) return { record: 'settings-mounted', mounted: settingsOpen }
+      if (expression.includes('blur-active')) return { record: 'blur-active', blurred: true }
+      if (expression.includes('account-nav')) return { record: 'account-nav', clicked: settingsOpen && sectionAvailable }
+      if (expression.includes('account-panel')) {
+        return {
+          record: 'account-panel', modalPresent: settingsOpen, textLength: 64,
+          signedOutActionPresent: settingsOpen && sectionAvailable, signedInActionPresent: false,
+          signedInAccountInfoPresent: false, signedInMarkerPresent: false, affordance: null,
+        }
+      }
+      if (expression.includes('account-menu-open')) {
+        const alreadyOpen = menuOpen
+        if (menuOpens) menuOpen = true
+        return { record: 'account-menu-open', triggerPresent: true, clicked: menuOpens && !alreadyOpen, alreadyOpen, ariaLabel: 'Account menu' }
+      }
+      if (expression.includes('account-menu-close')) {
+        const wasOpen = menuOpen
+        menuOpen = false
+        return { record: 'account-menu-close', closed: true, reason: wasOpen ? 'trigger-toggled' : 'already-collapsed' }
+      }
+      if (expression.includes('account-menu')) {
+        menuProbes += 1
+        if (menuProbeFailsAfter !== null && menuProbes > menuProbeFailsAfter) throw new Error('the account-menu probe is unavailable')
+        return menuOpen
+          ? { record: 'account-menu', accountMenuPresent: true, itemCount: 3, itemLabels: ['Settings', 'Feedback', 'Sign in'], signInItemPresent: signInItem, signInItemLabel: signInItem ? 'Sign in' : null, signOutItemPresent: false }
+          : { record: 'account-menu', accountMenuPresent: false, itemCount: 0, itemLabels: [], signInItemPresent: false, signInItemLabel: null, signOutItemPresent: false }
+      }
+      if (expression.includes('surface-facts')) {
+        return { record: 'surface-facts', textLength: 4000, accountSurfaceMentioned: true, updatesSurfaceMentioned: true, settingsSurfaceMounted: true }
+      }
+      if (expression.includes('update-status')) return { record: 'update-status', bridge: true, resolved: true, phase: 'idle', phaseKnown: true }
+      throw new Error(`unexpected expression in the settings scenario harness: ${expression}`)
+    },
+    send: async (method, params) => {
+      if (method === 'Input.dispatchKeyEvent' && params?.key === ',') settingsOpen = true
+      if (method === 'Input.dispatchKeyEvent' && params?.key === 'Escape') { settingsOpen = false; menuOpen = false }
+      return {}
+    },
+    close: async () => {},
+  }
+  return { connection, menuOpen: () => menuOpen }
+}
+
+test('Q3: with no stored credential the account surface is qualified through the launcher popover and dismissed', async () => {
+  const harness = settingsScenarioHarness({ sectionAvailable: false })
+  const facts = await runSettingsScenario({ connection: harness.connection, sleepImpl: async () => {}, log: () => {} })
+  assert.equal(facts.settingsStatus, 'pass')
+  assert.equal(facts.accountStatus, 'pass', 'the always-mounted launcher menu qualifies the account surface')
+  assert.equal(facts.accountHow, 'account-menu-sign-in-item')
+  assert.equal(facts.accountMenuTriggerLabel, 'Account menu')
+  assert.deepEqual(facts.accountMenuItems, ['Settings', 'Feedback', 'Sign in'])
+  assert.equal(facts.accountMenuSignInLabel, 'Sign in')
+  assert.equal(facts.accountMenuDismissed, true, 'the popover must be dismissed after observation')
+  assert.equal(harness.menuOpen(), false)
+  assert.match(facts.accountDetail, /route=account-menu/u)
+})
+
+test('Q4: the signed-in Settings section route is unchanged and takes precedence', async () => {
+  const harness = settingsScenarioHarness({ sectionAvailable: true })
+  const facts = await runSettingsScenario({ connection: harness.connection, sleepImpl: async () => {}, log: () => {} })
+  assert.equal(facts.accountStatus, 'pass')
+  assert.equal(facts.accountHow, 'sign-in-control')
+  assert.equal(facts.accountMenuTriggerLabel, null, 'the section route must not open the launcher popover')
+  assert.match(facts.accountDetail, /route=settings-account-section/u)
+})
+
+test('Q5: a launcher that cannot open, or a popover with no action row, is never a pass', async () => {
+  const closed = settingsScenarioHarness({ sectionAvailable: false, menuOpens: false })
+  const closedFacts = await runSettingsScenario({ connection: closed.connection, sleepImpl: async () => {}, log: () => {} })
+  assert.equal(closedFacts.accountStatus, 'unqualified')
+
+  const noAction = settingsScenarioHarness({ sectionAvailable: false, signInItem: false })
+  const noActionFacts = await runSettingsScenario({ connection: noAction.connection, sleepImpl: async () => {}, log: () => {} })
+  assert.equal(noActionFacts.accountStatus, 'unqualified')
+  assert.equal(noActionFacts.accountHow, 'no-account-menu-action')
+})
+
+test('Q6: an unknown menu probe is never a positive dismissal (bounded retry, explicit false only)', async () => {
+  // The probe always throws: the dismissal stays UNVERIFIED, and the trigger
+  // fallback is still attempted before giving up.
+  let closeAttempts = 0
+  const unavailable = {
+    evaluate: async expression => {
+      if (expression.includes('account-menu-close')) { closeAttempts += 1; return { record: 'account-menu-close', closed: false, reason: 'trigger-toggled' } }
+      if (expression.includes('account-menu')) throw new Error('the account-menu probe is unavailable')
+      throw new Error(`unexpected expression: ${expression}`)
+    },
+    send: async () => ({}),
+  }
+  const unverified = await closeAccountMenu({ connection: unavailable, sleepImpl: async () => {}, timeoutMs: 150 })
+  assert.equal(unverified.closed, false, 'an unreadable probe can never be reported as a close')
+  assert.equal(unverified.how, 'dismissal-unverified')
+  assert.equal(closeAttempts, 1, 'the trigger fallback is attempted before giving up')
+
+  // An explicit false is a positive dismissal, and a null answer is retried rather than trusted.
+  let probes = 0
+  const eventuallyClosed = {
+    evaluate: async expression => {
+      if (expression.includes('account-menu')) {
+        probes += 1
+        return probes === 1 ? { record: 'account-menu', accountMenuPresent: null } : { record: 'account-menu', accountMenuPresent: false }
+      }
+      throw new Error(`unexpected expression: ${expression}`)
+    },
+    send: async () => ({}),
+  }
+  const closed = await closeAccountMenu({ connection: eventuallyClosed, sleepImpl: async () => {}, timeoutMs: 500 })
+  assert.equal(closed.closed, true)
+  assert.equal(closed.how, 'explicitly-closed')
+  assert.ok(probes >= 2)
+})
+
+test('Q7: the menu route cannot carry the check unless the popover was positively dismissed', async () => {
+  // The popover opens and shows its sign-in row, but every later probe is
+  // unavailable: the affordance was observed, yet the cleanup contract failed.
+  const harness = settingsScenarioHarness({ sectionAvailable: false, menuProbeFailsAfter: 1 })
+  const facts = await runSettingsScenario({ connection: harness.connection, sleepImpl: async () => {}, log: () => {} })
+  assert.equal(facts.accountMenuSignInLabel, 'Sign in', 'the sign-in row was positively observed')
+  assert.equal(facts.accountMenuDismissed, false)
+  assert.equal(facts.accountStatus, 'unqualified', 'an undismissed popover must not count as a pass')
+  assert.equal(facts.accountHow, 'account-menu-not-dismissed')
+  assert.match(facts.accountDetail, /dismissal could not be positively established/u)
 })

@@ -266,18 +266,62 @@ export function findNodeDescendant(rows, expectedExePath) {
   return (Array.isArray(rows) ? rows : []).find(row => normalizeExePath(row.exe) === expected) ?? null
 }
 
-const PTY_CHILD_PATTERN = /^(?:pwsh|powershell)(?:\.exe)?$/iu
+/** A single-token executable name: no spaces, no path, no localized sentence. */
+const SHELL_NAME_PATTERN = /^[A-Za-z0-9._-]{1,64}$/u
+
+/**
+ * The plain shell name the terminal TAB advertises.
+ *
+ * `TerminalTitle` renders the terminal's own `info.title`, and the host sets
+ * `info.title = shell.name` (terminal-controller: the executable it resolved, e.g.
+ * `cmd.exe` from `%ComSpec%`). Deriving the expected name from that title is what
+ * lets attribution stay exact instead of guessing a shell list: a title that is
+ * not a single executable-shaped token (a localized word, a renamed tab, an empty
+ * or multi-word label) yields `null`, and the lane then refuses to attribute at
+ * all rather than inventing a match.
+ *
+ * @param {unknown} title The terminal tab chip's text.
+ * @returns {string|null} Lowercase name without a trailing `.exe`, or null.
+ */
+export function derivePlainShellName(title) {
+  if (typeof title !== 'string') return null
+  const value = title.trim()
+  if (value === '' || !SHELL_NAME_PATTERN.test(value)) return null
+  const plain = value.toLowerCase().replace(/\.exe$/u, '')
+  return SHELL_NAME_PATTERN.test(plain) ? plain : null
+}
+
+/** Normalize a process row's name/exe to its comparable plain shell name. */
+function plainRowName(row) {
+  const raw = String(row?.name ?? row?.exe ?? '')
+  const base = raw.split(/[\\/]/u).pop() ?? ''
+  return derivePlainShellName(base)
+}
 
 /**
  * The PTY terminal child: a NEW descendant (pid+creationTicks not in the
- * baseline) running the Windows shell the terminal spawns. Read-only
- * attribution; the harness never terminates it itself.
+ * baseline) whose process name AND executable basename both equal the shell name
+ * the terminal tab reported. Name equality — not a candidate list — is what keeps
+ * an unrelated one-shot `powershell.exe` probe, or any other new descendant, from
+ * being adopted as the terminal shell. An unusable expected name attributes
+ * nothing.
+ *
+ * @param {unknown} rows Descendant rows from the process table.
+ * @param {unknown} baselineRows Rows sampled before the terminal was opened.
+ * @param {unknown} expectedShellName `derivePlainShellName` of the tab title.
+ * @returns {object|null} The matching row, or null.
  */
-export function findPtyChild(rows, baselineRows) {
+export function findShellChild(rows, baselineRows, expectedShellName) {
+  const expected = typeof expectedShellName === 'string' ? expectedShellName : null
+  if (expected === null || expected === '') return null
   const baseline = new Set((Array.isArray(baselineRows) ? baselineRows : []).map(row => `${row.pid}:${row.creationTicks}`))
   const candidates = (Array.isArray(rows) ? rows : [])
     .filter(row => !baseline.has(`${row.pid}:${row.creationTicks}`))
-    .filter(row => PTY_CHILD_PATTERN.test(String(row.name ?? row.exe ?? '').split('\\').pop()))
+    .filter(row => plainRowName(row) === expected)
+    .filter(row => {
+      const exeBase = String(row?.exe ?? '').split(/[\\/]/u).pop() ?? ''
+      return exeBase === '' ? false : derivePlainShellName(exeBase) === expected
+    })
   return candidates[0] ?? null
 }
 
@@ -324,10 +368,17 @@ export const RUNNER_EXIT = Object.freeze({
 // Pure argument parsing (unit-tested; refuses before anything is touched)
 // ---------------------------------------------------------------------------
 
-/** A typed refusal (exit 2) that never carries candidate secret material. */
-function refusal(message) {
+/**
+ * A typed refusal (exit 2) that never carries candidate secret material.
+ *
+ * @param {string} message Human-readable reason (bounded, no secrets).
+ * @param {string|null} refusalCode Optional stable machine code for the specific
+ *   preflight that refused, surfaced verbatim as `refusalCode` in the record.
+ */
+function refusal(message, refusalCode = null) {
   const error = new Error(message)
   error.code = 'refused'
+  error.refusalCode = refusalCode
   return error
 }
 
@@ -528,6 +579,28 @@ export function deriveIsolationPaths({ repoRoot, namespace, stamp, portRoot = 'p
     profileDir: join(ownedRoot, 'home', 'profiles', 'desktop'),
     reportPath: join(runRoot, 'acceptance-record.json'),
   }
+}
+
+/**
+ * Where the client UI comes from for one run.
+ *
+ * `exe-relative-default` is the packaged proof: the app must resolve its OWN
+ * bundled UI beside the executable, so the child environment carries NO UI
+ * override at all and the harness only reads `<exe_dir>/ui` for evidence. An
+ * explicit `--shell-dir` is the development/override lane and is passed through
+ * unchanged. `explicit-payload` keeps the repository default it always had.
+ *
+ * @param {{explicitShellDir?: string|null, runtimeMode?: string, repoRoot: string, exe: string}} options
+ * @returns {{source: string, shellDir: string, envOverride: boolean}} The plan.
+ */
+export function resolveShellDirPlan({ explicitShellDir = null, runtimeMode = 'explicit-payload', repoRoot, exe }) {
+  if (typeof explicitShellDir === 'string' && explicitShellDir !== '') {
+    return { source: 'explicit-arg', shellDir: explicitShellDir, envOverride: true }
+  }
+  if (runtimeMode === 'exe-relative-default') {
+    return { source: 'exe-relative', shellDir: join(dirname(exe), 'ui'), envOverride: false }
+  }
+  return { source: 'repo-default', shellDir: join(repoRoot, 'port', 'ui', 'dist'), envOverride: true }
 }
 
 /** Fresh roots must not exist: a reused home would adopt previous state. */
@@ -936,6 +1009,59 @@ export const TERMINAL_TAB_IDS_EXPRESSION = `(() => {
 const MAX_TAB_ID_LENGTH = 128
 
 /**
+ * The terminal TAB CHIP for one captured tab id: its title is the terminal's own
+ * `info.title` (= the host-resolved shell name, e.g. `cmd.exe`) and its close hook
+ * is the control the lane later clicks. `ui-dockkit` TabPanel renders the chip as
+ * `[data-dockkit-tab={tabId}]` with the close hook nested inside.
+ *
+ * @param {unknown} tabId The tab id captured from the panel's close hooks.
+ * @returns {string|null} A page-side expression, or null for an unusable id.
+ */
+export function terminalTabTitleExpressionForTab(tabId) {
+  if (typeof tabId !== 'string' || tabId === '' || tabId.length > MAX_TAB_ID_LENGTH) return null
+  const literal = JSON.stringify(tabId)
+  return `(() => {
+  const target = ${literal};
+  const panel = document.querySelector('[data-sidebar-right-session]') ?? document.querySelector('[data-sidebar-right-open]');
+  const chip = panel === null ? null : [...panel.querySelectorAll('[data-dockkit-tab]')]
+    .find((el) => el.getAttribute('data-dockkit-tab') === target) ?? null;
+  if (chip === null) return { record: 'terminal-tab-title', tabId: target, chipPresent: false, title: null, closeHookId: null };
+  const close = chip.querySelector('[data-dockkit-tab-close]');
+  return {
+    record: 'terminal-tab-title',
+    tabId: target,
+    chipPresent: true,
+    title: (chip.textContent || '').trim(),
+    closeHookId: close === null ? null : close.getAttribute('data-dockkit-tab-close')
+  };
+})()`
+}
+
+/** Focus the mounted terminal's own input (the xterm helper textarea). */
+export const TERMINAL_FOCUS_EXPRESSION = `(() => {
+  const panel = document.querySelector('[data-sidebar-right-session]') ?? document.querySelector('[data-sidebar-right-open]');
+  const section = panel === null ? null : panel.querySelector('[data-sidebar-terminal]');
+  const input = section === null ? null : (section.querySelector('textarea.xterm-helper-textarea') ?? section.querySelector('textarea'));
+  if (input === null) return { record: 'terminal-focus', focused: false, reason: 'no-terminal-input' };
+  input.focus();
+  return { record: 'terminal-focus', focused: document.activeElement === input };
+})()`
+
+/**
+ * EVERY visible xterm row, in order. The buffer keeps blank spacer rows below the
+ * prompt, so a reader that takes the last N rows can miss the output row it is
+ * looking for; this reads all of them.
+ */
+export const TERMINAL_ROWS_EXPRESSION = `(() => {
+  const panel = document.querySelector('[data-sidebar-right-session]') ?? document.querySelector('[data-sidebar-right-open]');
+  const section = panel === null ? null : panel.querySelector('[data-sidebar-terminal]');
+  const rows = section === null ? null : section.querySelector('.xterm-rows');
+  if (rows === null) return { record: 'terminal-rows', rowsPresent: false, rowCount: 0, texts: [] };
+  const texts = [...rows.children].map((row) => (row.textContent || '').replace(/\\u00a0/gu, ' ').replace(/[ \\t]+$/u, ''));
+  return { record: 'terminal-rows', rowsPresent: true, rowCount: texts.length, texts };
+})()`
+
+/**
  * The close-hook expression for ONE known tab id. The id is embedded as a JSON
  * string literal, so a DOM-supplied value is data and can never inject code; an
  * unusable id returns `null` and the caller falls back to the title-scoped
@@ -1150,7 +1276,17 @@ export async function runAcceptance(args, inject = {}) {
   const teardownProcess = async reason => {
     if (child === null) return
     try {
-      const outcome = await terminateOwnedChild({ child, identityAtSpawn, label: 'dsh-desktop', capture: identityImpl })
+      // `terminateOwnedChild` injects `capture` as the RAW identity QUERY runner
+      // (process-authority `captureProcessIdentity(pid, { run: capture })`), while
+      // this runner's identity source takes a PID. Adapt at the call site so the
+      // helper still performs every identity check on the real pid.
+      const ownedChild = child
+      const outcome = await terminateOwnedChild({
+        child: ownedChild,
+        identityAtSpawn,
+        label: 'dsh-desktop',
+        capture: () => identityImpl(ownedChild.pid),
+      })
       record.process.terminatedByHarness = record.process.terminatedByHarness || outcome.terminated
       record.process.unresolvedRoots.push(...outcome.unresolvedRoots)
       log(`teardown (${reason}): ${outcome.note}`)
@@ -1184,7 +1320,36 @@ export async function runAcceptance(args, inject = {}) {
     //     packaged default. The proof applies ONLY when the build actually
     //     placed the payload beside the exe (packagedCandidate.present).
     const runtimeMode = args.runtimeDir === null ? 'exe-relative-default' : 'explicit-payload'
-    const shellDir = args.shellDir ?? join(repoRoot, 'port', 'ui', 'dist')
+    // The UI source is labelled and, in the packaged proof, NEVER exported to the
+    // child: a repo-source UI would prove nothing about the assembled product.
+    const shellDirPlan = resolveShellDirPlan({ explicitShellDir: args.shellDir, runtimeMode, repoRoot, exe: args.exe })
+    const shellDir = shellDirPlan.shellDir
+    const shellDirExists = async path => {
+      try { await access(path, fsConstants.F_OK); return true } catch { return false }
+    }
+    const shellAssets = {
+      source: shellDirPlan.source,
+      dir: shellDir,
+      envOverride: shellDirPlan.envOverride,
+      indexHtmlPresent: await shellDirExists(join(shellDir, 'index.html')),
+    }
+    if (shellDirPlan.source === 'exe-relative') {
+      log(`exe-relative UI: ${shellDir} (index.html present: ${shellAssets.indexHtmlPresent}); the child env carries NO UI override`)
+      if (shellAssets.indexHtmlPresent === false) {
+        // The packaged default is a proof about the ASSEMBLED product. If the build
+        // did not place `<exe_dir>/ui` beside the executable, the app could only
+        // fall back to some other UI, so this refuses at preflight — before any
+        // directory is created, anything is spawned or a dry run reports readiness
+        // — instead of recording a fact and letting a repo-source UI stand in.
+        // An explicit `--shell-dir` and the explicit-payload source-UI lane are
+        // deliberately unaffected: they are development lanes, not the proof.
+        throw refusal(
+          `the packaged default UI is missing: no index.html at ${join(shellDir, 'index.html')} beside the candidate. `
+          + 'The assembled candidate must carry its own <exe_dir>/ui; nothing was launched.',
+          'packaged-ui-missing',
+        )
+      }
+    }
     const packagedCandidate = { present: false, adapterPath: null, nodePath: null, manifestPath: null, nodeSha256: null }
     let runtimeDir
     let nodePath
@@ -1209,7 +1374,7 @@ export async function runAcceptance(args, inject = {}) {
     }
     record.runtime = {
       mode: runtimeMode,
-      runtimeDir, shellDir, nodePath, adapterPath,
+      runtimeDir, shellDir, shellDirSource: shellAssets.source, shellAssets, nodePath, adapterPath,
       executionNode: null,
       packagedCandidate,
       defaultNodeProven: null,
@@ -1268,7 +1433,10 @@ export async function runAcceptance(args, inject = {}) {
         dryRunChecks: {
           candidateHashVerified: true,
           runtimePayloadPresent: true,
-          shellAssetsPresent: true,
+          // Truthful in EVERY mode: explicit/repo payloads already refused above
+          // when index.html was missing, and the packaged default must report the
+          // real `<exe_dir>/ui` it will ask the app to resolve.
+          shellAssetsPresent: shellAssets.indexHtmlPresent,
           ownedRootFresh: true,
           runRootFresh: true,
           fixtureChatPlanned: args.withFixtureChat,
@@ -1297,7 +1465,16 @@ export async function runAcceptance(args, inject = {}) {
     }
 
     // -- 4. Launch (first run) ----------------------------------------------------------
-    const env = buildChildEnvironment({ args, paths, nodePath: executionNode?.executionPath ?? null, adapterPath: executionNode !== null ? adapterPath : null, runtimeDir: runtimeMode === 'explicit-payload' ? runtimeDir : null, shellDir, runtimeMode, handoffIndex: 1 })
+    // The UI source travels WITH the plan: `exe-relative` removes every inherited
+    // override so the app must resolve its own bundled UI, while an explicit
+    // `--shell-dir` is exported unchanged (the plan labels which one applies).
+    const env = buildChildEnvironment({
+      args, paths,
+      nodePath: executionNode?.executionPath ?? null,
+      adapterPath: executionNode !== null ? adapterPath : null,
+      runtimeDir: runtimeMode === 'explicit-payload' ? runtimeDir : null,
+      shellDir, shellDirSource: shellAssets.source, runtimeMode, handoffIndex: 1,
+    })
     const launched = await spawnImpl({ exe: args.exe, env, log })
     child = launched.child
     identityAtSpawn = launched.identityAtSpawn
@@ -1547,7 +1724,10 @@ export async function runAcceptance(args, inject = {}) {
 }
 
 /** Assemble the child environment for launch `handoffIndex` (1 or 2). */
-export function buildChildEnvironment({ args, paths, nodePath, adapterPath, runtimeDir, shellDir, runtimeMode = 'explicit-payload', handoffIndex }) {
+export function buildChildEnvironment({
+  args, paths, nodePath, adapterPath, runtimeDir, shellDir, runtimeMode = 'explicit-payload', handoffIndex,
+  shellDirSource = runtimeMode === 'exe-relative-default' ? 'exe-relative' : 'repo-default',
+}) {
   const env = { ...process.env }
   env.DSH_HOME = paths.home
   env.DSH_DESKTOP_USER_DATA_DIR = paths.userData
@@ -1562,7 +1742,16 @@ export function buildChildEnvironment({ args, paths, nodePath, adapterPath, runt
     env.DSH_DESKTOP_NODE = nodePath
     env.DSH_DESKTOP_RUNTIME_ADAPTER = adapterPath
   }
-  env.DSH_DESKTOP_SHELL_DIR = shellDir
+  if (shellDirSource === 'exe-relative') {
+    // The packaged proof requires the app to resolve its OWN bundled UI beside the
+    // executable: an inherited (or assigned) repo-source UI would prove nothing, so
+    // every UI override is removed rather than overwritten.
+    delete env.DSH_DESKTOP_SHELL_DIR
+  } else if (typeof shellDir === 'string' && shellDir !== '') {
+    env.DSH_DESKTOP_SHELL_DIR = shellDir
+  } else {
+    delete env.DSH_DESKTOP_SHELL_DIR
+  }
   env.DSH_DESKTOP_DEV_URL_FILE = join(paths.ownedRoot, `handoff-${handoffIndex}`, 'gateway-url.txt')
   env.DSH_DESKTOP_DEV_BOOT_FILE = join(paths.ownedRoot, `handoff-${handoffIndex}`, 'boot.json')
   env.DSH_DESKTOP_OWNED_CREDENTIAL_NAMESPACE = paths.namespace
@@ -1964,6 +2153,16 @@ export async function runPtyTerminationLane({ connection, tableImpl, identityAtS
     tabIdsAfter: [],
     newTabCloseId: null,
     newTabCloseReason: null,
+    terminalTabId: null,
+    terminalTabTitle: null,
+    expectedShellName: null,
+    terminalInputFocused: null,
+    echoTyped: false,
+    echoRowsPresent: null,
+    echoRowCount: null,
+    echoOutputRowObserved: false,
+    echoOutputRowIndex: -1,
+    echoCommandRowIndex: -1,
     closeTabId: null,
     closeVia: null,
     presentBeforeClose: null,
@@ -2021,14 +2220,45 @@ export async function runPtyTerminationLane({ connection, tableImpl, identityAtS
   // terminal was actually opened, or null when it was not.
   facts.openVia = open.clicked === true ? (open.via ?? 'right-sidebar-entry') : null
 
+  // The terminal's OWN tab must positively appear, and its chip title names the
+  // shell the host resolved (`info.title = shell.name`). That title is the ONLY
+  // attribution authority: no candidate shell list is consulted, and a title that
+  // is not a single executable-shaped name attributes nothing.
+  const openWaitMs = Math.min(args.bounds['pty-open-timeout-ms'], 15000)
+  const tabDeadline = Date.now() + openWaitMs
+  for (;;) {
+    facts.tabIdsAfter = await connection.evaluate(TERMINAL_TAB_IDS_EXPRESSION, { awaitPromise: false })
+      .then(ids => (Array.isArray(ids.ids) ? ids.ids : []))
+      .catch(() => facts.tabIdsAfter)
+    const appeared = findNewTabCloseId(facts.tabIdsBefore, facts.tabIdsAfter)
+    facts.newTabCloseId = appeared.id
+    facts.newTabCloseReason = appeared.reason
+    if (appeared.id !== null) {
+      const titleExpression = terminalTabTitleExpressionForTab(appeared.id)
+      if (titleExpression !== null) {
+        const chip = await connection.evaluate(titleExpression, { awaitPromise: false }).catch(() => null)
+        if (chip !== null && chip.chipPresent === true) {
+          facts.terminalTabId = appeared.id
+          facts.terminalTabTitle = typeof chip.title === 'string' ? chip.title : null
+          break
+        }
+      }
+    }
+    if (Date.now() >= tabDeadline) break
+    await sleepImpl(400)
+  }
+  const expectedShell = derivePlainShellName(facts.terminalTabTitle)
+  facts.expectedShellName = expectedShell
+  void log
+
   let child = null
-  const openDeadline = Date.now() + args.bounds['pty-open-timeout-ms']
-  while (Date.now() < openDeadline && child === null) {
+  const openDeadline = Date.now() + openWaitMs
+  while (Date.now() < openDeadline && child === null && expectedShell !== null) {
     try {
       const snapshot = await tableImpl()
       if (snapshot.available === true) {
         const subtree = descendantsOf({ host: identityAtSpawn, table: snapshot.rows, observedAtTicks: snapshot.observedAtTicks })
-        child = findPtyChild(subtree, baselineChildren)
+        child = findShellChild(subtree, baselineChildren, expectedShell)
       }
     } catch { /* bounded retry */ }
     if (child === null) await sleepImpl(500)
@@ -2050,15 +2280,57 @@ export async function runPtyTerminationLane({ connection, tableImpl, identityAtS
   if (child !== null) {
     facts.child = { pid: child.pid, exe: child.exe, creationTicks: String(child.creationTicks) }
   }
-  void log
+
+  // The shell must have EXECUTED, not merely existed: one harmless `echo` of a
+  // generated nonce must come back as its OWN output row. The echoed command line
+  // contains the same nonce, so only an exact whole-row match evidences execution.
+  let echoRowIndex = -1
+  let echoCommandRowIndex = -1
+  if (child !== null && facts.inputPresent === true) {
+    const nonce = `DSHACC${randomUUID().replace(/-/gu, '').slice(0, 8)}`
+    const command = `echo ${nonce}`
+    const focus = await connection.evaluate(TERMINAL_FOCUS_EXPRESSION, { awaitPromise: false }).catch(() => ({ focused: false }))
+    facts.terminalInputFocused = focus.focused === true
+    if (focus.focused === true) {
+      await connection.send('Input.insertText', { text: command })
+      // The live-verified key sequence for the xterm input: rawKeyDown + keyUp
+      // only (a `char` event would deliver the carriage return twice).
+      for (const type of ['rawKeyDown', 'keyUp']) {
+        await connection.send('Input.dispatchKeyEvent', {
+          type, key: 'Enter', code: 'Enter', windowsVirtualKeyCode: 13, nativeVirtualKeyCode: 13,
+        })
+      }
+      facts.echoTyped = true
+      const echoDeadline = Date.now() + openWaitMs
+      for (;;) {
+        const rows = await connection.evaluate(TERMINAL_ROWS_EXPRESSION, { awaitPromise: false })
+          .catch(() => ({ rowsPresent: false, rowCount: 0, texts: [] }))
+        facts.echoRowsPresent = rows.rowsPresent === true
+        const texts = Array.isArray(rows.texts) ? rows.texts : []
+        facts.echoRowCount = Number.isInteger(rows.rowCount) ? rows.rowCount : texts.length
+        echoRowIndex = texts.findIndex(text => String(text).trim() === nonce)
+        echoCommandRowIndex = texts.findIndex(text => String(text).includes(command))
+        if (echoRowIndex >= 0 || Date.now() >= echoDeadline) break
+        await sleepImpl(200)
+      }
+    }
+  }
+  facts.echoOutputRowObserved = echoRowIndex >= 0
+  facts.echoOutputRowIndex = echoRowIndex
+  facts.echoCommandRowIndex = echoCommandRowIndex
 
   if (child === null) {
     const health = await connection.evaluate(RUNTIME_DIGEST_EXPRESSION).catch(() => ({ resolved: false, state: null }))
     facts.appStateAfter = health.state ?? null
+    const reason = facts.terminalTabId === null
+      ? `no new terminal tab appeared within ${openWaitMs} ms (${facts.newTabCloseReason ?? 'no tab-close hook'})`
+      : expectedShell === null
+        ? `the terminal tab title ${JSON.stringify(facts.terminalTabTitle)} is not a single executable shell name, so no descendant can be attributed without guessing`
+        : `no new descendant matching the terminal's own shell name "${expectedShell}" appeared within ${openWaitMs} ms`
     return {
       facts,
       laneStatus: 'fail',
-      laneDetail: `terminal surface opened=${facts.openClicked} (${facts.openVia ?? 'no-entry'}, baselineTable=${facts.tableAvailable === true}) but no new shell descendant appeared within ${args.bounds['pty-open-timeout-ms']} ms (surface present: ${facts.surfacePresent}, input present: ${facts.inputPresent})`,
+      laneDetail: `terminal entry opened=${facts.openClicked} (${facts.openVia ?? 'no-entry'}, baselineTable=${facts.tableAvailable === true}); ${reason} (surface present: ${facts.surfacePresent}, input present: ${facts.inputPresent})`,
       terminateStatus: 'unqualified',
       terminateDetail: 'no terminal child was attributed, so termination could not be exercised',
       healthStatus: health.resolved === true && health.state === 'ready' ? 'pass' : 'fail',
@@ -2066,16 +2338,12 @@ export async function runPtyTerminationLane({ connection, tableImpl, identityAtS
     }
   }
 
-  // The terminal's OWN tab, identified by the unique close hook that appeared. A
-  // replaced guide chip or a second new tab makes that ambiguous, so the close
-  // falls back to the terminal-TITLED chip, which itself refuses several matches.
-  const tabIdsAfter = await connection.evaluate(TERMINAL_TAB_IDS_EXPRESSION, { awaitPromise: false }).catch(() => ({ ids: [] }))
-  facts.tabIdsAfter = Array.isArray(tabIdsAfter.ids) ? tabIdsAfter.ids : []
-  const newTab = findNewTabCloseId(facts.tabIdsBefore, facts.tabIdsAfter)
-  facts.newTabCloseId = newTab.id
-  facts.newTabCloseReason = newTab.reason
-  facts.closeTabId = newTab.id
-  const scopedClose = terminalCloseExpressionForTab(newTab.id)
+  // The terminal's OWN tab, identified by the unique close hook that appeared,
+  // whose chip title named the shell. A replaced guide chip or a second new tab
+  // makes the id ambiguous, so the close falls back to the terminal-TITLED chip,
+  // which itself refuses several matches.
+  facts.closeTabId = facts.terminalTabId
+  const scopedClose = terminalCloseExpressionForTab(facts.terminalTabId)
   const closeExpression = scopedClose ?? TERMINAL_CLOSE_EXPRESSION
 
   // The shell must be POSITIVELY present at the moment the close is requested:
@@ -2119,16 +2387,20 @@ export async function runPtyTerminationLane({ connection, tableImpl, identityAtS
   facts.appStateAfter = health.state ?? null
 
   // The lane may pass ONLY when it positively opened the terminal, knew the
-  // pre-open descendant baseline, and observed the mounted terminal surface with
-  // its input inside the right sidebar. An unknown baseline cannot tell a NEW
-  // shell from one that pre-existed, and a terminal the lane never opened is not
-  // evidence that the client can open one.
+  // pre-open descendant baseline, observed the mounted terminal surface with its
+  // input inside the right sidebar, attributed a descendant by the shell name the
+  // tab itself reported, and saw that shell execute the harmless echo nonce as its
+  // own output row. An unknown baseline cannot tell a NEW shell from one that
+  // pre-existed; a terminal the lane never opened is not evidence the client can
+  // open one; and a descendant that never executed is not a working terminal.
   const uiQualified = facts.panelPresent === true && facts.surfacePresent === true && facts.inputPresent === true
   const openQualified = facts.openClicked === true && facts.tableAvailable === true
-  const laneStatus = openQualified && uiQualified ? 'pass' : 'fail'
+  const shellQualified = facts.expectedShellName !== null && facts.child !== null
+  const echoQualified = facts.echoOutputRowObserved === true
+  const laneStatus = openQualified && uiQualified && shellQualified && echoQualified ? 'pass' : 'fail'
   const laneDetail = laneStatus === 'pass'
-    ? `terminal opened (${facts.openVia ?? 'entry'}) against a known pre-open baseline, and the mounted terminal surface with its input was attributed (spawned shell pid ${child.pid}, ${child.exe ?? 'unknown exe'})`
-    : `the terminal lane was not positively qualified: open=${facts.openClicked === true} (${facts.openVia ?? 'no-entry'}) baselineTable=${facts.tableAvailable === true} panel=${facts.panelPresent === true} surface=${facts.surfacePresent === true} input=${facts.inputPresent === true} (attributed shell pid ${child.pid})`
+    ? `terminal opened (${facts.openVia ?? 'entry'}) against a known pre-open baseline; the child matching the tab's own shell name "${facts.expectedShellName}" was attributed (pid ${child.pid}, ${child.exe ?? 'unknown exe'}) and executed the echo nonce as its own output row (row ${facts.echoOutputRowIndex} of ${facts.echoRowCount})`
+    : `the terminal lane was not positively qualified: open=${facts.openClicked === true} (${facts.openVia ?? 'no-entry'}) baselineTable=${facts.tableAvailable === true} panel=${facts.panelPresent === true} surface=${facts.surfacePresent === true} input=${facts.inputPresent === true} shellName=${facts.expectedShellName ?? 'unusable'} echoOutputRow=${facts.echoOutputRowObserved === true} (attributed shell pid ${child.pid})`
 
   let terminateStatus
   let terminateDetail
@@ -2269,6 +2541,147 @@ export function evaluateAccountPanel(navClicked, panel) {
 }
 
 /**
+ * Open the UNSIGNED account launcher: `settings.launcher` is occupied by
+ * `ui-settings-account`'s AccountMenu, which `ui-settings-general` SettingsRoot
+ * renders in its always-mounted trigger row beside the Settings panel, so it
+ * exists without a stored credential. Its trigger is the signed-out launcher
+ * button (`data-signed-out`, `aria-haspopup="menu"`, `aria-label={t('menu')}`),
+ * and the popover it opens offers the sign-in row. The harness never activates a
+ * row: sign-in itself is an external authorization step.
+ */
+export const ACCOUNT_MENU_OPEN_EXPRESSION = `(() => {
+  const trigger = document.querySelector("button[data-signed-out='true'][aria-haspopup='menu']");
+  if (trigger === null) return { record: 'account-menu-open', triggerPresent: false, clicked: false, alreadyOpen: false, ariaLabel: null };
+  const alreadyOpen = trigger.getAttribute('aria-expanded') === 'true';
+  if (!alreadyOpen) trigger.click();
+  return { record: 'account-menu-open', triggerPresent: true, clicked: !alreadyOpen, alreadyOpen, ariaLabel: trigger.getAttribute('aria-label') };
+})()`
+
+/**
+ * Read the open account popover. It is identified as the SOURCE's menu, never as
+ * whichever `[role="menu"]` happens to be mounted: the list must carry the
+ * account menu's own copy (its `t('settings')` + `t('contactUs')` rows, or a
+ * sign-in/sign-out row beside one of them). Only visibility and enablement are
+ * read — `ui-primitives` Menu rows are `button[role="menuitem"]` and none is
+ * clicked here.
+ */
+export const ACCOUNT_MENU_EXPRESSION = `(() => {
+  const label = (el) => ((el.getAttribute('aria-label') || '') + ' ' + (el.textContent || '')).trim();
+  const enabled = (el) => el.disabled !== true && el.getAttribute('aria-disabled') !== 'true';
+  const SIGN_IN = /^(?:sign in|log in|\\u767b\\u5f55)$/iu;
+  const SIGN_OUT = /^(?:sign out|log out|\\u9000\\u51fa\\u767b\\u5f55)$/iu;
+  const SETTINGS_ITEM = /^(?:settings|\\u8bbe\\u7f6e)$/iu;
+  const FEEDBACK_ITEM = /^(?:feedback|\\u610f\\u89c1\\u53cd\\u9988)$/iu;
+  const pick = (items, pattern) => items.find((el) => enabled(el) && pattern.test(label(el))) ?? null;
+  const read = (menu) => {
+    const items = [...menu.querySelectorAll('button[role="menuitem"]')];
+    const labels = items.map((el) => label(el));
+    const signIn = pick(items, SIGN_IN);
+    const signOut = pick(items, SIGN_OUT);
+    const settingsRow = labels.some((value) => SETTINGS_ITEM.test(value));
+    const feedbackRow = labels.some((value) => FEEDBACK_ITEM.test(value));
+    // Two independent source rows (or one of them plus the account action) name
+    // this list; anything else is not the account menu.
+    const isAccount = (settingsRow && feedbackRow) || (feedbackRow && (signIn !== null || signOut !== null));
+    return { isAccount, labels, signIn, signOut };
+  };
+  const menus = [...document.querySelectorAll('[role="menu"]')].map(read).filter((entry) => entry.isAccount === true);
+  if (menus.length === 0) {
+    return { record: 'account-menu', accountMenuPresent: false, itemCount: 0, itemLabels: [], signInItemPresent: false, signInItemLabel: null, signOutItemPresent: false };
+  }
+  const found = menus[0];
+  return {
+    record: 'account-menu',
+    accountMenuPresent: true,
+    itemCount: found.labels.length,
+    itemLabels: found.labels.slice(0, 6),
+    signInItemPresent: found.signIn !== null,
+    signInItemLabel: found.signIn === null ? null : label(found.signIn),
+    signOutItemPresent: found.signOut !== null
+  };
+})()`
+
+/** Dismiss the account popover through its own trigger (never through a row). */
+export const ACCOUNT_MENU_CLOSE_EXPRESSION = `(() => {
+  const trigger = document.querySelector("button[data-signed-out='true'][aria-haspopup='menu']");
+  if (trigger === null) return { record: 'account-menu-close', closed: false, reason: 'no-account-menu-trigger' };
+  if (trigger.getAttribute('aria-expanded') !== 'true') return { record: 'account-menu-close', closed: true, reason: 'already-collapsed' };
+  trigger.click();
+  return { record: 'account-menu-close', closed: true, reason: 'trigger-toggled' };
+})()`
+
+/**
+ * Dismiss the account popover positively: Escape first (the Menu primitive closes
+ * on Escape), then its own trigger as a fallback. No menu row is ever activated.
+ *
+ * `closed` is reported ONLY for an EXPLICIT `accountMenuPresent === false` probe.
+ * An unanswered or unreadable probe is unknown, never a close, so a failed probe
+ * can no longer be laundered into a positive dismissal.
+ *
+ * @param {{connection: object, sleepImpl: Function, timeoutMs?: number}} options
+ * @returns {Promise<{closed: boolean, how: string}>} Whether the popover is gone.
+ */
+export async function closeAccountMenu({ connection, sleepImpl, timeoutMs = 4000 }) {
+  const probeMenu = () => connection.evaluate(ACCOUNT_MENU_EXPRESSION, { awaitPromise: false })
+    .then(value => (value !== null && typeof value === 'object' ? value : { accountMenuPresent: null }))
+    .catch(() => ({ accountMenuPresent: null }))
+  const deadline = Date.now() + timeoutMs
+  for (;;) {
+    const probe = await probeMenu()
+    if (probe.accountMenuPresent === false) return { closed: true, how: 'explicitly-closed' }
+    if (Date.now() >= deadline) {
+      const toggle = await connection.evaluate(ACCOUNT_MENU_CLOSE_EXPRESSION, { awaitPromise: false })
+        .catch(() => ({ reason: 'close-control-unavailable' }))
+      const after = await probeMenu()
+      if (after.accountMenuPresent === false) return { closed: true, how: toggle.reason ?? 'trigger-toggled' }
+      return {
+        closed: false,
+        how: after.accountMenuPresent === true ? 'still-open' : 'dismissal-unverified',
+      }
+    }
+    for (const type of ['rawKeyDown', 'keyUp']) {
+      await connection.send('Input.dispatchKeyEvent', {
+        type, key: 'Escape', code: 'Escape', windowsVirtualKeyCode: 27, nativeVirtualKeyCode: 27,
+      })
+    }
+    await sleepImpl(200)
+  }
+}
+
+/**
+ * The credential-free account-surface verdict from the account MENU route: the
+ * always-mounted launcher must actually open its popover, and that popover must
+ * offer an enabled sign-in row. A launcher that cannot be opened, a popover that
+ * cannot be identified, or a popover with no enabled account action is
+ * unqualified, never a pass. The sign-in row is observed only.
+ *
+ * @param {{openOutcome?: object, probe?: object}} evidence
+ * @returns {{status: string, how: string, detail: string}} The check outcome.
+ */
+export function evaluateAccountMenu({ openOutcome, probe }) {
+  if (openOutcome?.triggerPresent !== true) {
+    return { status: 'unqualified', how: 'no-account-menu-trigger', detail: 'no unsigned account-menu launcher is mounted, so the account surface could not be identified' }
+  }
+  if (openOutcome.clicked !== true) {
+    return { status: 'unqualified', how: 'account-menu-not-opened', detail: `the account launcher (aria-label ${openOutcome.ariaLabel ?? 'unknown'}) did not open` }
+  }
+  if (probe?.accountMenuPresent !== true) {
+    return { status: 'unqualified', how: 'no-account-menu', detail: 'the account launcher opened no positively identified account menu' }
+  }
+  if (probe.signInItemPresent === true) {
+    return {
+      status: 'pass',
+      how: 'account-menu-sign-in-item',
+      detail: `the account menu offers an enabled sign-in row (${probe.signInItemLabel ?? 'unknown label'}) without any stored credential; the row was observed, never activated`,
+    }
+  }
+  if (probe.signOutItemPresent === true) {
+    return { status: 'pass', how: 'account-menu-sign-out-item', detail: 'the account menu offers an enabled sign-out row; the row was observed, never activated' }
+  }
+  return { status: 'unqualified', how: 'no-account-menu-action', detail: 'the account menu exposed neither an enabled sign-in nor an enabled sign-out row' }
+}
+
+/**
  * Settings surface, marker round-trip and the Account panel.
  *
  * Settings is opened through the registered shortcut and must POSITIVELY MOUNT:
@@ -2288,7 +2701,37 @@ export async function runSettingsScenario({ connection, sleepImpl, log }) {
   const settingsStatus = (open.opened === true && mounted.mounted === true && closed.closed === true) ? 'pass' : 'fail'
   const updatesStatus = update.resolved === true && update.phaseKnown === true ? 'pass' : 'fail'
   const account = evaluateAccountPanel(nav.clicked === true, panel)
-  const accountStatus = account.status
+  // The Settings Account SECTION exists only while a credential is stored, so a
+  // credential-free environment falls back to the always-mounted account launcher:
+  // open its popover, observe an enabled sign-in row, then dismiss it. The
+  // popover's rows are never activated (sign-in is an external authorization step).
+  let accountOpen = null
+  let accountMenuProbe = null
+  let accountMenuClose = null
+  let accountMenu = null
+  if (account.status !== 'pass') {
+    accountOpen = await connection.evaluate(ACCOUNT_MENU_OPEN_EXPRESSION, { awaitPromise: false })
+    await sleepImpl(500)
+    accountMenuProbe = await connection.evaluate(ACCOUNT_MENU_EXPRESSION, { awaitPromise: false }).catch(() => null)
+    accountMenuClose = await closeAccountMenu({ connection, sleepImpl })
+    accountMenu = evaluateAccountMenu({ openOutcome: accountOpen, probe: accountMenuProbe })
+  }
+  // The menu route may only carry the check when its popover was POSITIVELY
+  // dismissed: an observed sign-in row on a popover left open (or whose closure
+  // could not be established) does not satisfy the harness's positive-UI cleanup
+  // contract. The section route above is unaffected.
+  const accountRoute = account.status === 'pass'
+    ? account
+    : accountMenu.status === 'pass' && accountMenuClose?.closed === true
+      ? accountMenu
+      : accountMenu.status === 'pass'
+        ? {
+            status: 'unqualified',
+            how: 'account-menu-not-dismissed',
+            detail: `${accountMenu.detail}, but the popover dismissal could not be positively established (${accountMenuClose?.how ?? 'unknown'}), so the account surface stays unqualified`,
+          }
+        : accountMenu
+  const accountStatus = accountRoute.status
   void log
   return {
     settingsOpened: open.opened === true,
@@ -2299,6 +2742,11 @@ export async function runSettingsScenario({ connection, sleepImpl, log }) {
     accountSignedOutAffordance: panel.signedOutActionPresent === true,
     accountSignedInAffordance: panel.signedInActionPresent === true || panel.signedInAccountInfoPresent === true || panel.signedInMarkerPresent === true,
     accountAffordance: account.how,
+    accountMenuTriggerLabel: accountOpen === null ? null : accountOpen.ariaLabel,
+    accountMenuItems: accountMenuProbe === null ? [] : accountMenuProbe.itemLabels,
+    accountMenuSignInLabel: accountMenuProbe === null ? null : accountMenuProbe.signInItemLabel,
+    accountMenuDismissed: accountMenuClose === null ? null : accountMenuClose.closed === true,
+    accountHow: accountRoute.how,
     accountSurfaceMentioned: facts.accountSurfaceMentioned === true,
     updatesSurfaceMentioned: facts.updatesSurfaceMentioned === true,
     updatePhase: update.phase,
@@ -2307,7 +2755,9 @@ export async function runSettingsScenario({ connection, sleepImpl, log }) {
     updatesStatus,
     updatesDetail: `update_status phase=${update.phase ?? 'null'} (read-only; no update_check performed)`,
     accountStatus,
-    accountDetail: `navClicked=${nav.clicked === true} affordance=${account.how} signInControl=${panel.signedOutActionPresent === true} signOutControl=${panel.signedInActionPresent === true} accountInfoControl=${panel.signedInAccountInfoPresent === true} signedInMarker=${panel.signedInMarkerPresent === true} (identified by a real action affordance, never by the word "account" or prose)`,
+    accountDetail: account.status === 'pass'
+      ? `route=settings-account-section affordance=${account.how} navClicked=${nav.clicked === true} signInControl=${panel.signedOutActionPresent === true} signOutControl=${panel.signedInActionPresent === true} accountInfoControl=${panel.signedInAccountInfoPresent === true} signedInMarker=${panel.signedInMarkerPresent === true} (identified by a real action affordance, never by the word "account" or prose)`
+      : `route=account-menu affordance=${accountRoute.how} trigger=${accountOpen === null ? 'none' : (accountOpen.ariaLabel ?? 'unknown')} items=${accountMenuProbe === null ? 0 : accountMenuProbe.itemCount} signInRow=${accountMenuProbe?.signInItemPresent === true} dismissed=${accountMenuClose?.closed === true} — ${accountRoute.detail} (settings Account section unavailable: ${account.detail})`,
   }
 }
 
@@ -2498,6 +2948,7 @@ function refusedRecord(startedAt, error, args, { checksSoFar = [], paths = null 
     verdict: 'refused',
     exitCode: RUNNER_EXIT.REFUSED,
     refusalReason: String(error.message ?? 'refused').slice(0, 400),
+    refusalCode: error.refusalCode ?? null,
     candidate: { exe: args.exe, sha256: args.sha256 },
     isolation: paths,
     checks: checksSoFar,
@@ -2515,8 +2966,15 @@ Optional:
   --repo <path>             repository root (default: derived from this file)
   --report <path>           where the redacted JSON record is written
   --stamp <name>            run-stamp for the evidence root
-  --runtime-dir <path>      materialized runtime payload (default <repo>/port/runtime-payload/dsh)
-  --shell-dir <path>        packaged shell assets (default <repo>/port/ui/dist)
+  --runtime-dir <path>      materialized runtime payload. When omitted, the
+                            PACKAGED DEFAULT is exercised: no runtime override is
+                            exported and the app must resolve <exe_dir>/dsh itself
+  --shell-dir <path>        explicit shell assets override (exported unchanged).
+                            When omitted: the packaged default asks the app to
+                            resolve <exe_dir>/ui (no override exported), while an
+                            explicit --runtime-dir keeps <repo>/port/ui/dist.
+                            A packaged default with NO <exe_dir>/ui/index.html is
+                            REFUSED at preflight (refusalCode packaged-ui-missing)
   --node-exe <ABS path>     OPTIONAL byte-identical trusted copy of the payload
                             interpreter (regular non-linked file; SHA-256 must
                             exactly equal runtimeDir/node/node.exe). Used as

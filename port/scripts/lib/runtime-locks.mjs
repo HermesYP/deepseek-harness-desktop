@@ -31,12 +31,14 @@ function assertRealDirectory(path, label) {
   if (!stat.isDirectory() || stat.isSymbolicLink()) fail(`${label} must be a real directory`)
 }
 
-function assertInputLayout(inputRoot) {
+function assertInputLayout(inputRoot, hasDependencyPolicy) {
   assertRealDirectory(inputRoot, 'reviewed input root')
   const expected = ['descriptor.json', 'desktop-packages', 'desktop-packages.json', 'package.json', 'pnpm-lock.yaml', 'pnpm-workspace.yaml']
+  if (hasDependencyPolicy) expected.push('patches', 'runtime-dependency-policy.json')
   const actual = readdirSync(inputRoot).sort()
-  if (JSON.stringify(actual) !== JSON.stringify(expected)) fail('reviewed input directory has missing or unexpected entries')
+  if (JSON.stringify(actual) !== JSON.stringify(expected.sort())) fail('reviewed input directory has missing or unexpected entries')
   assertRealDirectory(join(inputRoot, 'desktop-packages'), 'reviewed desktop-packages directory')
+  if (hasDependencyPolicy) assertRealDirectory(join(inputRoot, 'patches'), 'reviewed patches directory')
 }
 
 function sha256(bytes) {
@@ -56,6 +58,89 @@ function relativeTarball(record) {
     fail('package metadata contains an unsafe local tarball name')
   }
   return `desktop-packages/${record.file}`
+}
+
+const PATCHED_WINDOWS_UPSTREAM = 'd743267388641bc76f17c45ce8b4c231aed1d32c'
+const DEPENDENCY_POLICY_FILE = 'runtime-dependency-policy.json'
+const PATCH_PATH = /^patches\/[A-Za-z0-9@._+-]+\.patch$/u
+const REQUIRED_PATCHES = new Map([
+  ['@earendil-works/pi-ai@1.0.2', ['patches/@earendil-works__pi-ai@1.0.2.patch', '1cc211bc358d30cb58bd975f39c03e296f8a277c3de845514d12f9ae77ebab5f']],
+  ['node-pty@1.2.0-beta.15', ['patches/node-pty@1.2.0-beta.15.patch', '9d30053266d0f39d3debe894c675867f6782da6bcadbc94a693b3cfb9eff8ed0']],
+])
+
+// Read only the deliberately narrow, generated flat policy maps. Unknown shapes
+// fail closed instead of accepting a YAML construct whose semantics differ.
+function flatPolicyMap(text, section) {
+  const headers = [...text.matchAll(new RegExp(`^${section}:\\s*\\r?\\n`, 'gmu'))]
+  if (headers.length !== 1) fail(`${section} must appear exactly once`)
+  const remainder = text.slice(headers[0].index + headers[0][0].length)
+  const body = remainder.match(/^(?: {2}.+\r?\n)+/u)?.[0]
+  if (!body) fail(`${section} must be a nonempty flat map`)
+  const entries = new Map()
+  for (const line of body.trimEnd().split(/\r?\n/u)) {
+    const pair = line.match(/^  (?:"([^"]+)"|'([^']+)'|([^:\s]+)):\s*(?:"([^"]+)"|'([^']+)'|([^'"\s]+))\s*$/u)
+    if (!pair) fail(`${section} contains an unsupported entry`)
+    const key = pair[1] ?? pair[2] ?? pair[3]
+    if (entries.has(key)) fail(`${section} repeats ${key}`)
+    entries.set(key, pair[4] ?? pair[5] ?? pair[6])
+  }
+  return entries
+}
+
+function inspectDependencyPolicy(projectRoot, policyBytes, lockBytes) {
+  const metadataPath = join(projectRoot, DEPENDENCY_POLICY_FILE)
+  if (!existsSync(metadataPath)) {
+    if (/^patchedDependencies:/mu.test(policyBytes.toString('utf8'))) fail('patch policy has no recorded patch identities')
+    return { dependencyPolicyBytes: null, patches: [] }
+  }
+  const dependencyPolicyBytes = readRegularFile(metadataPath, DEPENDENCY_POLICY_FILE)
+  const metadata = parseJson(dependencyPolicyBytes, DEPENDENCY_POLICY_FILE)
+  if (!metadata || metadata.schemaVersion !== 1 || !SHA256.test(metadata.sourcePolicySha256 ?? '')
+      || !SHA256.test(metadata.sourceLockSha256 ?? '') || !Array.isArray(metadata.patches)
+      || metadata.patches.length !== REQUIRED_PATCHES.size) fail('dependency patch metadata is invalid')
+  const patches = metadata.patches
+  if (JSON.stringify(patches) !== JSON.stringify([...patches].sort((a, b) => String(a?.selector).localeCompare(String(b?.selector))))) {
+    fail('dependency patch records must be sorted by selector')
+  }
+  const patchRoot = join(projectRoot, 'patches')
+  assertRealDirectory(patchRoot, 'project patches directory')
+  const selectors = new Set()
+  for (const record of patches) {
+    const required = REQUIRED_PATCHES.get(record?.selector)
+    if (!required || selectors.has(record.selector) || !PATCH_PATH.test(record.path ?? '')
+        || record.path !== required[0] || record.sha256 !== required[1]
+        || !Number.isSafeInteger(record.bytes) || record.bytes <= 0) fail('dependency patch identity is unreviewed or unsafe')
+    selectors.add(record.selector)
+    const bytes = readRegularFile(join(projectRoot, record.path), record.path)
+    if (bytes.length !== record.bytes || sha256(bytes) !== record.sha256) fail(`dependency patch integrity mismatch: ${record.path}`)
+  }
+  const expectedFiles = patches.map(record => record.path.slice('patches/'.length)).sort()
+  if (JSON.stringify(readdirSync(patchRoot).sort()) !== JSON.stringify(expectedFiles)) fail('project patch directory has missing or unexpected entries')
+  const text = policyBytes.toString('utf8')
+  const declared = flatPolicyMap(text, 'patchedDependencies')
+  const overrides = flatPolicyMap(text, 'overrides')
+  if (declared.size !== patches.length) fail('workspace patch map differs from recorded patch identities')
+  for (const record of patches) {
+    const split = record.selector.lastIndexOf('@')
+    if (declared.get(record.selector) !== record.path
+        || overrides.get(record.selector.slice(0, split)) !== record.selector.slice(split + 1)) fail('workspace patch target or exact version pin differs')
+  }
+  if (lockBytes) {
+    const lockText = lockBytes.toString('utf8')
+    const lockPatches = flatPolicyMap(lockText, 'patchedDependencies')
+    if (lockPatches.size !== patches.length) fail('lock patch map differs from recorded patch identities')
+    for (const record of patches) {
+      if (lockPatches.get(record.selector) !== record.sha256
+          || !lockText.includes(`${record.selector}(patch_hash=${record.sha256})`)) fail(`lock does not apply reviewed patch: ${record.selector}`)
+    }
+  }
+  return { dependencyPolicyBytes, patches }
+}
+
+function requireTargetPatches(project, upstreamCommit) {
+  if (upstreamCommit === PATCHED_WINDOWS_UPSTREAM && project.dependencyPolicyBytes === null) {
+    fail('target Windows runtime requires the reviewed dependency patches')
+  }
 }
 
 function inspectProject(projectRoot, { requireLock = true } = {}) {
@@ -108,7 +193,8 @@ function inspectProject(projectRoot, { requireLock = true } = {}) {
   if (/(?:^|[\s"'=])(?:[A-Za-z]:[\\/]|\\\\)/mu.test(lockBytes?.toString('utf8') ?? '')) {
     fail('lockfile contains a machine-specific absolute path')
   }
-  return { lockBytes, policyBytes, packageBytes, packageSetBytes, tarballs }
+  const dependencyPolicy = inspectDependencyPolicy(projectRoot, policyBytes, lockBytes)
+  return { lockBytes, policyBytes, packageBytes, packageSetBytes, tarballs, ...dependencyPolicy }
 }
 
 function buildPolicyEntries(policyText) {
@@ -147,6 +233,7 @@ function buildPolicyEntries(policyText) {
 export function createRuntimeLockDescriptor({ projectRoot, target, upstreamCommit, pnpmVersion }) {
   const project = inspectProject(projectRoot)
   buildPolicyEntries(project.policyBytes.toString('utf8'))
+  requireTargetPatches(project, upstreamCommit)
   if (!/^[0-9a-f]{40}$/u.test(upstreamCommit ?? '')) fail('upstream commit must be a full lowercase Git object id')
   if (!/^\d+\.\d+\.\d+$/u.test(pnpmVersion ?? '')) fail('pnpm version must be an exact semantic version')
   if (target !== 'win-x64') fail(`no reviewed lock target exists for ${target}; only win-x64 may be qualified`)
@@ -160,6 +247,10 @@ export function createRuntimeLockDescriptor({ projectRoot, target, upstreamCommi
     workspacePolicySha256: sha256(project.policyBytes),
     packageJsonSha256: sha256(project.packageBytes),
     packageSetSha256: sha256(project.packageSetBytes),
+    ...(project.dependencyPolicyBytes === null ? {} : {
+      dependencyPolicySha256: sha256(project.dependencyPolicyBytes),
+      patches: project.patches,
+    }),
     tarballs: project.tarballs,
   }
 }
@@ -167,9 +258,10 @@ export function createRuntimeLockDescriptor({ projectRoot, target, upstreamCommi
 /** Validate every reviewed identity, then copy its unchanged lock into a fresh project. */
 export function validateRuntimeLockInputs({ inputRoot, projectRoot, target, upstreamCommit, pnpmVersion }) {
   if (target !== 'win-x64') fail(`target ${target} is explicitly unqualified; only win-x64 is reviewed`)
-  assertInputLayout(inputRoot)
+  assertRealDirectory(inputRoot, 'reviewed input root')
   const descriptorBytes = readRegularFile(join(inputRoot, 'descriptor.json'), 'descriptor.json')
   const descriptor = parseJson(descriptorBytes, 'descriptor.json')
+  assertInputLayout(inputRoot, descriptor?.dependencyPolicySha256 !== undefined)
   if (!descriptor || descriptor.schemaVersion !== 1 || descriptor.reviewStatus !== 'REVIEWED') {
     fail('descriptor is not REVIEWED; candidate inputs cannot be consumed by normal staging')
   }
@@ -178,6 +270,7 @@ export function validateRuntimeLockInputs({ inputRoot, projectRoot, target, upst
   if (descriptor.pnpmVersion !== pnpmVersion) fail(`pnpm version mismatch (expected ${pnpmVersion}, found ${descriptor.pnpmVersion})`)
 
   const project = inspectProject(projectRoot, { requireLock: false })
+  requireTargetPatches(project, upstreamCommit)
   const lockBytes = readRegularFile(join(inputRoot, 'pnpm-lock.yaml'), 'pnpm-lock.yaml')
   const policyBytes = readRegularFile(join(inputRoot, 'pnpm-workspace.yaml'), 'pnpm-workspace.yaml')
   const packageBytes = readRegularFile(join(inputRoot, 'package.json'), 'package.json')
@@ -186,6 +279,16 @@ export function validateRuntimeLockInputs({ inputRoot, projectRoot, target, upst
   if (sha256(policyBytes) !== descriptor.workspacePolicySha256) fail('workspace policy digest does not match the descriptor')
   if (sha256(packageBytes) !== descriptor.packageJsonSha256) fail('package metadata digest does not match the descriptor')
   if (sha256(packageSetBytes) !== descriptor.packageSetSha256) fail('dependency metadata digest does not match the descriptor')
+  const reviewed = inspectProject(inputRoot)
+  requireTargetPatches(reviewed, upstreamCommit)
+  if (project.dependencyPolicyBytes === null) {
+    if (descriptor.dependencyPolicySha256 !== undefined || descriptor.patches !== undefined) fail('unexpected dependency patch descriptor')
+  } else {
+    if (reviewed.dependencyPolicyBytes === null
+        || sha256(reviewed.dependencyPolicyBytes) !== descriptor.dependencyPolicySha256
+        || !project.dependencyPolicyBytes.equals(reviewed.dependencyPolicyBytes)
+        || JSON.stringify(descriptor.patches) !== JSON.stringify(project.patches)) fail('dependency patch metadata differs from reviewed inputs')
+  }
   if (!policyBytes.equals(project.policyBytes) || !packageBytes.equals(project.packageBytes) || !packageSetBytes.equals(project.packageSetBytes)) {
     fail('generated project metadata differs from reviewed lock inputs')
   }
@@ -219,6 +322,10 @@ export function validateRuntimeLockInputs({ inputRoot, projectRoot, target, upst
     target,
     upstreamCommit,
     pnpmVersion,
+    ...(project.dependencyPolicyBytes === null ? {} : {
+      dependencyPolicySha256: sha256(project.dependencyPolicyBytes),
+      patchCount: project.patches.length,
+    }),
     tarballCount: project.tarballs.length,
   }
 }
@@ -234,6 +341,13 @@ export function writeRuntimeLockCandidate({ projectRoot, candidateRoot, target, 
   }
   for (const record of descriptor.tarballs) {
     copyFileSync(join(projectRoot, record.path), join(candidateRoot, record.path))
+  }
+  if (descriptor.dependencyPolicySha256 !== undefined) {
+    mkdirSync(join(candidateRoot, 'patches'))
+    copyFileSync(join(projectRoot, DEPENDENCY_POLICY_FILE), join(candidateRoot, DEPENDENCY_POLICY_FILE))
+    for (const record of descriptor.patches) {
+      copyFileSync(join(projectRoot, record.path), join(candidateRoot, record.path))
+    }
   }
   writeFileSync(join(candidateRoot, 'descriptor.json'), `${JSON.stringify(descriptor, null, 2)}\n`, { flag: 'wx' })
   return descriptor

@@ -52,7 +52,7 @@ const common = f => ({
   inputRoot: f.inputs,
   projectRoot: f.project,
   target: 'win-x64',
-  upstreamCommit: 'a'.repeat(40),
+  upstreamCommit: f.upstreamCommit ?? 'a'.repeat(40),
   pnpmVersion: '11.7.0',
 })
 
@@ -164,3 +164,86 @@ test('descriptor uses stable relative tarball paths and pins local tarball integ
     assert.ok(!JSON.stringify(descriptor).includes(f.root), 'descriptor contains no machine-specific stage path')
   } finally { rmSync(f.root, { recursive: true, force: true }) }
 })
+
+const patchedCommit = 'd743267388641bc76f17c45ce8b4c231aed1d32c'
+function patchedFixture() {
+  const f = fixture()
+  f.upstreamCommit = patchedCommit
+  const selectors = ['@earendil-works/pi-ai@1.0.2', 'node-pty@1.2.0-beta.15']
+  const paths = ['patches/@earendil-works__pi-ai@1.0.2.patch', 'patches/node-pty@1.2.0-beta.15.patch']
+  const patches = selectors.map((selector, index) => {
+    const bytes = readFileSync(new URL(`../../../_upstream/${paths[index]}`, import.meta.url))
+    for (const directory of [f.project, f.inputs]) {
+      mkdirSync(join(directory, 'patches'), { recursive: true })
+      writeFileSync(join(directory, paths[index]), bytes)
+    }
+    return { selector, path: paths[index], bytes: bytes.length, sha256: digest(bytes) }
+  })
+  const patchedPolicy = `${policy}overrides:\n  "@earendil-works/pi-ai": "1.0.2"\n  node-pty: "1.2.0-beta.15"\npatchedDependencies:\n${patches.map(record => `  "${record.selector}": "${record.path}"\n`).join('')}`
+  const metadata = { schemaVersion: 1, sourcePolicySha256: 'b'.repeat(64), sourceLockSha256: 'c'.repeat(64), patches }
+  const lock = `${readFileSync(join(f.inputs, 'pnpm-lock.yaml'), 'utf8')}patchedDependencies:\n${patches.map(record => `  "${record.selector}": ${record.sha256}\n`).join('')}snapshots:\n${patches.map(record => `  "${record.selector}(patch_hash=${record.sha256})": {}\n`).join('')}`
+  for (const directory of [f.project, f.inputs]) {
+    writeFileSync(join(directory, 'pnpm-workspace.yaml'), patchedPolicy)
+    writeFileSync(join(directory, 'runtime-dependency-policy.json'), `${JSON.stringify(metadata, null, 2)}\n`)
+    writeFileSync(join(directory, 'pnpm-lock.yaml'), lock)
+  }
+  const descriptor = createRuntimeLockDescriptor({ projectRoot: f.project, target: 'win-x64', upstreamCommit: patchedCommit, pnpmVersion: '11.7.0' })
+  writeFileSync(join(f.inputs, 'descriptor.json'), `${JSON.stringify(descriptor, null, 2)}\n`)
+  rmSync(join(f.project, 'pnpm-lock.yaml'))
+  return f
+}
+
+test('target Windows commit refuses a baseline with no recorded dependency patches', () => {
+  const f = fixture()
+  try {
+    markReviewed(f.inputs)
+    assert.throws(() => validateRuntimeLockInputs({ ...common(f), upstreamCommit: patchedCommit }), /upstream commit/)
+    const descriptor = JSON.parse(readFileSync(join(f.inputs, 'descriptor.json'), 'utf8'))
+    descriptor.upstreamCommit = patchedCommit
+    writeFileSync(join(f.inputs, 'descriptor.json'), JSON.stringify(descriptor))
+    assert.throws(() => validateRuntimeLockInputs({ ...common(f), upstreamCommit: patchedCommit }), /requires the reviewed dependency patches/)
+    writeFileSync(join(f.project, 'pnpm-lock.yaml'), readFileSync(join(f.inputs, 'pnpm-lock.yaml')))
+    assert.throws(() => createRuntimeLockDescriptor({ projectRoot: f.project, target: 'win-x64', upstreamCommit: patchedCommit, pnpmVersion: '11.7.0' }), /requires the reviewed dependency patches/)
+  } finally { rmSync(f.root, { recursive: true, force: true }) }
+})
+
+test('reviewed patches bind exact bytes, application hashes, generated metadata and candidate copies', () => {
+  const f = patchedFixture()
+  try {
+    const descriptor = markReviewed(f.inputs)
+    assert.equal(descriptor.patches.length, 2)
+    const identity = validateRuntimeLockInputs(common(f))
+    assert.equal(identity.patchCount, 2)
+    assert.equal(identity.dependencyPolicySha256, descriptor.dependencyPolicySha256)
+    const candidateRoot = join(f.root, 'patched-candidate')
+    const candidate = writeRuntimeLockCandidate({ projectRoot: f.project, candidateRoot, target: 'win-x64', upstreamCommit: patchedCommit, pnpmVersion: '11.7.0' })
+    assert.equal(candidate.reviewStatus, 'CANDIDATE')
+    for (const record of candidate.patches) assert.deepEqual(readFileSync(join(candidateRoot, record.path)), readFileSync(join(f.project, record.path)))
+    assert.deepEqual(readFileSync(join(candidateRoot, 'runtime-dependency-policy.json')), readFileSync(join(f.project, 'runtime-dependency-policy.json')))
+    assert.ok(!JSON.stringify(candidate).includes(f.root))
+  } finally { rmSync(f.root, { recursive: true, force: true }) }
+})
+
+for (const [label, mutate] of [
+  ['changed reviewed patch bytes', f => writeFileSync(join(f.inputs, 'patches/node-pty@1.2.0-beta.15.patch'), 'changed')],
+  ['changed generated patch bytes', f => writeFileSync(join(f.project, 'patches/node-pty@1.2.0-beta.15.patch'), 'changed')],
+  ['missing reviewed patch', f => rmSync(join(f.inputs, 'patches/node-pty@1.2.0-beta.15.patch'))],
+  ['extra reviewed patch', f => writeFileSync(join(f.inputs, 'patches/extra.patch'), 'extra')],
+  ['altered source metadata', f => writeFileSync(join(f.inputs, 'runtime-dependency-policy.json'), readFileSync(join(f.inputs, 'runtime-dependency-policy.json'), 'utf8').replace('b'.repeat(64), 'd'.repeat(64)))],
+  ['absent applied lock patch', f => writeFileSync(join(f.inputs, 'pnpm-lock.yaml'), readFileSync(join(f.inputs, 'pnpm-lock.yaml'), 'utf8').replaceAll('(patch_hash=', '(omitted_patch='))],
+  ['changed patch version pin', f => writeFileSync(join(f.project, 'pnpm-workspace.yaml'), readFileSync(join(f.project, 'pnpm-workspace.yaml'), 'utf8').replace('"1.0.2"', '"1.1.0"'))],
+  ['missing patch policy metadata', f => rmSync(join(f.project, 'runtime-dependency-policy.json'))],
+  ['unsafe patch path', f => writeFileSync(join(f.project, 'runtime-dependency-policy.json'), readFileSync(join(f.project, 'runtime-dependency-policy.json'), 'utf8').replace('patches/node-pty@1.2.0-beta.15.patch', '../outside.patch'))],
+  ['unknown patch selector', f => writeFileSync(join(f.project, 'runtime-dependency-policy.json'), readFileSync(join(f.project, 'runtime-dependency-policy.json'), 'utf8').replace('node-pty@1.2.0-beta.15"', 'node-pty@1.2.0-beta.16"'))],
+  ['duplicate patch policy map', f => writeFileSync(join(f.project, 'pnpm-workspace.yaml'), `${readFileSync(join(f.project, 'pnpm-workspace.yaml'), 'utf8')}patchedDependencies:\n  extra: extra.patch\n`)],
+]) {
+  test(`patch refusal before fresh lock publication: ${label}`, () => {
+    const f = patchedFixture()
+    try {
+      markReviewed(f.inputs)
+      mutate(f)
+      assert.throws(() => validateRuntimeLockInputs(common(f)))
+      assert.throws(() => readFileSync(join(f.project, 'pnpm-lock.yaml')), /ENOENT/)
+    } finally { rmSync(f.root, { recursive: true, force: true }) }
+  })
+}

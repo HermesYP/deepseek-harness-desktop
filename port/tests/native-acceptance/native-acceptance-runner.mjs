@@ -281,6 +281,30 @@ export function findPtyChild(rows, baselineRows) {
   return candidates[0] ?? null
 }
 
+/**
+ * The terminal tab's own close hook: the ONE tab-close id that newly appeared
+ * while the terminal session opened. The guide chip can be replaced in place (the
+ * id then does not change) and other tabs can open alongside, so zero or several
+ * new ids are ambiguous and select nothing; the caller then falls back to the
+ * terminal-titled chip and must reject an ambiguous match there too.
+ *
+ * @param {unknown} beforeIds Close-hook ids mounted before the terminal entry.
+ * @param {unknown} afterIds Close-hook ids mounted after the session opened.
+ * @returns {{id: string|null, reason: string}} The unique new id, or why none.
+ */
+export function findNewTabCloseId(beforeIds, afterIds) {
+  const usable = value => typeof value === 'string' && value !== ''
+  const before = new Set((Array.isArray(beforeIds) ? beforeIds : []).filter(usable))
+  const added = [...new Set((Array.isArray(afterIds) ? afterIds : []).filter(usable).filter(id => !before.has(id)))]
+  if (added.length === 1) return { id: added[0], reason: 'exactly one new tab-close hook appeared' }
+  return {
+    id: null,
+    reason: added.length === 0
+      ? 'no new tab-close hook appeared (the entry may have replaced the guide tab in place)'
+      : `${added.length} new tab-close hooks appeared`,
+  }
+}
+
 /** Messages sent to the fixture provider through the real composer. */
 export const FIXTURE_CHAT_MESSAGE = 'Acceptance streaming test: reply with your fixture text.'
 export const FIXTURE_CANCEL_MESSAGE = `${FIXTURE_CANCEL_MARKER}: stream slowly, the harness will stop you.`
@@ -872,34 +896,94 @@ export const TERMINAL_OPEN_EXPRESSION = `(() => {
   return { record: 'terminal-open', clicked: false };
 })()`
 
-/** Terminal surface presence facts (structural markers only). */
+/**
+ * Terminal surface presence facts: the terminal surface lives ONLY in the right
+ * sidebar panel (`ui-sidebar-terminal` registers the `sidebar.right.pane.tab`
+ * seat), and a mounted session renders `section[data-sidebar-terminal]` whose
+ * body is the xterm screen (`terminal.tsx`: `xterm.open(node)` mounts `.xterm`
+ * with the `xterm-helper-textarea` input). A `[class*="terminal"]` match alone is
+ * not proof: tool cards and other chrome can carry the word in a class name.
+ */
 export const TERMINAL_STATE_EXPRESSION = `(() => {
-  const surface = document.querySelector('[class*="terminal"]');
-  const input = document.querySelector('.xterm textarea, [class*="terminal"] textarea, [class*="terminal"] [contenteditable="true"]');
+  const panel = document.querySelector('[data-sidebar-right-session]') ?? document.querySelector('[data-sidebar-right-open]');
+  const section = panel === null ? null : panel.querySelector('[data-sidebar-terminal]');
+  const screen = section === null ? null : section.querySelector('.xterm');
+  const input = screen === null ? null : (screen.querySelector('textarea.xterm-helper-textarea') ?? screen.querySelector('textarea'));
   return {
     record: 'terminal-state',
-    surfacePresent: surface !== null,
+    panelPresent: panel !== null,
+    surfacePresent: section !== null && screen !== null,
     inputPresent: input !== null,
   };
 })()`
 
-/** Close/terminate the terminal session (its own close or kill control). */
+/**
+ * The tab-close hooks currently mounted in the right sidebar panel, read BEFORE
+ * and AFTER the terminal entry is clicked so the terminal's own tab can be
+ * identified by what newly appeared (each chip's close hook carries its tab id:
+ * `ui-dockkit` TabPanel `data-dockkit-tab-close={tabId}`).
+ */
+export const TERMINAL_TAB_IDS_EXPRESSION = `(() => {
+  const panel = document.querySelector('[data-sidebar-right-session]') ?? document.querySelector('[data-sidebar-right-open]');
+  if (panel === null) return { record: 'terminal-tab-ids', panelPresent: false, ids: [] };
+  const ids = [...panel.querySelectorAll('[data-dockkit-tab-close]')]
+    .map((el) => el.getAttribute('data-dockkit-tab-close'))
+    .filter((id) => typeof id === 'string' && id !== '');
+  return { record: 'terminal-tab-ids', panelPresent: true, ids };
+})()`
+
+/** A tab id is an opaque branded id; this bounds the one embedding site. */
+const MAX_TAB_ID_LENGTH = 128
+
+/**
+ * The close-hook expression for ONE known tab id. The id is embedded as a JSON
+ * string literal, so a DOM-supplied value is data and can never inject code; an
+ * unusable id returns `null` and the caller falls back to the title-scoped
+ * expression.
+ *
+ * @param {unknown} tabId The tab id captured from the panel's close hooks.
+ * @returns {string|null} A page-side expression, or null for an unusable id.
+ */
+export function terminalCloseExpressionForTab(tabId) {
+  if (typeof tabId !== 'string' || tabId === '' || tabId.length > MAX_TAB_ID_LENGTH) return null
+  const literal = JSON.stringify(tabId)
+  return `(() => {
+  const target = ${literal};
+  const panel = document.querySelector('[data-sidebar-right-session]') ?? document.querySelector('[data-sidebar-right-open]');
+  if (panel === null) return { record: 'terminal-close', clicked: false, reason: 'no-right-sidebar-panel', tabId: target };
+  const control = [...panel.querySelectorAll('[data-dockkit-tab-close]')]
+    .find((el) => el.getAttribute('data-dockkit-tab-close') === target);
+  if (control === undefined) return { record: 'terminal-close', clicked: false, reason: 'terminal-tab-id-not-found', tabId: target };
+  control.click();
+  return { record: 'terminal-close', clicked: true, matched: 'data-dockkit-tab-close', via: 'captured-new-tab-id', tabId: target };
+})()`
+}
+
+/**
+ * Close/terminate the terminal session through its OWN tab chip.
+ *
+ * The panel can hold several chips (the guide chip, other session tabs), and
+ * collapsing the right panel would NOT terminate the PTY session, so only a
+ * terminal-titled chip's dockkit tab-close hook is clicked; zero or several
+ * matching chips are never guessed at. This is the locale-titled fallback used
+ * when no single new tab-close hook appeared (`findNewTabCloseId`).
+ */
 export const TERMINAL_CLOSE_EXPRESSION = `(() => {
-  const surface = document.querySelector('[class*="terminal"]');
-  if (!surface) return { record: 'terminal-close', clicked: false, reason: 'absent' };
-  const scope = surface.closest('[class*="sidebar"], [class*="panel"], body') ?? surface;
-  const elements = [...scope.querySelectorAll('button, [role="button"]')];
-  const label = (el) => (el.getAttribute('aria-label') || '') + ' ' + (el.getAttribute('title') || '') + ' ' + (el.textContent || '');
-  const priorities = [
-    /^(close terminal|close|kill terminal|kill|terminate|\\u5173\\u95ed\\u7ec8\\u7aef|\\u7ec8\\u6b62)$/iu,
-    /^(close|\\u5173\\u95ed)$/iu,
-    /^(kill|\\u7ec8\\u6b62|\\u505c\\u6b62)$/iu,
-  ];
-  for (const re of priorities) {
-    const match = elements.find((el) => re.test(label(el).trim()));
-    if (match) { match.click(); return { record: 'terminal-close', clicked: true, matched: re.source.slice(0, 40) }; }
+  const panel = document.querySelector('[data-sidebar-right-session]') ?? document.querySelector('[data-sidebar-right-open]');
+  if (panel === null) return { record: 'terminal-close', clicked: false, reason: 'no-right-sidebar-panel' };
+  const chips = [...panel.querySelectorAll('[data-dockkit-tab]')];
+  const label = (chip) => {
+    const span = chip.querySelector('[data-dockkit-tab-title]');
+    return ((chip.getAttribute('aria-label') || '') + ' ' + (chip.textContent || '') + ' ' + (span === null ? '' : (span.textContent || ''))).trim();
+  };
+  const terminal = chips.filter((chip) => /terminal|\\u7ec8\\u7aef/iu.test(label(chip)));
+  if (terminal.length !== 1) {
+    return { record: 'terminal-close', clicked: false, reason: terminal.length === 0 ? 'no-terminal-tab' : 'ambiguous-terminal-tab', tabs: chips.length, matches: terminal.length };
   }
-  return { record: 'terminal-close', clicked: false, reason: 'no-close-control' };
+  const control = terminal[0].querySelector('[data-dockkit-tab-close]');
+  if (control === null) return { record: 'terminal-close', clicked: false, reason: 'no-terminal-tab-close', tabs: chips.length };
+  control.click();
+  return { record: 'terminal-close', clicked: true, matched: 'terminal-tab-title', via: 'title-scoped', tabId: control.getAttribute('data-dockkit-tab-close') };
 })()`
 
 /** Read-only update status through the bridge. */
@@ -1310,7 +1394,13 @@ export async function runAcceptance(args, inject = {}) {
     push('onboarding.first_run', true, onboarding.status, onboarding.detail)
 
     // -- 8. Shell usability ---------------------------------------------------------------------
-    const usable = evaluateShellUsability(hostFacts, await connection.evaluate(HOST_FACTS_EXPRESSION, { awaitPromise: false }))
+    // Settings navigation is QUALIFIED POSITIVELY before it is used as evidence:
+    // open the surface through the registered shortcut, require the mounted modal,
+    // then close it positively so no later hotkey runs under an open modal.
+    const settingsNavigation = await openSettings({ connection, sleepImpl })
+    const settingsClose = await closeSettings({ connection, sleepImpl })
+    record.scenarios.settingsNavigation = { ...settingsNavigation, ...settingsClose }
+    const usable = evaluateShellUsability(hostFacts, await connection.evaluate(HOST_FACTS_EXPRESSION, { awaitPromise: false }), settingsNavigation)
     push('shell.usable', true, usable.status, usable.detail)
 
     // -- 9. Fixture chat ---------------------------------------------------------------------------
@@ -1373,7 +1463,7 @@ export async function runAcceptance(args, inject = {}) {
     if (quit1.status !== 'pass') await teardownProcess('first-quit-incomplete')
 
     // -- 12. Relaunch (same home/namespace, fresh handoff paths) --------------------------------------------
-    const relaunch = await relaunchAndVerify({ args, paths, record, fetchImpl, sleepImpl, attachImpl, identityImpl, tableImpl, spawnImpl, log, env1: env })
+    const relaunch = await relaunchAndVerify({ args, paths, record, fetchImpl, sleepImpl, attachImpl, identityImpl, tableImpl, spawnImpl, log, env1: env, initialOnboarding: onboarding })
     child = relaunch.child
     identityAtSpawn = relaunch.identityAtSpawn
     connection = relaunch.connection
@@ -1598,19 +1688,149 @@ export async function runOnboardingScenario({ connection, timeoutMs, sleepImpl, 
 }
 
 /** Shell usability from two host-facts samples (first + post-onboarding). */
-export function evaluateShellUsability(first, second) {
+/**
+ * Positive Settings mount probe. The settings surface is a shortcut modal
+ * (`[data-shortcut-modal='settings']`, role=dialog, aria-modal) and is the ONLY
+ * honest evidence that Settings navigation worked: the sidebar's trigger is an
+ * ICON-ONLY button whose text label renders solely in the wide sidebar
+ * (`ui-settings-general/src/client/chrome.tsx:22-29`: `{wide && <span …>}`), so a
+ * label-based or text-presence test can neither find nor rule out the surface.
+ */
+export const SETTINGS_MOUNTED_EXPRESSION = `(() => {
+  const modal = document.querySelector("[data-shortcut-modal='settings'][role='dialog'][aria-modal='true']");
+  return { record: 'settings-mounted', mounted: modal !== null };
+})()`
+
+/** Move focus off the composer before dispatching a page-region shortcut. */
+export const BLUR_ACTIVE_EXPRESSION = `(() => {
+  const active = document.activeElement;
+  if (active && typeof active.blur === 'function') active.blur();
+  if (document.body && typeof document.body.focus === 'function') document.body.focus();
+  return { record: 'blur-active', blurred: true };
+})()`
+
+/** Right-sidebar state: the terminal lives only inside it (see TERMINAL_ENTRY). */
+export const SIDEBAR_RIGHT_STATE_EXPRESSION = `(() => ({
+  record: 'sidebar-right-state',
+  open: document.querySelector('[data-sidebar-right-open]') !== null,
+  expandAvailable: document.querySelector('[data-sidebar-right-expand]') !== null,
+  session: document.querySelector('[data-sidebar-right-session]') !== null
+}))()`
+
+/** Open the right sidebar through its own header-corner control. */
+export const SIDEBAR_RIGHT_OPEN_EXPRESSION = `(() => {
+  if (document.querySelector('[data-sidebar-right-open]') !== null) {
+    return { record: 'sidebar-right-open', clicked: false, alreadyOpen: true };
+  }
+  const expand = document.querySelector('[data-sidebar-right-expand]');
+  if (expand === null) return { record: 'sidebar-right-open', clicked: false, alreadyOpen: false, reason: 'no-expand-control' };
+  expand.click();
+  return { record: 'sidebar-right-open', clicked: true, alreadyOpen: false };
+})()`
+
+/**
+ * Click the terminal entry INSIDE the right sidebar. `ui-sidebar-terminal`
+ * registers only right-sidebar seats (`sidebar.right.tab.guide.entry`,
+ * `sidebar.right.pane.tab`); there is no top-level terminal control, so the
+ * panel must already be open.
+ */
+export const TERMINAL_ENTRY_EXPRESSION = `(() => {
+  const scope = document.querySelector('[data-sidebar-right-session]')
+    ?? document.querySelector('[data-sidebar-right-open]') ?? document;
+  const elements = [...scope.querySelectorAll('button, [role="button"], a, [aria-label]')];
+  const label = (el) => (el.getAttribute('aria-label') || '') + ' ' + (el.getAttribute('title') || '') + ' ' + (el.textContent || '');
+  const match = elements.find((el) => /new terminal|new shell|\\u65b0\\u5efa\\u7ec8\\u7aef/iu.test(label(el)))
+    ?? elements.find((el) => /(^|\\s)terminal($|\\s)/iu.test(label(el).trim()));
+  if (match) { match.click(); return { record: 'terminal-open', clicked: true, via: 'right-sidebar-entry' }; }
+  return { record: 'terminal-open', clicked: false, via: 'right-sidebar-entry' };
+})()`
+
+/**
+ * Open Settings through the REGISTERED `settings.open` shortcut (desktop default
+ * `primary+Comma`, `ui-settings-general/src/client/index.ts:179-187`). The
+ * shortcut is locale-free and independent of sidebar width, which the icon-only
+ * trigger is not. A dispatched key is never itself a pass: the caller must still
+ * observe `SETTINGS_MOUNTED_EXPRESSION`.
+ */
+export async function openSettings({ connection, sleepImpl, timeoutMs = 8000 }) {
+  const already = await connection.evaluate(SETTINGS_MOUNTED_EXPRESSION, { awaitPromise: false })
+  if (already.mounted === true) return { opened: true, dispatched: false, how: 'already-mounted' }
+  await connection.evaluate(BLUR_ACTIVE_EXPRESSION, { awaitPromise: false })
+  await sleepImpl(150)
+  for (const type of ['rawKeyDown', 'keyUp']) {
+    await connection.send('Input.dispatchKeyEvent', {
+      type, key: ',', code: 'Comma', windowsVirtualKeyCode: 188, nativeVirtualKeyCode: 188, modifiers: 2,
+      ...(type === 'rawKeyDown' ? { text: ',' } : {}),
+    })
+  }
+  const deadline = Date.now() + timeoutMs
+  for (;;) {
+    const probe = await connection.evaluate(SETTINGS_MOUNTED_EXPRESSION, { awaitPromise: false })
+    if (probe.mounted === true) return { opened: true, dispatched: true, how: 'shortcut-primary+Comma' }
+    if (Date.now() >= deadline) return { opened: false, dispatched: true, how: 'shortcut-primary+Comma' }
+    await sleepImpl(200)
+  }
+}
+
+/** Close Settings positively (Escape) so no hotkey is dispatched under a modal. */
+export async function closeSettings({ connection, sleepImpl, timeoutMs = 6000 }) {
+  const deadline = Date.now() + timeoutMs
+  for (;;) {
+    const probe = await connection.evaluate(SETTINGS_MOUNTED_EXPRESSION, { awaitPromise: false })
+    if (probe.mounted !== true) return { closed: true }
+    if (Date.now() >= deadline) return { closed: false }
+    for (const type of ['rawKeyDown', 'keyUp']) {
+      await connection.send('Input.dispatchKeyEvent', {
+        type, key: 'Escape', code: 'Escape', windowsVirtualKeyCode: 27, nativeVirtualKeyCode: 27,
+      })
+    }
+    await sleepImpl(250)
+  }
+}
+
+/**
+ * Whether onboarding completion persisted across the restart.
+ *
+ * Absence of the first-run region on the SECOND launch proves nothing on its own:
+ * a run that never displayed onboarding also shows nothing after the restart. The
+ * fact is only qualified when the FIRST run positively appeared and completed.
+ */
+export function evaluateStaysCompleted({ firstRunAppeared, firstRunCompleted, reappeared }) {
+  if (firstRunAppeared !== true || firstRunCompleted !== true) {
+    return {
+      status: 'unqualified',
+      detail: 'the first run did not positively appear and complete first-run onboarding'
+        + ` (appeared=${firstRunAppeared === true} completed=${firstRunCompleted === true}),`
+        + ' so absence after the restart cannot evidence persistence;'
+        + ' the visual first-run flow needs a real signed-in account action',
+    }
+  }
+  if (reappeared === false) return { status: 'pass', detail: 'onboarding did not reappear after the restart; completion persisted' }
+  if (reappeared === true) return { status: 'fail', detail: 'onboarding reappeared after the restart; completion did not persist' }
+  return { status: 'unqualified', detail: 'the restart did not report whether onboarding reappeared' }
+}
+
+/**
+ * Shell usability. The Settings term is a POSITIVE navigation outcome, never the
+ * presence of the word "settings" in page text: the trigger is icon-only in the
+ * collapsed sidebar, so text presence neither proves nor disproves that Settings
+ * can be reached.
+ */
+export function evaluateShellUsability(first, second, settingsNavigation = null) {
   const merged = { ...first }
   for (const [key, value] of Object.entries(second ?? {})) {
     if (value !== null && value !== undefined && value !== false) merged[key] = value
   }
   const composer = merged.composerHintPresent === true
   const newSession = merged.newSessionPresent === true
-  const settings = merged.settingsPresent === true
+  const settings = settingsNavigation !== null && settingsNavigation.opened === true
   const all = composer && newSession && settings
   return {
     status: all ? 'pass' : 'fail',
-    detail: `composer=${composer} newSession=${newSession} settings=${settings}`,
+    detail: `composer=${composer} newSession=${newSession} settings=${settings}`
+      + (settingsNavigation === null ? ' (settings navigation was not attempted)' : ` (via ${settingsNavigation.how})`),
     composer, newSession, settings,
+    settingsNavigation,
   }
 }
 
@@ -1722,16 +1942,31 @@ export async function typeAndSend({ connection, text, sleepImpl }) {
 /**
  * The real PTY termination lane: open the client's terminal surface, attribute
  * the spawned shell as a NEW host descendant (read-only CIM attribution; the
- * harness never terminates the shell itself), close the session through the
- * surface's own control, and require the shell's POSITIVE absence within a
- * bounded settle window. A node-pty Windows agent missing the kill/drain fix
+ * harness never terminates the shell itself), require the MOUNTED terminal
+ * surface (its xterm screen and input) inside the right sidebar, close the
+ * session through its own tab chip, and require the shell's POSITIVE absence
+ * within a bounded settle window. The shell must be provably alive when the close
+ * is requested, and the tab-close control must be provably clicked: absence alone
+ * could be a natural exit. A node-pty Windows agent missing the kill/drain fix
  * leaves the shell alive and fails this lane.
  */
 export async function runPtyTerminationLane({ connection, tableImpl, identityAtSpawn, args, sleepImpl, log }) {
   const facts = {
     openClicked: false,
+    openVia: null,
+    sidebarRightClicked: false,
+    sidebarRightOpen: false,
+    panelPresent: null,
     surfacePresent: null,
+    inputPresent: null,
     child: null,
+    tabIdsBefore: [],
+    tabIdsAfter: [],
+    newTabCloseId: null,
+    newTabCloseReason: null,
+    closeTabId: null,
+    closeVia: null,
+    presentBeforeClose: null,
     closeClicked: false,
     closeReason: null,
     terminatedCleanly: false,
@@ -1750,8 +1985,41 @@ export async function runPtyTerminationLane({ connection, tableImpl, identityAtS
     facts.baselineErrorKind = boundedErrorKind(error)
   }
 
-  const open = await connection.evaluate(TERMINAL_OPEN_EXPRESSION, { awaitPromise: false })
+  // The terminal lives ONLY inside the right sidebar: `ui-sidebar-terminal`
+  // registers `sidebar.right.tab.guide.entry` / `sidebar.right.pane.tab` and its
+  // header-action and overlay registrations are commented out. So open the panel
+  // through its own control first, then click the entry INSIDE it. No top-level
+  // terminal control exists, and none is guessed at.
+  const sidebar = await connection.evaluate(SIDEBAR_RIGHT_OPEN_EXPRESSION, { awaitPromise: false })
+  let sidebarState = { open: false, session: false }
+  const sidebarDeadline = Date.now() + 8000
+  for (;;) {
+    sidebarState = await connection.evaluate(SIDEBAR_RIGHT_STATE_EXPRESSION, { awaitPromise: false })
+    if (sidebarState.open === true || Date.now() >= sidebarDeadline) break
+    await sleepImpl(250)
+  }
+  facts.sidebarRightClicked = sidebar.clicked === true
+  facts.sidebarRightOpen = sidebarState.open === true
+  // Baseline tab-close hooks, read with the panel open and BEFORE the entry is
+  // clicked: the terminal tab is then the one whose close hook newly appeared.
+  const tabIdsBefore = await connection.evaluate(TERMINAL_TAB_IDS_EXPRESSION, { awaitPromise: false }).catch(() => ({ ids: [] }))
+  facts.tabIdsBefore = Array.isArray(tabIdsBefore.ids) ? tabIdsBefore.ids : []
+  let open = await connection.evaluate(TERMINAL_ENTRY_EXPRESSION, { awaitPromise: false })
+  if (open.clicked !== true && facts.sidebarRightOpen === true) {
+    // Documented alternative entry: the registered `terminal.new` shortcut
+    // (Ctrl+Backquote under the current session).
+    for (const type of ['rawKeyDown', 'keyUp']) {
+      await connection.send('Input.dispatchKeyEvent', {
+        type, key: '`', code: 'Backquote', windowsVirtualKeyCode: 192, nativeVirtualKeyCode: 192, modifiers: 2,
+      })
+    }
+    await sleepImpl(800)
+    open = { clicked: true, via: 'shortcut-terminal.new' }
+  }
   facts.openClicked = open.clicked === true
+  // A failed entry click has no mechanism to report: `openVia` names how the
+  // terminal was actually opened, or null when it was not.
+  facts.openVia = open.clicked === true ? (open.via ?? 'right-sidebar-entry') : null
 
   let child = null
   const openDeadline = Date.now() + args.bounds['pty-open-timeout-ms']
@@ -1765,8 +2033,20 @@ export async function runPtyTerminationLane({ connection, tableImpl, identityAtS
     } catch { /* bounded retry */ }
     if (child === null) await sleepImpl(500)
   }
-  const state = await connection.evaluate(TERMINAL_STATE_EXPRESSION, { awaitPromise: false })
+
+  // Positive UI qualification: an attributed shell descendant is not a mounted
+  // terminal surface, so the xterm screen and its input must be observed inside
+  // the right sidebar before this lane may pass.
+  let state = { panelPresent: false, surfacePresent: false, inputPresent: false }
+  const uiDeadline = Date.now() + args.bounds['pty-open-timeout-ms']
+  for (;;) {
+    state = await connection.evaluate(TERMINAL_STATE_EXPRESSION, { awaitPromise: false })
+    if ((state.surfacePresent === true && state.inputPresent === true) || Date.now() >= uiDeadline) break
+    await sleepImpl(400)
+  }
+  facts.panelPresent = state.panelPresent === true
   facts.surfacePresent = state.surfacePresent === true
+  facts.inputPresent = state.inputPresent === true
   if (child !== null) {
     facts.child = { pid: child.pid, exe: child.exe, creationTicks: String(child.creationTicks) }
   }
@@ -1778,7 +2058,7 @@ export async function runPtyTerminationLane({ connection, tableImpl, identityAtS
     return {
       facts,
       laneStatus: 'fail',
-      laneDetail: `terminal surface opened=${facts.openClicked} but no new shell descendant appeared within ${args.bounds['pty-open-timeout-ms']} ms (surface present: ${facts.surfacePresent})`,
+      laneDetail: `terminal surface opened=${facts.openClicked} (${facts.openVia ?? 'no-entry'}, baselineTable=${facts.tableAvailable === true}) but no new shell descendant appeared within ${args.bounds['pty-open-timeout-ms']} ms (surface present: ${facts.surfacePresent}, input present: ${facts.inputPresent})`,
       terminateStatus: 'unqualified',
       terminateDetail: 'no terminal child was attributed, so termination could not be exercised',
       healthStatus: health.resolved === true && health.state === 'ready' ? 'pass' : 'fail',
@@ -1786,9 +2066,37 @@ export async function runPtyTerminationLane({ connection, tableImpl, identityAtS
     }
   }
 
-  const close = await connection.evaluate(TERMINAL_CLOSE_EXPRESSION, { awaitPromise: false })
+  // The terminal's OWN tab, identified by the unique close hook that appeared. A
+  // replaced guide chip or a second new tab makes that ambiguous, so the close
+  // falls back to the terminal-TITLED chip, which itself refuses several matches.
+  const tabIdsAfter = await connection.evaluate(TERMINAL_TAB_IDS_EXPRESSION, { awaitPromise: false }).catch(() => ({ ids: [] }))
+  facts.tabIdsAfter = Array.isArray(tabIdsAfter.ids) ? tabIdsAfter.ids : []
+  const newTab = findNewTabCloseId(facts.tabIdsBefore, facts.tabIdsAfter)
+  facts.newTabCloseId = newTab.id
+  facts.newTabCloseReason = newTab.reason
+  facts.closeTabId = newTab.id
+  const scopedClose = terminalCloseExpressionForTab(newTab.id)
+  const closeExpression = scopedClose ?? TERMINAL_CLOSE_EXPRESSION
+
+  // The shell must be POSITIVELY present at the moment the close is requested:
+  // a later absence only evidences tab-close teardown when it provably started
+  // alive, and an unreadable table is never proof of anything.
+  try {
+    const beforeClose = await tableImpl()
+    facts.presentBeforeClose = beforeClose.available !== true
+      ? null
+      : beforeClose.rows.some(row => row.pid === child.pid && String(row.creationTicks) === String(child.creationTicks))
+  } catch { facts.presentBeforeClose = null }
+
+  // The terminal tab is closed even when the UI qualification failed: the shell
+  // this lane owns must never be leaked just because the lane cannot pass.
+  const close = await connection.evaluate(closeExpression, { awaitPromise: false })
   facts.closeClicked = close.clicked === true
-  facts.closeReason = close.reason ?? null
+  facts.closeReason = close.clicked === true ? null : (close.reason ?? 'no-close-control')
+  facts.closeVia = close.clicked === true
+    ? (close.via ?? (scopedClose === null ? 'title-scoped' : 'captured-new-tab-id'))
+    : null
+  if (typeof close.tabId === 'string' && close.tabId !== '') facts.closeTabId = close.tabId
 
   let terminated = false
   let lastTableAvailable = true
@@ -1809,41 +2117,197 @@ export async function runPtyTerminationLane({ connection, tableImpl, identityAtS
 
   const health = await connection.evaluate(RUNTIME_DIGEST_EXPRESSION).catch(() => ({ resolved: false, state: null }))
   facts.appStateAfter = health.state ?? null
+
+  // The lane may pass ONLY when it positively opened the terminal, knew the
+  // pre-open descendant baseline, and observed the mounted terminal surface with
+  // its input inside the right sidebar. An unknown baseline cannot tell a NEW
+  // shell from one that pre-existed, and a terminal the lane never opened is not
+  // evidence that the client can open one.
+  const uiQualified = facts.panelPresent === true && facts.surfacePresent === true && facts.inputPresent === true
+  const openQualified = facts.openClicked === true && facts.tableAvailable === true
+  const laneStatus = openQualified && uiQualified ? 'pass' : 'fail'
+  const laneDetail = laneStatus === 'pass'
+    ? `terminal opened (${facts.openVia ?? 'entry'}) against a known pre-open baseline, and the mounted terminal surface with its input was attributed (spawned shell pid ${child.pid}, ${child.exe ?? 'unknown exe'})`
+    : `the terminal lane was not positively qualified: open=${facts.openClicked === true} (${facts.openVia ?? 'no-entry'}) baselineTable=${facts.tableAvailable === true} panel=${facts.panelPresent === true} surface=${facts.surfacePresent === true} input=${facts.inputPresent === true} (attributed shell pid ${child.pid})`
+
+  let terminateStatus
+  let terminateDetail
+  if (facts.presentBeforeClose !== true) {
+    terminateStatus = 'unqualified'
+    terminateDetail = facts.presentBeforeClose === null
+      ? `the process table could not positively confirm the terminal shell (pid ${child.pid}) before the close request, so its later absence cannot evidence tab-close teardown`
+      : `the terminal shell (pid ${child.pid}) had already exited before the close request; a natural exit cannot evidence tab-close teardown`
+  } else if (facts.closeClicked !== true) {
+    terminateStatus = 'fail'
+    terminateDetail = `the terminal tab close control was never positively clicked (${facts.closeReason ?? 'unknown reason'}; ${facts.newTabCloseReason ?? 'no tab-close id'}), so the shell's ${terminated ? 'disappearance' : 'survival'} cannot evidence tab-close teardown`
+  } else if (terminated) {
+    terminateStatus = 'pass'
+    terminateDetail = `the terminal tab close control (${facts.closeVia ?? 'tab-close'}${facts.closeTabId === null ? '' : `, tab ${facts.closeTabId}`}) was clicked with the shell positively alive (pid ${child.pid}) and it reached positive absence within ${args.bounds['pty-settle-timeout-ms']} ms (last table available: ${lastTableAvailable})`
+  } else {
+    terminateStatus = 'fail'
+    terminateDetail = `the terminal shell (pid ${child.pid}) survived the settle window after the tab close control was clicked${lastTableAvailable ? '' : ' (process table unreadable)'}`
+  }
+
   return {
     facts,
-    laneStatus: 'pass',
-    laneDetail: `terminal opened and the spawned shell was attributed (pid ${child.pid}, ${child.exe ?? 'unknown exe'})`,
-    terminateStatus: terminated ? 'pass' : 'fail',
-    terminateDetail: terminated
-      ? `the terminal shell reached positive absence within ${args.bounds['pty-settle-timeout-ms']} ms of the close request (last table available: ${lastTableAvailable})`
-      : `the terminal shell (pid ${child.pid}) survived the settle window${lastTableAvailable ? '' : ' (process table unreadable)'}`,
+    laneStatus,
+    laneDetail,
+    terminateStatus,
+    terminateDetail,
     healthStatus: health.resolved === true && health.state === 'ready' ? 'pass' : 'fail',
     healthDetail: `app state after lane: ${health.state ?? 'unknown'}`,
   }
 }
 
 /** Settings surface + read-only update status + account reachability. */
+/** Click the Account entry in the Settings navigation (inside the open modal). */
+export const ACCOUNT_NAV_CLICK_EXPRESSION = `(() => {
+  const modal = document.querySelector("[data-shortcut-modal='settings'][role='dialog'][aria-modal='true']");
+  if (modal === null) return { record: 'account-nav', clicked: false, reason: 'no-settings-modal' };
+  const elements = [...modal.querySelectorAll('button, [role="tab"], [role="button"], a, [aria-label]')];
+  const label = (el) => (el.getAttribute('aria-label') || '') + ' ' + (el.getAttribute('title') || '') + ' ' + (el.textContent || '');
+  // The entry's own nav copy: t('nav') = 'Account' / '\\u8d26\\u53f7\\u4e0e\\u4f59\\u989d'.
+  const ACCOUNT_ENTRY = /^(account|\\u8d26\\u53f7\\u4e0e\\u4f59\\u989d)$/iu;
+  const match = elements.find((el) => ACCOUNT_ENTRY.test(label(el).trim()))
+    ?? elements.find((el) => /(^|\\s)account($|\\s)/iu.test(label(el).trim()));
+  if (match) { match.click(); return { record: 'account-nav', clicked: true }; }
+  return { record: 'account-nav', clicked: false, reason: 'no-account-entry' };
+})()`
+
+/**
+ * Identify the mounted Account panel by a REAL ACTION AFFORDANCE, never by the
+ * word "account" or by prose. A signed-out surface exposes an enabled control
+ * whose label is the source's sign-in copy (`AccountSection.tsx:149-150`,
+ * `t('signIn')` = 'Sign in' / '登录', inside `section[aria-label={t('nav')}]`).
+ * A signed-in surface exposes a sign-out control (`t('signOut')` = 'Sign out' /
+ * '退出登录') or the documented signed-in identity marker (`t('signedIn')` =
+ * 'Signed in to DeepSeek' / '已登录 DeepSeek'). Prose that merely mentions signing
+ * in is not an affordance, and an unidentified panel is never a pass.
+ */
+export const ACCOUNT_PANEL_EXPRESSION = `(() => {
+  const modal = document.querySelector("[data-shortcut-modal='settings'][role='dialog'][aria-modal='true']");
+  const text = modal ? (modal.innerText || '') : '';
+  const base = {
+    record: 'account-panel',
+    modalPresent: modal !== null,
+    textLength: text.length,
+    signedOutActionPresent: false,
+    signedInActionPresent: false,
+    signedInMarkerPresent: false,
+    signedOutAffordance: false,
+    signedInAffordance: false,
+    affordance: null
+  };
+  if (modal === null) return base;
+  const ACCOUNT_NAV = /^(account|\\u8d26\\u53f7\\u4e0e\\u4f59\\u989d)$/iu;
+  const section = [...modal.querySelectorAll('section[aria-label]')]
+    .find((el) => ACCOUNT_NAV.test((el.getAttribute('aria-label') || '').trim())) ?? null;
+  if (section === null) return base;
+  const controls = [...section.querySelectorAll('button, [role="button"], a[href]')];
+  const enabled = (el) => el.disabled !== true && el.getAttribute('aria-disabled') !== 'true';
+  const label = (el) => ((el.getAttribute('aria-label') || '') + ' ' + (el.textContent || '')).trim();
+  const SIGN_IN = /^(sign in|log in|\\u767b\\u5f55)$/iu;
+  const SIGN_OUT = /^(sign out|log out|\\u9000\\u51fa\\u767b\\u5f55)$/iu;
+  // Signed-in only (AccountSection.tsx:164-166): the account-information link.
+  const ACCOUNT_INFO = /^(more account information|\\u66f4\\u591a\\u8d26\\u53f7\\u4fe1\\u606f)$/iu;
+  const signIn = controls.find((el) => enabled(el) && SIGN_IN.test(label(el))) ?? null;
+  const signOut = controls.find((el) => enabled(el) && SIGN_OUT.test(label(el))) ?? null;
+  const accountInfo = controls.find((el) => enabled(el) && ACCOUNT_INFO.test(label(el))) ?? null;
+  const sectionText = section.innerText || '';
+  // The signed-out copy reads "You are NOT signed in to DeepSeek Harness", so the
+  // marker must not be read out of that negation.
+  const signedInMarker = /(?<!not )signed in to deepseek|\\u5df2\\u767b\\u5f55 deepseek/iu.test(sectionText);
+  return {
+    ...base,
+    signedOutActionPresent: signIn !== null,
+    signedInActionPresent: signOut !== null,
+    signedInAccountInfoPresent: accountInfo !== null,
+    signedInMarkerPresent: signedInMarker,
+    signedOutAffordance: signIn !== null,
+    signedInAffordance: signOut !== null || accountInfo !== null || signedInMarker,
+    affordance: signIn !== null
+      ? 'sign-in-control'
+      : (signOut !== null
+        ? 'sign-out-control'
+        : (accountInfo !== null ? 'account-info-control' : (signedInMarker ? 'signed-in-identity-marker' : null)))
+  };
+})()`
+
+/**
+ * The Account reachability verdict from the panel facts. Only a positively
+ * identified ACTION affordance passes: a modal that merely TALKS about signing in
+ * leaves the panel unidentified (`unqualified`), and a mounted panel whose Account
+ * entry could not be clicked is a failure.
+ *
+ * @param {boolean} navClicked Whether the Account navigation entry was clicked.
+ * @param {object} panel The `ACCOUNT_PANEL_EXPRESSION` result.
+ * @returns {{status: string, how: string, detail: string}} The check outcome.
+ */
+export function evaluateAccountPanel(navClicked, panel) {
+  if (navClicked !== true) {
+    return panel?.modalPresent === true
+      ? { status: 'fail', how: 'no-account-entry', detail: 'the mounted Settings panel exposed no clickable Account entry' }
+      : { status: 'unqualified', how: 'no-settings-panel', detail: 'no mounted Settings panel, so the Account panel could not be identified' }
+  }
+  if (panel?.signedOutActionPresent === true) {
+    return { status: 'pass', how: 'sign-in-control', detail: 'an enabled sign-in control is present in the Account panel (signed out)' }
+  }
+  if (panel?.signedInActionPresent === true) {
+    return { status: 'pass', how: 'sign-out-control', detail: 'an enabled sign-out control is present in the Account panel (signed in)' }
+  }
+  if (panel?.signedInAccountInfoPresent === true) {
+    return { status: 'pass', how: 'account-info-control', detail: 'the signed-in-only account-information control is present in the Account panel' }
+  }
+  if (panel?.signedInMarkerPresent === true) {
+    return { status: 'pass', how: 'signed-in-identity-marker', detail: 'the documented signed-in identity marker is present in the Account panel (signed in)' }
+  }
+  return {
+    status: 'unqualified',
+    how: 'no-action-affordance',
+    detail: 'the Account panel showed no enabled sign-in/sign-out control and no documented signed-in marker; prose alone is not an affordance',
+  }
+}
+
+/**
+ * Settings surface, marker round-trip and the Account panel.
+ *
+ * Settings is opened through the registered shortcut and must POSITIVELY MOUNT:
+ * a dispatched key is never accepted as a pass on its own, and the surface is
+ * closed positively afterwards so no later hotkey runs under an open modal.
+ */
 export async function runSettingsScenario({ connection, sleepImpl, log }) {
-  const open = await connection.evaluate(SETTINGS_OPEN_EXPRESSION, { awaitPromise: false })
-  await sleepImpl(1200)
+  const open = await openSettings({ connection, sleepImpl })
+  const mounted = await connection.evaluate(SETTINGS_MOUNTED_EXPRESSION, { awaitPromise: false })
+  await sleepImpl(600)
   const facts = await connection.evaluate(SURFACE_FACTS_EXPRESSION, { awaitPromise: false })
   const update = await connection.evaluate(UPDATE_STATUS_EXPRESSION)
-  const settingsStatus = (open.clicked === true && facts.settingsSurfaceMounted === true) ? 'pass' : 'fail'
+  const nav = await connection.evaluate(ACCOUNT_NAV_CLICK_EXPRESSION, { awaitPromise: false })
+  await sleepImpl(600)
+  const panel = await connection.evaluate(ACCOUNT_PANEL_EXPRESSION, { awaitPromise: false })
+  const closed = await closeSettings({ connection, sleepImpl })
+  const settingsStatus = (open.opened === true && mounted.mounted === true && closed.closed === true) ? 'pass' : 'fail'
   const updatesStatus = update.resolved === true && update.phaseKnown === true ? 'pass' : 'fail'
-  const accountStatus = facts.accountSurfaceMentioned === true ? 'pass' : 'fail'
+  const account = evaluateAccountPanel(nav.clicked === true, panel)
+  const accountStatus = account.status
   void log
   return {
-    settingsClicked: open.clicked === true,
-    settingsSurfaceMounted: facts.settingsSurfaceMounted === true,
+    settingsOpened: open.opened === true,
+    settingsOpenHow: open.how,
+    settingsSurfaceMounted: mounted.mounted === true,
+    settingsClosed: closed.closed === true,
+    accountNavClicked: nav.clicked === true,
+    accountSignedOutAffordance: panel.signedOutActionPresent === true,
+    accountSignedInAffordance: panel.signedInActionPresent === true || panel.signedInAccountInfoPresent === true || panel.signedInMarkerPresent === true,
+    accountAffordance: account.how,
     accountSurfaceMentioned: facts.accountSurfaceMentioned === true,
     updatesSurfaceMentioned: facts.updatesSurfaceMentioned === true,
     updatePhase: update.phase,
     settingsStatus,
-    settingsDetail: `clicked=${open.clicked} surfaceMounted=${facts.settingsSurfaceMounted === true}`,
+    settingsDetail: `opened=${open.opened} (${open.how}) mounted=${mounted.mounted === true} closed=${closed.closed === true}`,
     updatesStatus,
     updatesDetail: `update_status phase=${update.phase ?? 'null'} (read-only; no update_check performed)`,
     accountStatus,
-    accountDetail: `account surface text marker present=${facts.accountSurfaceMentioned === true}`,
+    accountDetail: `navClicked=${nav.clicked === true} affordance=${account.how} signInControl=${panel.signedOutActionPresent === true} signOutControl=${panel.signedInActionPresent === true} accountInfoControl=${panel.signedInAccountInfoPresent === true} signedInMarker=${panel.signedInMarkerPresent === true} (identified by a real action affordance, never by the word "account" or prose)`,
   }
 }
 
@@ -1869,7 +2333,7 @@ export async function gracefulQuit({ connection, child, identityImpl, timeoutMs,
 
 /** Relaunch on the same isolated home; verify persistence + onboarding state. */
 async function relaunchAndVerify({
-  args, paths, record, fetchImpl, sleepImpl, attachImpl, identityImpl, tableImpl, spawnImpl, log, env1,
+  args, paths, record, fetchImpl, sleepImpl, attachImpl, identityImpl, tableImpl, spawnImpl, log, env1, initialOnboarding = null,
 }) {
   const facts = { markerOnDisk: false, markerRoundTrip: false, onboardingReappeared: null }
   const env2 = { ...env1 }
@@ -1932,6 +2396,14 @@ async function relaunchAndVerify({
   facts.markerRoundTrip = markerRead.resolved === true && markerRead.valueMatches === true
   const hostFacts = await connection.evaluate(HOST_FACTS_EXPRESSION, { awaitPromise: false })
   facts.onboardingReappeared = hostFacts.onboardingPresent === true
+  // Absence on restart is only qualified when the FIRST run positively appeared
+  // and completed first-run onboarding; otherwise it is UNQUALIFIED, never a pass.
+  const persisted = evaluateStaysCompleted({
+    firstRunAppeared: initialOnboarding?.appeared === true,
+    firstRunCompleted: initialOnboarding?.completed === true,
+    reappeared: facts.onboardingReappeared,
+  })
+  facts.onboardingPersistence = persisted
   void record
   return {
     child, identityAtSpawn, host, connection, facts,
@@ -1939,10 +2411,8 @@ async function relaunchAndVerify({
     readyDetail: `second launch reached readiness (gateway ${gateway.origin})`,
     persistenceStatus: facts.markerOnDisk && facts.markerRoundTrip ? 'pass' : 'fail',
     persistenceDetail: `on-disk=${facts.markerOnDisk} bridge-round-trip=${facts.markerRoundTrip} (settings.json inside the isolated home; same owned namespace across the restart)`,
-    onboardingStatus: facts.onboardingReappeared === false ? 'pass' : 'fail',
-    onboardingDetail: facts.onboardingReappeared === false
-      ? 'onboarding did not reappear after the graceful restart (completion persisted)'
-      : 'onboarding reappeared after restart; completion did not persist',
+    onboardingStatus: persisted.status,
+    onboardingDetail: persisted.detail,
   }
 }
 

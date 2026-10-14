@@ -35,6 +35,8 @@ import { test } from 'node:test'
 
 import { FIXTURE_API_KEY, FIXTURE_KEY_ENV, FIXTURE_MODEL_ID, FIXTURE_ROUTE, parseFixturePort } from './fixture-provider.mjs'
 import {
+  ACCOUNT_NAV_CLICK_EXPRESSION,
+  ACCOUNT_PANEL_EXPRESSION,
   CHAT_OBSERVE_EXPRESSION,
   HOST_FACTS_EXPRESSION,
   ONBOARDING_ACTION_CLICK_EXPRESSION,
@@ -44,11 +46,15 @@ import {
   TERMINAL_CLOSE_EXPRESSION,
   TERMINAL_OPEN_EXPRESSION,
   TERMINAL_STATE_EXPRESSION,
+  TERMINAL_TAB_IDS_EXPRESSION,
   buildChildEnvironment,
   buildFixturePatch,
   computeVerdict,
   deriveIsolationPaths,
+  evaluateAccountPanel,
+  evaluateStaysCompleted,
   evaluateShellUsability,
+  findNewTabCloseId,
   findNodeDescendant,
   findPtyChild,
   gracefulQuit,
@@ -61,6 +67,8 @@ import {
   resolveExecutionNode,
   runAcceptance,
   runOnboardingScenario,
+  runPtyTerminationLane,
+  terminalCloseExpressionForTab,
   truncateHash,
   ptyTerminateFixPresent,
 } from './native-acceptance-runner.mjs'
@@ -371,12 +379,151 @@ test('H3: onboarding that appears but never completes fails', async () => {
   assert.equal(outcome.appeared, true)
 })
 
-test('H4: shell usability requires composer, new-session AND settings', () => {
+test('H4: shell usability requires composer, new-session AND positively-qualified settings', () => {
   const base = { composerHintPresent: true, newSessionPresent: true, settingsPresent: true }
-  assert.equal(evaluateShellUsability(base, base).status, 'pass')
-  const noSettings = evaluateShellUsability({ ...base, settingsPresent: false }, { ...base, settingsPresent: false })
-  assert.equal(noSettings.status, 'fail')
-  assert.equal(/settings=false/u.test(noSettings.detail), true)
+  const opened = { opened: true, dispatched: true, how: 'shortcut-primary+Comma' }
+  assert.equal(evaluateShellUsability(base, base, opened).status, 'pass')
+  // Text presence alone is NOT evidence: the sidebar trigger is icon-only when the
+  // sidebar is collapsed, so the word "settings" neither proves nor disproves that
+  // the surface can be reached.
+  assert.equal(evaluateShellUsability(base, base, null).status, 'fail', 'unattempted navigation must not pass')
+  const notOpened = { opened: false, dispatched: true, how: 'shortcut-primary+Comma' }
+  const failed = evaluateShellUsability(base, base, notOpened)
+  assert.equal(failed.status, 'fail', 'a dispatched key is never itself a pass')
+  assert.equal(/settings=false/u.test(failed.detail), true)
+  const noComposer = evaluateShellUsability({ ...base, composerHintPresent: false }, { ...base, composerHintPresent: false }, opened)
+  assert.equal(noComposer.status, 'fail')
+})
+
+test('H6: onboarding persistence is qualified only by a positively completed first run', () => {
+  // The negative shared-mock case: when first-run onboarding never appeared, the
+  // restart's absence of the region CANNOT be read as persistence.
+  const absent = evaluateStaysCompleted({ firstRunAppeared: false, firstRunCompleted: false, reappeared: false })
+  assert.equal(absent.status, 'unqualified', 'absence on restart must never pass')
+  assert.match(absent.detail, /cannot evidence persistence/u)
+  assert.equal(evaluateStaysCompleted({ firstRunAppeared: true, firstRunCompleted: false, reappeared: false }).status, 'unqualified')
+  assert.equal(evaluateStaysCompleted({ firstRunAppeared: false, firstRunCompleted: true, reappeared: false }).status, 'unqualified')
+
+  // Positively completed: the restart outcome is then meaningful.
+  assert.equal(evaluateStaysCompleted({ firstRunAppeared: true, firstRunCompleted: true, reappeared: false }).status, 'pass')
+  assert.equal(evaluateStaysCompleted({ firstRunAppeared: true, firstRunCompleted: true, reappeared: true }).status, 'fail')
+  assert.equal(evaluateStaysCompleted({ firstRunAppeared: true, firstRunCompleted: true, reappeared: null }).status, 'unqualified')
+
+  // The gate is a REQUIRED check, so an unqualified value can never be dropped
+  // from acceptance: nativeAcceptance cannot be true on this fact alone.
+  const gate = REQUIRED_CHECK_IDS.find(entry => entry === 'onboarding.stays_completed' || entry?.id === 'onboarding.stays_completed')
+  assert.ok(gate !== undefined, 'onboarding.stays_completed must stay a required check')
+  // Composed end to end: an absent first run yields UNQUALIFIED here, and that
+  // status blocks acceptance even with every other required check passing.
+  const absentVerdict = computeVerdict({
+    checks: passingChecks().map(check => (check.id === 'onboarding.stays_completed' ? { ...check, status: absent.status } : check)),
+    identityComplete: true,
+  })
+  assert.equal(absentVerdict.acceptance, false, 'an absent first run can never produce nativeAcceptance true')
+  assert.deepEqual(absentVerdict.failedRequiredChecks, ['onboarding.stays_completed'])
+})
+
+/**
+ * A minimal document for `ACCOUNT_PANEL_EXPRESSION`: a mounted Settings modal
+ * holding one or more `section[aria-label]` panels, each with real controls.
+ */
+function fakeAccountPanelDom({ navLabel = 'Account', sectionText = '', controls = [], modalPresent = true, sectionPresent = true } = {}) {
+  const nodes = controls.map(({ label, disabled = false, ariaDisabled = false }) => ({
+    disabled,
+    textContent: label,
+    getAttribute: name => (name === 'aria-disabled' ? (ariaDisabled ? 'true' : null) : null),
+  }))
+  const section = {
+    innerText: sectionText,
+    getAttribute: name => (name === 'aria-label' ? navLabel : null),
+    querySelectorAll: () => nodes,
+  }
+  const modal = {
+    innerText: sectionText,
+    querySelectorAll: selector => (selector === 'section[aria-label]' && sectionPresent ? [section] : []),
+  }
+  return { document: { querySelector: () => (modalPresent ? modal : null) }, controls: nodes }
+}
+
+const evaluateAccountPanelExpression = dom => new Function('document', `return ${ACCOUNT_PANEL_EXPRESSION}`)(dom.document)
+
+test('H7: the Account panel is identified by a real action affordance, never by prose', () => {
+  // Prose only: the signed-out copy MENTIONS signing in, but exposes no control.
+  const prose = evaluateAccountPanelExpression(fakeAccountPanelDom({
+    sectionText: 'You are not signed in to DeepSeek Harness Sign in to DeepSeek Harness to get your dedicated API Key',
+  }))
+  assert.equal(prose.signedOutActionPresent, false)
+  assert.equal(prose.signedInActionPresent, false)
+  assert.equal(prose.signedInMarkerPresent, false)
+  assert.equal(prose.affordance, null)
+  assert.equal(evaluateAccountPanel(true, prose).status, 'unqualified', 'prose is not an affordance')
+
+  // The signed-out copy in either locale is never read as the signed-in marker.
+  for (const text of ['You are not signed in to DeepSeek Harness', '当前未登录 DeepSeek Harness 账号']) {
+    const signedOutCopy = evaluateAccountPanelExpression(fakeAccountPanelDom({ sectionText: text }))
+    assert.equal(signedOutCopy.signedInMarkerPresent, false, `the signed-out copy must not read as signed in: ${text}`)
+    assert.equal(evaluateAccountPanel(true, signedOutCopy).status, 'unqualified')
+  }
+
+  // The real signed-out panel button (`t('signIn')`), in either locale.
+  for (const [label, navLabel] of [['Sign in', 'Account'], ['登录', '账号与余额']]) {
+    const signedOut = evaluateAccountPanelExpression(fakeAccountPanelDom({ controls: [{ label }], navLabel }))
+    assert.equal(signedOut.signedOutActionPresent, true)
+    assert.equal(signedOut.affordance, 'sign-in-control')
+    assert.equal(evaluateAccountPanel(true, signedOut).status, 'pass')
+  }
+
+  // A word inside longer copy is NOT the source's action label.
+  assert.equal(evaluateAccountPanel(true, evaluateAccountPanelExpression(fakeAccountPanelDom({ controls: [{ label: 'Sign in to view' }] }))).status, 'unqualified')
+
+  // Disabled (or aria-disabled) controls are not affordances.
+  assert.equal(evaluateAccountPanel(true, evaluateAccountPanelExpression(fakeAccountPanelDom({ controls: [{ label: 'Sign in', disabled: true }] }))).status, 'unqualified')
+  assert.equal(evaluateAccountPanel(true, evaluateAccountPanelExpression(fakeAccountPanelDom({ controls: [{ label: 'Sign in', ariaDisabled: true }] }))).status, 'unqualified')
+
+  // Signed in: a real sign-out control, the signed-in-only account-information
+  // control (present even when the identity shows a PROFILE NAME, not the marker
+  // copy), or the documented signed-in marker.
+  assert.equal(evaluateAccountPanel(true, evaluateAccountPanelExpression(fakeAccountPanelDom({ controls: [{ label: 'Sign out' }] }))).status, 'pass')
+  const accountInfo = evaluateAccountPanelExpression(fakeAccountPanelDom({ sectionText: 'Ada Lovelace', controls: [{ label: 'More account information' }] }))
+  assert.equal(accountInfo.signedInAccountInfoPresent, true)
+  assert.equal(accountInfo.affordance, 'account-info-control')
+  assert.equal(evaluateAccountPanel(true, accountInfo).status, 'pass')
+  const marker = evaluateAccountPanelExpression(fakeAccountPanelDom({ sectionText: 'Signed in to DeepSeek' }))
+  assert.equal(marker.signedInMarkerPresent, true)
+  assert.equal(evaluateAccountPanel(true, marker).status, 'pass')
+
+  // Another Settings section is never mistaken for the Account panel.
+  const otherSection = evaluateAccountPanelExpression(fakeAccountPanelDom({ navLabel: 'General', controls: [{ label: 'Sign in' }] }))
+  assert.equal(otherSection.signedOutActionPresent, false)
+  assert.equal(evaluateAccountPanel(true, otherSection).status, 'unqualified')
+
+  // Identification gating: no panel is unqualified; an unclickable entry fails.
+  assert.equal(evaluateAccountPanel(true, evaluateAccountPanelExpression(fakeAccountPanelDom({ modalPresent: false }))).status, 'unqualified')
+  assert.equal(evaluateAccountPanel(false, evaluateAccountPanelExpression(fakeAccountPanelDom({}))).status, 'fail')
+
+  // The check stays REQUIRED, so an unqualified account surface can never be green.
+  assert.ok(REQUIRED_CHECK_IDS.includes('account.surface_reachable'), 'account.surface_reachable must stay required')
+})
+
+/** A minimal Settings modal holding only the navigation entries. */
+function fakeSettingsNavDom(labels) {
+  const nodes = labels.map(label => ({ textContent: label, getAttribute: () => null, clicked: 0, click() { this.clicked += 1 } }))
+  return { document: { querySelector: () => ({ querySelectorAll: () => nodes }) }, nodes }
+}
+
+const evaluateNavExpression = dom => new Function('document', `return ${ACCOUNT_NAV_CLICK_EXPRESSION}`)(dom.document)
+
+test('H8: the Account navigation entry is clicked by its own nav label in either locale', () => {
+  for (const label of ['Account', '账号与余额']) {
+    const dom = fakeSettingsNavDom([label])
+    const outcome = evaluateNavExpression(dom)
+    assert.equal(outcome.clicked, true, `the settings nav entry "${label}" must be clicked`)
+    assert.equal(dom.nodes[0].clicked, 1)
+  }
+  // The localized CHARACTERS alone are not the entry: the full nav label is.
+  const absent = evaluateNavExpression(fakeSettingsNavDom(['General', 'Appearance', '账号']))
+  assert.equal(absent.clicked, false)
+  assert.equal(absent.reason, 'no-account-entry')
 })
 
 test('H5: a graceful quit requires BOTH the process exit and a positive absence', async () => {
@@ -454,8 +601,19 @@ function makeFakeChild(pid) {
  * `variant` 1 walks the onboarding flow; variant 2 (post-restart) has no
  * onboarding region and answers the marker read.
  */
-function makeFakeConnection({ gatewayOrigin, child, identityRegistry, variant, fixtureState, ptyState }) {
+function makeFakeConnection({ gatewayOrigin, child, identityRegistry, variant, fixtureState, ptyState, onboardingFirstRun = (variant === 1) }) {
   let onboardingStage = 0
+  // The terminal lane's DOM contract: the right sidebar panel is open, its guide
+  // entry (or the registered `terminal.new` shortcut) mounts a terminal session —
+  // `section[data-sidebar-terminal]` with an xterm screen and input, plus ONE new
+  // dockkit tab-close hook for the terminal chip. The close hook is what the lane
+  // clicks; removing it is the tab close.
+  const pty = ptyState ?? { visible: false, tabIds: [] }
+  if (!Array.isArray(pty.tabIds)) pty.tabIds = []
+  const openTerminalSession = () => {
+    pty.visible = true
+    if (!pty.tabIds.includes('tab-terminal-1')) pty.tabIds.push('tab-terminal-1')
+  }
   const hostFacts = () => ({
     record: 'host-facts',
     invokeIsFunction: true,
@@ -470,17 +628,65 @@ function makeFakeConnection({ gatewayOrigin, child, identityRegistry, variant, f
     composerHintPresent: true,
     newSessionPresent: true,
     settingsPresent: true,
-    onboardingPresent: variant === 1 && onboardingStage < 2,
+    // First-run onboarding presence is controlled EXPLICITLY, not by an incidental
+    // attach counter: a happy-path fixture must positively show and complete the
+    // visual flow, and the negative fixture must be able to withhold it so the
+    // persistence gate is exercised in both directions.
+    onboardingPresent: onboardingFirstRun && onboardingStage < 2,
     onboardingBusy: false,
     bootFailureShown: false,
     textLength: 1200,
   })
   let sendsSeen = 0
+  // The settings surface is a shortcut modal: the registered `settings.open`
+  // (primary+Comma) opens it and Escape closes it, so the mock tracks the key
+  // events instead of answering "mounted" unconditionally.
+  let settingsModalOpen = false
   return {
     evaluate: async expression => {
       if (expression === HOST_FACTS_EXPRESSION) {
         return hostFacts()
       }
+      if (expression.includes('settings-mounted')) return { record: 'settings-mounted', mounted: settingsModalOpen }
+      if (expression.includes('blur-active')) return { record: 'blur-active', blurred: true }
+      if (expression.includes('account-nav')) return { record: 'account-nav', clicked: settingsModalOpen }
+      if (expression.includes('account-panel')) {
+        // The signed-out Account panel exposes its real sign-in control; the check
+        // now requires that affordance, not prose.
+        return {
+          record: 'account-panel', modalPresent: settingsModalOpen, textLength: 64,
+          signedOutActionPresent: settingsModalOpen, signedInActionPresent: false, signedInMarkerPresent: false,
+          signedOutAffordance: settingsModalOpen, signedInAffordance: false,
+          affordance: settingsModalOpen ? 'sign-in-control' : null,
+        }
+      }
+      // Terminal records are answered BEFORE the sidebar ones: the entry, state,
+      // tab-id and close expressions all name the right-sidebar panel attributes.
+      if (expression.includes('terminal-tab-ids')) return { record: 'terminal-tab-ids', panelPresent: true, ids: [...pty.tabIds] }
+      if (expression.includes('terminal-open')) {
+        openTerminalSession()
+        return { record: 'terminal-open', clicked: true, via: expression.includes('right-sidebar-entry') ? 'right-sidebar-entry' : 'entry' }
+      }
+      if (expression.includes('terminal-state')) {
+        return { record: 'terminal-state', panelPresent: true, surfacePresent: pty.visible, inputPresent: pty.visible }
+      }
+      if (expression.includes('terminal-close')) {
+        // The scoped close expression embeds its captured tab id as a JSON literal;
+        // the title-scoped fallback clicks the single terminal chip. A close is only
+        // ever reported when the terminal session it names is actually mounted.
+        const literal = /const target = (.+);/u.exec(expression)?.[1] ?? null
+        let target = null
+        if (literal !== null) { try { target = JSON.parse(literal) } catch { target = null } }
+        if (target !== null ? !pty.tabIds.includes(target) : pty.tabIds.length === 0) {
+          return { record: 'terminal-close', clicked: false, reason: target === null ? 'no-terminal-tab' : 'terminal-tab-id-not-found' }
+        }
+        const closed = target ?? pty.tabIds[0]
+        pty.tabIds = pty.tabIds.filter(id => id !== closed)
+        pty.visible = false
+        return { record: 'terminal-close', clicked: true, matched: 'data-dockkit-tab-close', via: target === null ? 'title-scoped' : 'captured-new-tab-id', tabId: closed }
+      }
+      if (expression.includes('sidebar-right-state')) return { record: 'sidebar-right-state', open: true, expandAvailable: true, session: pty.visible === true }
+      if (expression.includes('sidebar-right-open')) return { record: 'sidebar-right-open', clicked: false, alreadyOpen: true }
       if (expression.includes('onboarding-click')) {
         onboardingStage = 2
         return { record: 'onboarding-click', clicked: true, matched: 'test-priority' }
@@ -518,9 +724,6 @@ function makeFakeConnection({ gatewayOrigin, child, identityRegistry, variant, f
       }
       if (expression.includes('chat-observe')) return { record: 'chat-observe', fixtureReplyVisible: true, composerEnabled: true }
       if (expression.includes('settings-open')) return { record: 'settings-open', clicked: true }
-      if (expression.includes('terminal-open')) { ptyState.visible = true; return { record: 'terminal-open', clicked: true } }
-      if (expression.includes('terminal-state')) return { record: 'terminal-state', surfacePresent: ptyState.visible, inputPresent: ptyState.visible }
-      if (expression.includes('terminal-close')) { ptyState.visible = false; return { record: 'terminal-close', clicked: true, matched: 'close' } }
       if (expression.includes('surface-facts')) {
         return { record: 'surface-facts', textLength: 4000, accountSurfaceMentioned: true, updatesSurfaceMentioned: true, settingsSurfaceMounted: true }
       }
@@ -545,7 +748,14 @@ function makeFakeConnection({ gatewayOrigin, child, identityRegistry, variant, f
       }
       throw new Error('unexpected expression in fake connection')
     },
-    send: async () => ({}),
+    send: async (method, params) => {
+      if (method === 'Input.dispatchKeyEvent' && params?.key === ',') settingsModalOpen = true
+      if (method === 'Input.dispatchKeyEvent' && params?.key === 'Escape') settingsModalOpen = false
+      // The registered `terminal.new` shortcut (Ctrl+Backquote) opens a session
+      // too, so the lane's documented alternative entry is faithful here.
+      if (method === 'Input.dispatchKeyEvent' && params?.code === 'Backquote') openTerminalSession()
+      return {}
+    },
     close: async () => {},
   }
 }
@@ -794,7 +1004,7 @@ test('I5: exe-relative default mode proves the packaged node and the PTY termina
     const HOST_PID = 5100
     const NODE_PID = 5101
     const PWSH_PID = 5102
-    const ptyState = { visible: false }
+    const ptyState = { visible: false, tabIds: [] }
     const spawnImpl = async ({ exe, env }) => {
       envCaptures.push({ ...env })
       const child = makeFakeChild(HOST_PID)
@@ -873,6 +1083,20 @@ test('I5: exe-relative default mode proves the packaged node and the PTY termina
     assert.equal(record.runtime.payloadNodePty.ok, true)
     assert.equal(record.scenarios.pty.child.pid, PWSH_PID)
     assert.equal(record.scenarios.pty.terminatedCleanly, true)
+    // The lane PASSED on a POSITIVELY MOUNTED terminal surface (xterm screen and
+    // input) that the guide entry opened, and on a positively clicked terminal-tab
+    // close control while the shell was provably alive.
+    assert.equal(record.scenarios.pty.openClicked, true)
+    assert.equal(record.scenarios.pty.openVia, 'right-sidebar-entry')
+    assert.equal(record.scenarios.pty.surfacePresent, true)
+    assert.equal(record.scenarios.pty.inputPresent, true)
+    assert.equal(record.scenarios.pty.presentBeforeClose, true)
+    assert.equal(record.scenarios.pty.closeClicked, true)
+    assert.equal(record.scenarios.pty.closeVia, 'captured-new-tab-id')
+    assert.equal(record.scenarios.pty.closeTabId, 'tab-terminal-1')
+    assert.equal(record.scenarios.pty.newTabCloseId, 'tab-terminal-1')
+    assert.deepEqual(record.scenarios.pty.tabIdsAfter, ['tab-terminal-1'])
+    assert.equal(record.scenarios.pty.appStateAfter, 'ready')
     // The child env carried NO runtime overrides: the app had to resolve its own.
     assert.equal(envCaptures.length, 2)
     for (const env of envCaptures) {
@@ -1397,9 +1621,299 @@ test('N3: node and PTY child attribution match only the right descendants', () =
   )
 })
 
-test('N4: the terminal expressions are fixed constants without interpolation', () => {
-  for (const expression of [TERMINAL_OPEN_EXPRESSION, TERMINAL_STATE_EXPRESSION, TERMINAL_CLOSE_EXPRESSION]) {
+test('N4: the terminal and account expressions are fixed constants without interpolation', () => {
+  for (const expression of [TERMINAL_OPEN_EXPRESSION, TERMINAL_STATE_EXPRESSION, TERMINAL_TAB_IDS_EXPRESSION, TERMINAL_CLOSE_EXPRESSION, ACCOUNT_PANEL_EXPRESSION]) {
     assert.ok(!expression.includes('${'))
     assert.doesNotThrow(() => new Function(`return ${expression}`))
   }
+})
+
+test('N5: the terminal tab close hook is selected only from ONE newly appeared id', () => {
+  assert.deepEqual(findNewTabCloseId(['guide-1'], ['guide-1', 'terminal-1']), {
+    id: 'terminal-1',
+    reason: 'exactly one new tab-close hook appeared',
+  })
+  // The entry replaced the guide chip in place: no new hook, nothing is guessed at.
+  const replaced = findNewTabCloseId(['guide-1'], ['guide-1'])
+  assert.equal(replaced.id, null)
+  assert.match(replaced.reason, /no new tab-close hook/u)
+  // Several new tabs are ambiguous.
+  const several = findNewTabCloseId([], ['a', 'b'])
+  assert.equal(several.id, null)
+  assert.match(several.reason, /2 new tab-close hooks/u)
+  // Degenerate inputs never invent an id.
+  assert.equal(findNewTabCloseId([], []).id, null)
+  assert.equal(findNewTabCloseId(undefined, undefined).id, null)
+  assert.equal(findNewTabCloseId([], ['', null, 'x']).id, 'x', 'empty hooks are never ids')
+  assert.equal(findNewTabCloseId([], ['x', 'x']).id, 'x', 'the same hook reported twice is still one hook')
+})
+
+/** A minimal dockkit panel: chips with a title span and their own close hooks. */
+function fakeTerminalPanelDom(chips) {
+  const controls = []
+  const chipNodes = chips.map(({ id, title }) => {
+    const control = {
+      clicked: 0,
+      getAttribute: name => (name === 'data-dockkit-tab-close' ? id : null),
+      click() { this.clicked += 1 },
+    }
+    controls.push(control)
+    const titleNode = { textContent: title }
+    return {
+      textContent: title,
+      getAttribute: () => null,
+      querySelector: selector => (selector === '[data-dockkit-tab-title]' ? titleNode : (selector === '[data-dockkit-tab-close]' ? control : null)),
+    }
+  })
+  const panel = {
+    querySelectorAll: selector => (selector === '[data-dockkit-tab]' ? chipNodes : (selector === '[data-dockkit-tab-close]' ? controls : [])),
+  }
+  return {
+    document: { querySelector: selector => (selector === '[data-sidebar-right-session]' || selector === '[data-sidebar-right-open]' ? panel : null) },
+    controls,
+  }
+}
+
+const evaluatePanelExpression = (expression, dom) => new Function('document', `return ${expression}`)(dom.document)
+
+test('N6: the tab-close expressions only ever click the terminal chip, and refuse ambiguity', () => {
+  // A guide chip and a terminal chip: only the terminal chip's close is clicked.
+  const dom = fakeTerminalPanelDom([{ id: 'guide-1', title: 'Guide' }, { id: 'terminal-1', title: 'Terminal' }])
+  const outcome = evaluatePanelExpression(TERMINAL_CLOSE_EXPRESSION, dom)
+  assert.equal(outcome.clicked, true)
+  assert.equal(outcome.via, 'title-scoped')
+  assert.equal(outcome.tabId, 'terminal-1')
+  assert.deepEqual(dom.controls.map(control => control.clicked), [0, 1], 'the guide chip must never be closed')
+
+  // The localized terminal title is recognized too.
+  const zh = fakeTerminalPanelDom([{ id: 't-zh', title: '终端' }])
+  assert.equal(evaluatePanelExpression(TERMINAL_CLOSE_EXPRESSION, zh).tabId, 't-zh')
+
+  // Two terminal chips are ambiguous: nothing is clicked.
+  const two = fakeTerminalPanelDom([{ id: 'a', title: 'Terminal' }, { id: 'b', title: 'Terminal' }])
+  const ambiguous = evaluatePanelExpression(TERMINAL_CLOSE_EXPRESSION, two)
+  assert.equal(ambiguous.clicked, false)
+  assert.equal(ambiguous.reason, 'ambiguous-terminal-tab')
+  assert.deepEqual(two.controls.map(control => control.clicked), [0, 0])
+
+  // No terminal chip: nothing is clicked.
+  const none = fakeTerminalPanelDom([{ id: 'g', title: 'Guide' }])
+  const absent = evaluatePanelExpression(TERMINAL_CLOSE_EXPRESSION, none)
+  assert.equal(absent.clicked, false)
+  assert.equal(absent.reason, 'no-terminal-tab')
+
+  // The captured-id expression addresses exactly that tab, even among several.
+  const scoped = fakeTerminalPanelDom([{ id: 'guide-1', title: 'Guide' }, { id: 'terminal-1', title: 'Terminal' }, { id: 'terminal-2', title: 'Terminal' }])
+  const exact = evaluatePanelExpression(terminalCloseExpressionForTab('terminal-2'), scoped)
+  assert.equal(exact.clicked, true)
+  assert.equal(exact.tabId, 'terminal-2')
+  assert.deepEqual(scoped.controls.map(control => control.clicked), [0, 0, 1])
+
+  // A vanished id is never redirected to another tab.
+  const gone = evaluatePanelExpression(terminalCloseExpressionForTab('terminal-9'), scoped)
+  assert.equal(gone.clicked, false)
+  assert.equal(gone.reason, 'terminal-tab-id-not-found')
+  assert.deepEqual(scoped.controls.map(control => control.clicked), [0, 0, 1])
+
+  // A DOM-supplied id is DATA: it is embedded as a JSON string literal and can
+  // never inject code, and it is still matched exactly.
+  const hostileId = "x'; globalThis.pwned = true; //"
+  const hostile = terminalCloseExpressionForTab(hostileId)
+  assert.ok(hostile !== null)
+  const hostileDom = fakeTerminalPanelDom([{ id: hostileId, title: 'Terminal' }])
+  const hostileOutcome = evaluatePanelExpression(hostile, hostileDom)
+  assert.equal(hostileOutcome.clicked, true, 'the hostile id matches as data')
+  assert.equal(hostileOutcome.tabId, hostileId)
+  assert.equal(globalThis.pwned, undefined, 'no injected code ran')
+
+  // Only a bounded, non-empty id is ever embedded.
+  assert.equal(terminalCloseExpressionForTab(''), null)
+  assert.equal(terminalCloseExpressionForTab(null), null)
+  assert.equal(terminalCloseExpressionForTab('a'.repeat(129)), null)
+  assert.ok(terminalCloseExpressionForTab('tab:0a1b-2').includes('"tab:0a1b-2"'))
+})
+
+/**
+ * The minimal lane collaborators: a fake connection answering exactly the
+ * terminal lane's expressions, over a mutable process table whose shell row is
+ * owned by the terminal session.
+ */
+function ptyLaneHarness({
+  surface = true, input = true, shortcutOnly = false, closeClicked = true,
+  vanishBeforeClose = false, tableUnavailableAtClose = false, baselineUnavailable = false,
+  sidebarOpen = true, entryOpens = true, preexistingSession = false, shellAppearsLater = false,
+  tabIdsBefore = ['guide-tab'], newTabIds = ['terminal-tab'],
+} = {}) {
+  const HOST_PID = 9000
+  const SHELL_PID = 9001
+  const state = {
+    terminalOpen: preexistingSession,
+    shellAlive: false,
+    tabIds: preexistingSession ? [...tabIdsBefore, ...newTabIds] : [...tabIdsBefore],
+    shortcutDispatches: 0,
+    closeRequested: false,
+  }
+  let reads = 0
+  const openSession = () => {
+    state.terminalOpen = true
+    state.shellAlive = true
+    state.tabIds = [...tabIdsBefore, ...newTabIds]
+  }
+  const connection = {
+    evaluate: async expression => {
+      if (expression.includes('terminal-tab-ids')) return { record: 'terminal-tab-ids', panelPresent: true, ids: [...state.tabIds] }
+      if (expression.includes('terminal-open')) {
+        if (shortcutOnly || !entryOpens) return { record: 'terminal-open', clicked: false, via: 'right-sidebar-entry' }
+        openSession()
+        return { record: 'terminal-open', clicked: true, via: 'right-sidebar-entry' }
+      }
+      if (expression.includes('terminal-state')) {
+        return { record: 'terminal-state', panelPresent: true, surfacePresent: state.terminalOpen && surface, inputPresent: state.terminalOpen && input }
+      }
+      if (expression.includes('terminal-close')) {
+        if (!closeClicked) return { record: 'terminal-close', clicked: false, reason: 'no-terminal-tab' }
+        state.closeRequested = true
+        state.shellAlive = false
+        state.tabIds = state.tabIds.filter(id => !newTabIds.includes(id))
+        return { record: 'terminal-close', clicked: true, matched: 'data-dockkit-tab-close', via: 'captured-new-tab-id', tabId: newTabIds[0] ?? null }
+      }
+      if (expression.includes('sidebar-right-state')) return { record: 'sidebar-right-state', open: sidebarOpen, expandAvailable: true, session: state.terminalOpen }
+      if (expression.includes('sidebar-right-open')) return { record: 'sidebar-right-open', clicked: false, alreadyOpen: sidebarOpen }
+      if (expression.includes('runtime-digest')) {
+        return { record: 'runtime-digest', bridge: true, resolved: true, state: 'ready', lastErrorPresent: false, startedAtDigest: 'aaaa1111' }
+      }
+      throw new Error(`unexpected expression in the pty lane harness: ${expression}`)
+    },
+    send: async (method, params) => {
+      if (method === 'Input.dispatchKeyEvent' && params?.code === 'Backquote') {
+        state.shortcutDispatches += 1
+        if (shortcutOnly) openSession()
+      }
+      return {}
+    },
+    close: async () => {},
+  }
+  const tableImpl = async () => {
+    reads += 1
+    if (baselineUnavailable && reads === 1) {
+      return { available: false, rows: [], rejected: 0, truncated: false, observedAtTicks: 500n }
+    }
+    if (tableUnavailableAtClose && reads >= 3) {
+      return { available: false, rows: [], rejected: 0, truncated: false, observedAtTicks: 500n }
+    }
+    if (vanishBeforeClose && reads >= 3) state.shellAlive = false
+    // A shell that shows up after the unknown/stale baseline: it stays alive until
+    // the tab close actually removes it, so absence after the close is meaningful.
+    if (shellAppearsLater && reads >= 2 && state.closeRequested !== true) state.shellAlive = true
+    const rows = [{ pid: HOST_PID, parentPid: 0, creationTicks: '100', exe: 'C:\\app\\dsh-desktop.exe', name: 'dsh-desktop.exe' }]
+    if (state.shellAlive) {
+      rows.push({ pid: SHELL_PID, parentPid: HOST_PID, creationTicks: '101', exe: 'C:\\Program Files\\PowerShell\\7\\pwsh.exe', name: 'pwsh.exe' })
+    }
+    return { available: true, rows, rejected: 0, truncated: false, observedAtTicks: 500n }
+  }
+  const identityAtSpawn = { available: true, status: 'present', pid: HOST_PID, exe: 'C:\\app\\dsh-desktop.exe', creationTicks: '100' }
+  return { connection, tableImpl, identityAtSpawn, state, HOST_PID, SHELL_PID }
+}
+
+const runLane = harness => runPtyTerminationLane({
+  connection: harness.connection,
+  tableImpl: harness.tableImpl,
+  identityAtSpawn: harness.identityAtSpawn,
+  args: parseArgs([
+    '--exe', EXE, '--sha256', SHA,
+    '--pty-open-timeout-ms', '3000',
+    '--pty-settle-timeout-ms', '2000',
+  ]),
+  sleepImpl: async () => {},
+  log: () => {},
+})
+
+test('N7: the lane qualifies the terminal through the documented terminal.new shortcut too', async () => {
+  const lane = await runLane(ptyLaneHarness({ shortcutOnly: true }))
+  assert.equal(lane.laneStatus, 'pass')
+  assert.equal(lane.facts.openVia, 'shortcut-terminal.new')
+  assert.equal(lane.facts.surfacePresent, true)
+  assert.equal(lane.facts.inputPresent, true)
+  assert.equal(lane.facts.closeClicked, true)
+  assert.equal(lane.terminateStatus, 'pass')
+  assert.equal(lane.healthStatus, 'pass')
+})
+
+test('N8: an attributed shell with NO mounted terminal surface must never pass the lane, and is still cleaned up', async () => {
+  const lane = await runLane(ptyLaneHarness({ surface: false, input: false }))
+  assert.equal(lane.laneStatus, 'fail', 'a shell descendant alone is not a mounted terminal surface')
+  assert.match(lane.laneDetail, /not positively qualified/u)
+  assert.match(lane.laneDetail, /surface=false/u)
+  assert.equal(lane.facts.surfacePresent, false)
+  assert.equal(lane.facts.inputPresent, false)
+  assert.equal(lane.facts.closeClicked, true, 'the lane still closes the tab it opened: the shell must not leak')
+  assert.equal(lane.terminateStatus, 'pass', 'the owned shell is still proven terminated')
+  assert.equal(lane.healthStatus, 'pass')
+})
+
+test('N9: absence alone is never termination: an unclicked tab close cannot pass', async () => {
+  const lane = await runLane(ptyLaneHarness({ closeClicked: false }))
+  assert.equal(lane.laneStatus, 'pass')
+  assert.equal(lane.facts.presentBeforeClose, true)
+  assert.equal(lane.facts.closeClicked, false)
+  assert.equal(lane.terminateStatus, 'fail')
+  assert.match(lane.terminateDetail, /never positively clicked/u)
+})
+
+test('N10: a shell that exited before the close request cannot evidence tab-close teardown', async () => {
+  const lane = await runLane(ptyLaneHarness({ vanishBeforeClose: true }))
+  assert.equal(lane.facts.presentBeforeClose, false)
+  assert.equal(lane.facts.terminatedCleanly, true, 'the shell is absent afterwards')
+  assert.equal(lane.terminateStatus, 'unqualified', 'a natural exit is never proof of tab-close teardown')
+  assert.match(lane.terminateDetail, /already exited before the close request/u)
+})
+
+test('N11: an unreadable process table before the close is never a qualified termination', async () => {
+  const lane = await runLane(ptyLaneHarness({ tableUnavailableAtClose: true }))
+  assert.equal(lane.facts.presentBeforeClose, null)
+  assert.equal(lane.facts.closeClicked, true)
+  assert.equal(lane.terminateStatus, 'unqualified')
+  assert.match(lane.terminateDetail, /could not positively confirm/u)
+})
+
+test('N12: a NEW shell with a mounted terminal but NO positively opened terminal must not pass the lane', async () => {
+  // The sidebar never opened and the entry click failed, so the shortcut was never
+  // dispatched; a terminal session was already mounted and a new shell appeared
+  // under the host anyway. Attribution plus UI alone must not qualify the lane.
+  const harness = ptyLaneHarness({
+    sidebarOpen: false,
+    entryOpens: false,
+    preexistingSession: true,
+    shellAppearsLater: true,
+  })
+  const lane = await runLane(harness)
+  assert.equal(lane.facts.openClicked, false)
+  assert.equal(lane.facts.openVia, null)
+  assert.equal(harness.state.shortcutDispatches, 0, 'no terminal.new shortcut may be sent when the sidebar is not open')
+  assert.equal(lane.facts.tableAvailable, true)
+  assert.equal(lane.facts.child.pid, 9001, 'the new shell was attributed')
+  assert.equal(lane.facts.surfacePresent, true)
+  assert.equal(lane.facts.inputPresent, true)
+  assert.equal(lane.laneStatus, 'fail', 'a terminal the lane never opened is not evidence that the client can open one')
+  assert.match(lane.laneDetail, /open=false/u)
+  // Cleanup, termination and health are unaffected by the failed qualification.
+  assert.equal(lane.facts.closeClicked, true)
+  assert.equal(lane.terminateStatus, 'pass')
+  assert.equal(lane.healthStatus, 'pass')
+})
+
+test('N13: an unknown pre-open baseline cannot qualify a later shell, even with the UI mounted', async () => {
+  // The very first descendant read failed, so an already-running shell would be
+  // indistinguishable from a new one: no positive attribution is possible.
+  const lane = await runLane(ptyLaneHarness({ baselineUnavailable: true }))
+  assert.equal(lane.facts.tableAvailable, false)
+  assert.equal(lane.facts.openClicked, true)
+  assert.equal(lane.facts.child.pid, 9001)
+  assert.equal(lane.facts.surfacePresent, true)
+  assert.equal(lane.facts.inputPresent, true)
+  assert.equal(lane.laneStatus, 'fail', 'an unknown baseline can never qualify a shell as newly spawned')
+  assert.match(lane.laneDetail, /baselineTable=false/u)
+  assert.equal(lane.facts.closeClicked, true)
+  assert.equal(lane.terminateStatus, 'pass', 'the termination gates themselves stay intact')
+  assert.equal(lane.healthStatus, 'pass')
 })

@@ -28,9 +28,9 @@
 
 import assert from 'node:assert/strict'
 import { createHash, randomUUID } from 'node:crypto'
-import { mkdtemp, mkdir, writeFile, rm, readdir, readFile } from 'node:fs/promises'
+import { access, mkdtemp, mkdir, writeFile, rm, readdir, readFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { isAbsolute, join } from 'node:path'
 import { test } from 'node:test'
 
 import { FIXTURE_API_KEY, FIXTURE_KEY_ENV, FIXTURE_MODEL_ID, FIXTURE_ROUTE, parseFixturePort } from './fixture-provider.mjs'
@@ -57,6 +57,7 @@ import {
   TERMINAL_TAB_IDS_EXPRESSION,
   buildChildEnvironment,
   buildFixturePatch,
+  classifyRunnerOnlyEnvName,
   computeVerdict,
   deriveIsolationPaths,
   derivePlainShellName,
@@ -87,6 +88,7 @@ import {
   ptyTerminateFixPresent,
 } from './native-acceptance-runner.mjs'
 import { findSecretLikeLeaks } from '../native-cdp/native-cdp-probe.mjs'
+import { classifyFixtureEnvName } from '../helpers/fixture-isolation.mjs'
 
 const UUID = randomUUID()
 const EXE = 'C:\\qual\\candidates\\dsh-desktop.exe'
@@ -1049,9 +1051,13 @@ test('K1: the staged patch is a plain-YAML overlay bound to the fixture origin',
 test('I5: exe-relative default mode proves the packaged node and the PTY termination lane end to end', async () => {
   const repo = await mkdtemp(join(tmpdir(), 'dsh-acc-repo-'))
   // A stale inherited UI override must be DELETED, never passed through: pollute
-  // the parent environment so the packaged-default lane has to remove it.
+  // the parent environment so the packaged-default lane has to remove it. An
+  // ambient endpoint override is polluted too: it is not covered by the shared
+  // deny rules, so the runner's own rule is what must keep it out of the child.
   const inheritedShellDir = process.env.DSH_DESKTOP_SHELL_DIR
+  const inheritedEndpoint = process.env.DEEPSEEK_BASE_URL
   process.env.DSH_DESKTOP_SHELL_DIR = 'C:\\inherited-stale-ui'
+  process.env.DEEPSEEK_BASE_URL = 'https://operator-endpoint.invalid'
   try {
     // The candidate exe BESIDE its packaged payload: <exeDir>/dsh/... (the
     // resources the build copies into the Medium target root).
@@ -1084,12 +1090,19 @@ test('I5: exe-relative default mode proves the packaged node and the PTY termina
 
     const identityRegistry = new Map()
     const envCaptures = []
+    // Every fixture-owned root the child is handed must already EXIST when the
+    // native window is created; a missing one would push the app back to a real
+    // operator directory. Recorded at spawn time, asserted after the run.
+    const missingOwnedRoots = []
     const HOST_PID = 5100
     const NODE_PID = 5101
     const SHELL_PID = 5102
     const ptyState = { visible: false, tabIds: [] }
     const spawnImpl = async ({ exe, env }) => {
       envCaptures.push({ ...env })
+      for (const name of ['HOME', 'USERPROFILE', 'APPDATA', 'LOCALAPPDATA', 'TEMP', 'TMP', 'DSH_HOME', 'XDG_CONFIG_HOME', 'XDG_DATA_HOME', 'XDG_CACHE_HOME', 'XDG_STATE_HOME']) {
+        try { await access(env[name]) } catch { missingOwnedRoots.push(name) }
+      }
       const child = makeFakeChild(HOST_PID)
       identityRegistry.set(child.pid, { exited: false })
       await writeFile(env.DSH_DESKTOP_DEV_URL_FILE, `http://127.0.0.1:3099/?token=${FAKE_TOKEN}\n`, 'utf8')
@@ -1204,7 +1217,12 @@ test('I5: exe-relative default mode proves the packaged node and the PTY termina
       assert.equal(env.DSH_DESKTOP_NODE, undefined)
       assert.equal(env.DSH_DESKTOP_RUNTIME_ADAPTER, undefined)
       assert.equal(env.DSH_DESKTOP_SHELL_DIR, undefined, 'the inherited stale UI override must be deleted, not exported')
+      assert.equal(env.DEEPSEEK_BASE_URL, undefined, 'an ambient endpoint override must never reach the real child env')
+      assert.equal(env.DEEPSEEK_SEARCH_BASE_URL, undefined, 'the search shipping endpoint must never reach the real child env')
     }
+    // The four fixture-owned roots were PHYSICALLY created before the launch the
+    // mock recorded, so the real app can never fall back to an operator directory.
+    assert.deepEqual(missingOwnedRoots, [], 'every fixture-owned root must exist before the native window is created')
     const ptyCheck = check => record.checks.find(entry => entry.id === check)
     for (const id of ['payload.pty_terminate_fix_present', 'runtime.default_node_executed', 'pty.lane_executed', 'pty.terminated_cleanly', 'pty.app_healthy_after']) {
       assert.equal(ptyCheck(id).status, 'pass', `${id} must pass`)
@@ -1216,6 +1234,8 @@ test('I5: exe-relative default mode proves the packaged node and the PTY termina
   } finally {
     if (inheritedShellDir === undefined) delete process.env.DSH_DESKTOP_SHELL_DIR
     else process.env.DSH_DESKTOP_SHELL_DIR = inheritedShellDir
+    if (inheritedEndpoint === undefined) delete process.env.DEEPSEEK_BASE_URL
+    else process.env.DEEPSEEK_BASE_URL = inheritedEndpoint
     await rm(repo, { recursive: true, force: true })
   }
 })
@@ -1906,6 +1926,110 @@ test('N2: exe-relative default mode strips every runtime override from the child
   })
   assert.equal(explicit.DSH_DESKTOP_NODE, 'C:\\payload\\node\\node.exe')
   assert.equal(explicit.DSH_DESKTOP_RUNTIME_DIR, 'C:\\payload')
+})
+
+test('N2b: the child env is sanitized from a fake parent envelope, never inherited verbatim', () => {
+  const paths = deriveIsolationPaths({ repoRoot: 'C:\\repo', namespace: UUID, stamp: 'env3' })
+  const args = parseArgs(['--exe', EXE, '--sha256', SHA, '--cdp-port', '9333'])
+  const inherited = {
+    // Windows environment NAMES are case-insensitive: every spelling is denied.
+    Dsh_Desktop_Shell_Dir: 'C:\\operator\\ui',
+    dsh_home: 'C:\\Users\\operator\\.dsh',
+    DsH_Desktop_Runtime_Dir: 'C:\\operator\\runtime',
+    npM_config_prefix: 'C:\\operator\\npm',
+    // Secrets, endpoints and proxies an ambient shell must never hand over.
+    // The shipping endpoint overrides are DEEPSEEK_BASE_URL, its search sibling
+    // DEEPSEEK_SEARCH_BASE_URL, and SEARCH_BASE_URL — all three, in mixed case.
+    DEEPSEEK_API_KEY: 'operator-secret-value-0001',
+    DEEPSEEK_BASE_URL: 'https://api.deepseek.example.invalid',
+    DEEPSEEK_SEARCH_BASE_URL: 'https://search.deepseek.example.invalid',
+    deepseek_search_base_url: 'https://search.other.example.invalid',
+    SEARCH_BASE_URL: 'https://search.example.invalid',
+    HTTPS_PROXY: 'http://operator-proxy.invalid:8080',
+    GITHUB_TOKEN: 'operator-token-value-0001',
+    NODE_OPTIONS: '--require C:\\operator\\hook.js',
+    WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS: '--remote-debugging-port=61234',
+    // Ordinary platform variables are still passed through: the candidate is a
+    // real product process and must keep the platform itself working.
+    SystemRoot: 'C:\\Windows',
+    PATH: 'C:\\Windows\\system32',
+  }
+  const env = buildChildEnvironment({
+    args, paths, inherited,
+    nodePath: 'C:\\payload\\node\\node.exe', adapterPath: 'C:\\payload\\adapter.mjs',
+    runtimeDir: 'C:\\payload', shellDir: 'C:\\candidate\\ui', runtimeMode: 'explicit-payload', handoffIndex: 1,
+  })
+  for (const name of ['Dsh_Desktop_Shell_Dir', 'dsh_home', 'DsH_Desktop_Runtime_Dir', 'npM_config_prefix']) {
+    assert.equal(env[name], undefined, `${name} must be denied by NAME regardless of case`)
+  }
+  for (const name of ['DEEPSEEK_API_KEY', 'DEEPSEEK_BASE_URL', 'DEEPSEEK_SEARCH_BASE_URL', 'deepseek_search_base_url', 'SEARCH_BASE_URL', 'HTTPS_PROXY', 'GITHUB_TOKEN', 'NODE_OPTIONS']) {
+    assert.equal(env[name], undefined, `${name} must never be inherited`)
+  }
+  assert.equal(
+    env.WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS,
+    '--remote-debugging-port=9333 --remote-allow-origins=*',
+    'the ambient WebView2 switch is replaced by the runner-owned one, never inherited',
+  )
+  assert.equal(env.SystemRoot, 'C:\\Windows', 'the platform environment still passes through')
+  assert.equal(env.PATH, 'C:\\Windows\\system32')
+  // Every path the child can see is fixture-owned, absolute and inside the fence.
+  for (const name of ['HOME', 'USERPROFILE', 'APPDATA', 'LOCALAPPDATA', 'TEMP', 'TMP', 'DSH_HOME', 'XDG_CONFIG_HOME', 'XDG_DATA_HOME', 'XDG_CACHE_HOME', 'XDG_STATE_HOME']) {
+    const value = env[name]
+    assert.equal(typeof value, 'string', `${name} must be owned by the fixture`)
+    assert.ok(isAbsolute(value), `${name} must be absolute: ${value}`)
+    assert.ok(value.toLowerCase().startsWith(paths.ownedRoot.toLowerCase()), `${name} must stay inside the owned root: ${value}`)
+  }
+  assert.equal(env.DSH_HOME, paths.home)
+  // The intentional fixture values are exactly the controlled set.
+  assert.equal(env.DSH_DESKTOP_SHELL_DIR, 'C:\\candidate\\ui')
+  assert.equal(env.DSH_DESKTOP_RUNTIME_DIR, 'C:\\payload')
+  assert.equal(env.DSH_DESKTOP_DEV_URL_FILE, join(paths.ownedRoot, 'handoff-1', 'gateway-url.txt'))
+  assert.equal(env.DSH_DESKTOP_DEV_BOOT_FILE, join(paths.ownedRoot, 'handoff-1', 'boot.json'))
+  assert.equal(env.DSH_DESKTOP_OWNED_CREDENTIAL_NAMESPACE, UUID)
+  assert.equal(env.DSH_ACCEPTANCE_FIXTURE_KEY, FIXTURE_API_KEY)
+  assert.ok(env.WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS.includes('--remote-debugging-port=9333'), 'the runner re-adds its own debugging switch')
+  assert.equal(env.DSH_DESKTOP_CONTROL_SOCKET, undefined)
+  assert.equal(env.DSH_DESKTOP_CONTROL_TOKEN, undefined)
+})
+
+test('N2c: both ambient endpoint overrides are suppressed, and the packaged default exports no override', () => {
+  const paths = deriveIsolationPaths({ repoRoot: 'C:\\repo', namespace: UUID, stamp: 'env4' })
+  const args = parseArgs(['--exe', EXE, '--sha256', SHA, '--cdp-port', '9333'])
+  // The shared rules alone would let an endpoint override through; the runner
+  // closes exactly that gap for BOTH fixed shipping names (and their search
+  // sibling), case-insensitively.
+  assert.equal(classifyFixtureEnvName('DEEPSEEK_BASE_URL'), null, 'the shared policy does not name endpoint overrides')
+  assert.equal(classifyFixtureEnvName('DEEPSEEK_SEARCH_BASE_URL'), null)
+  assert.equal(classifyFixtureEnvName('SEARCH_BASE_URL'), null)
+  assert.equal(classifyRunnerOnlyEnvName('DEEPSEEK_BASE_URL'), 'endpoint-override')
+  assert.equal(classifyRunnerOnlyEnvName('DEEPSEEK_SEARCH_BASE_URL'), 'endpoint-override', 'the search shipping name is covered, not just DEEPSEEK_BASE_URL')
+  assert.equal(classifyRunnerOnlyEnvName('deepseek_search_base_url'), 'endpoint-override', 'names are case-insensitive')
+  assert.equal(classifyRunnerOnlyEnvName('deepseek_base_url'), 'endpoint-override')
+  assert.equal(classifyRunnerOnlyEnvName('SEARCH_BASE_URL'), 'endpoint-override')
+  assert.equal(classifyRunnerOnlyEnvName('DEEPSEEK_SEARCH_API_URL'), 'endpoint-override')
+  assert.equal(classifyRunnerOnlyEnvName('DEEPSEEK_SEARCH_ENDPOINT'), 'endpoint-override')
+  assert.equal(classifyRunnerOnlyEnvName('PATH'), null)
+  assert.equal(classifyRunnerOnlyEnvName('DEEPSEEK_SEARCH_MODEL'), null, 'a non-endpoint search variable is not denied')
+  const env = buildChildEnvironment({
+    args, paths, handoffIndex: 1,
+    inherited: {
+      DSH_DESKTOP_RUNTIME_DIR: 'C:\\operator\\runtime',
+      DSH_DESKTOP_NODE: 'C:\\operator\\node.exe',
+      DSH_DESKTOP_RUNTIME_ADAPTER: 'C:\\operator\\adapter.mjs',
+      DSH_DESKTOP_PRIMARY_RUNTIME_DIR: 'C:\\operator\\primary',
+      DSH_DESKTOP_SHELL_DIR: 'C:\\operator\\ui',
+      DEEPSEEK_BASE_URL: 'https://api.deepseek.example.invalid',
+      DEEPSEEK_SEARCH_BASE_URL: 'https://search.deepseek.example.invalid',
+      SEARCH_BASE_URL: 'https://search.example.invalid',
+    },
+    nodePath: null, adapterPath: null, runtimeDir: null, shellDir: 'C:\\candidate\\ui',
+    runtimeMode: 'exe-relative-default', shellDirSource: 'exe-relative',
+  })
+  for (const name of ['DSH_DESKTOP_RUNTIME_DIR', 'DSH_DESKTOP_NODE', 'DSH_DESKTOP_RUNTIME_ADAPTER', 'DSH_DESKTOP_PRIMARY_RUNTIME_DIR', 'DSH_DESKTOP_SHELL_DIR', 'DEEPSEEK_BASE_URL', 'DEEPSEEK_SEARCH_BASE_URL', 'SEARCH_BASE_URL']) {
+    assert.equal(env[name], undefined, `${name} must not reach the packaged-default child`)
+  }
+  assert.equal(env.DSH_DESKTOP_DEV_URL_FILE, join(paths.ownedRoot, 'handoff-1', 'gateway-url.txt'))
+  assert.equal(env.WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS, `--remote-debugging-port=9333 --remote-allow-origins=*`)
 })
 
 test('N3: shell attribution matches the tab-reported name exactly, never a candidate list', () => {

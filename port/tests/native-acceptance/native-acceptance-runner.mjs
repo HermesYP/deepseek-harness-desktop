@@ -37,6 +37,14 @@
  *   * The live Harness home (`%USERPROFILE%\.dsh`) is never used; the live GUI
  *     port 3080 is refused for the CDP endpoint, the fixture provider and the
  *     bound gateway port alike.
+ *   * The child environment is NOT the operator's. It is built through
+ *     helpers/fixture-isolation.mjs — every ambient secret, endpoint, proxy,
+ *     package-manager, network-trust, runtime/interpreter and WebView2 override
+ *     is dropped BY NAME, and the home, app-data, temp and XDG roots become
+ *     fixture-owned paths under the fence root — and the finished object is
+ *     re-asserted, so only the runner's intentional `DSH_DESKTOP_*` handoff keys
+ *     and its single `WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS` switch reach the
+ *     candidate.
  *   * The runner OWNS the processes it spawns: bounded launch/readiness/stage
  *     timeouts, an in-run watchdog that terminates the owned child, and
  *     termination only through helpers/process-authority.mjs (spawn-time
@@ -80,6 +88,12 @@ import {
   isCanonicalNonNilUuid,
 } from '../native-cdp/native-cdp-probe.mjs'
 import { classifyHost, NATIVE_WEBVIEW } from '../helpers/host-identity.mjs'
+import {
+  CONTAINED_PATH_KEYS,
+  assertFixtureEnvironment,
+  buildFixtureEnvironment,
+  isInsideRoot,
+} from '../helpers/fixture-isolation.mjs'
 import {
   captureProcessIdentity,
   captureProcessTable,
@@ -1418,6 +1432,18 @@ export async function runAcceptance(args, inject = {}) {
       push('payload.pty_terminate_fix_present', false, 'not-requested', 'the payload carries no node-pty Windows agent; the fix fact does not apply')
     }
 
+    // The child environment is assembled HERE, before anything is created: it is
+    // part of preflight, so a containment violation refuses the run (dry run
+    // included) instead of surfacing after the owned root exists. The exact same
+    // object is then spawned below.
+    const env = buildChildEnvironment({
+      args, paths,
+      nodePath: executionNode?.executionPath ?? null,
+      adapterPath: executionNode !== null ? adapterPath : null,
+      runtimeDir: runtimeMode === 'explicit-payload' ? runtimeDir : null,
+      shellDir, shellDirSource: shellAssets.source, runtimeMode, handoffIndex: 1,
+    })
+
     // -- 2. Fresh isolation roots (checked read-only; nothing is created yet) ----
     await assertFreshRoots(paths)
 
@@ -1451,6 +1477,18 @@ export async function runAcceptance(args, inject = {}) {
     await mkdir(paths.runRoot, { recursive: true })
     await mkdir(join(paths.ownedRoot, 'handoff-1'), { recursive: true })
     await mkdir(join(paths.ownedRoot, 'handoff-2'), { recursive: true })
+    // Every path the child environment hands the app must EXIST before the native
+    // window is created: WebView2 will not create a profile root that is missing,
+    // and a real product process must not fall back to a real operator directory
+    // because the fixture-owned one was absent. Each value is re-checked to be
+    // inside the fence-derived owned root BEFORE creation, so the operator's real
+    // home, app-data or temp directory is never created and never touched.
+    for (const name of CONTAINED_PATH_KEYS) {
+      const directory = env[name]
+      if (typeof directory !== 'string' || directory === '') continue
+      if (!isInsideRoot(directory, paths.ownedRoot)) continue
+      await mkdir(directory, { recursive: true })
+    }
 
     // -- 3. Fixture provider ---------------------------------------------------------
     if (args.withFixtureChat) {
@@ -1465,16 +1503,9 @@ export async function runAcceptance(args, inject = {}) {
     }
 
     // -- 4. Launch (first run) ----------------------------------------------------------
-    // The UI source travels WITH the plan: `exe-relative` removes every inherited
-    // override so the app must resolve its own bundled UI, while an explicit
-    // `--shell-dir` is exported unchanged (the plan labels which one applies).
-    const env = buildChildEnvironment({
-      args, paths,
-      nodePath: executionNode?.executionPath ?? null,
-      adapterPath: executionNode !== null ? adapterPath : null,
-      runtimeDir: runtimeMode === 'explicit-payload' ? runtimeDir : null,
-      shellDir, shellDirSource: shellAssets.source, runtimeMode, handoffIndex: 1,
-    })
+    // The UI source travelled with the plan (see the preflight assembly above):
+    // `exe-relative` removed every inherited override so the app must resolve its
+    // own bundled UI, while an explicit `--shell-dir` was exported unchanged.
     const launched = await spawnImpl({ exe: args.exe, env, log })
     child = launched.child
     identityAtSpawn = launched.identityAtSpawn
@@ -1723,41 +1754,115 @@ export async function runAcceptance(args, inject = {}) {
   return finishRecord(record, { startedAtMs })
 }
 
-/** Assemble the child environment for launch `handoffIndex` (1 or 2). */
+/**
+ * Endpoint overrides the shared fixture-isolation deny rules do not name.
+ *
+ * The shared policy denies secrets, proxies, package-manager, network-trust and
+ * runtime/interpreter overrides by NAME, but the shipping endpoint overrides —
+ * `DEEPSEEK_BASE_URL`, its search sibling `DEEPSEEK_SEARCH_BASE_URL`, and
+ * `SEARCH_BASE_URL` — match none of those patterns: an ambient value would point
+ * a fixture run at a real service, or bypass the staged fixture patch that is
+ * supposed to be its only network target. They are removed here by NAME as well;
+ * no value is ever read, and nothing but the name is recorded.
+ */
+const RUNNER_ENDPOINT_DENY_PATTERN = /^(?:DEEPSEEK(?:_SEARCH)?|SEARCH)_(?:BASE_?URL|API_?URL|ENDPOINT)$/iu
+
+/**
+ * Classify one environment variable NAME against the runner-only deny rules.
+ *
+ * @param {string} name Variable name. Windows names are case-insensitive, so the
+ *   match is case-insensitive too.
+ * @returns {string|null} The runner-only deny category, or null.
+ */
+export function classifyRunnerOnlyEnvName(name) {
+  return RUNNER_ENDPOINT_DENY_PATTERN.test(String(name)) ? 'endpoint-override' : null
+}
+
+/** Runner-only denied names that reached the finished env without being owned. */
+function runnerOnlyEnvViolations(env, ownedNames) {
+  const violations = []
+  for (const name of Object.keys(env)) {
+    const category = classifyRunnerOnlyEnvName(name)
+    if (category !== null && !ownedNames.has(name)) {
+      violations.push(`env ${name} reached the child (${category}) without an intentional fixture value`)
+    }
+  }
+  return violations
+}
+
+/**
+ * Assemble the child environment for launch `handoffIndex` (1 or 2).
+ *
+ * The environment is NOT `process.env` with a few keys overwritten. It is built
+ * through the shared fixture-isolation policy first (helpers/fixture-isolation.mjs):
+ * every ambient secret, endpoint, proxy, package-manager, network-trust and
+ * runtime/interpreter override is dropped BY NAME, and the home, app-data, temp
+ * and XDG roots become fixture-owned paths under `paths.ownedRoot`. Only the
+ * runner's own intentional values — the controlled `DSH_DESKTOP_*` handoff,
+ * namespace and fixture keys plus the one `WEBVIEW2_*` debugging switch — are
+ * written back, and the finished object is re-asserted before it can be spawned.
+ * A violation is a refusal, so an ambient value can never quietly accompany the
+ * run, and the packaged default still removes every runtime and UI override while
+ * an explicit source override is preserved.
+ *
+ * @param {object} options
+ * @param {NodeJS.ProcessEnv} [options.inherited] The parent environment to
+ *   sanitize. Defaults to `process.env`; tests inject a fake envelope instead.
+ * @returns {Record<string,string>} The contained child environment.
+ */
 export function buildChildEnvironment({
   args, paths, nodePath, adapterPath, runtimeDir, shellDir, runtimeMode = 'explicit-payload', handoffIndex,
   shellDirSource = runtimeMode === 'exe-relative-default' ? 'exe-relative' : 'repo-default',
+  inherited = process.env,
 }) {
-  const env = { ...process.env }
-  env.DSH_HOME = paths.home
-  env.DSH_DESKTOP_USER_DATA_DIR = paths.userData
-  if (runtimeMode === 'exe-relative-default') {
-    // The packaged-default proof mode: NO runtime overrides. Inherited names
-    // are removed so the app can only resolve its own exe-relative payload.
-    for (const name of ['DSH_DESKTOP_RUNTIME_DIR', 'DSH_DESKTOP_NODE', 'DSH_DESKTOP_RUNTIME_ADAPTER', 'DSH_DESKTOP_PRIMARY_RUNTIME_DIR']) {
-      delete env[name]
-    }
-  } else {
-    env.DSH_DESKTOP_RUNTIME_DIR = runtimeDir
-    env.DSH_DESKTOP_NODE = nodePath
-    env.DSH_DESKTOP_RUNTIME_ADAPTER = adapterPath
+  const built = buildFixtureEnvironment({ inherited, root: paths.ownedRoot, home: paths.home })
+  const env = built.env
+  const ownedNames = new Set(built.ownedKeys)
+  // Endpoint overrides the shared rules do not name are removed here too.
+  for (const name of Object.keys(env)) {
+    const category = classifyRunnerOnlyEnvName(name)
+    if (category === null || ownedNames.has(name)) continue
+    delete env[name]
+    built.stripped.push({ name, reason: category })
+    built.categories[category] = (built.categories[category] ?? 0) + 1
   }
-  if (shellDirSource === 'exe-relative') {
-    // The packaged proof requires the app to resolve its OWN bundled UI beside the
-    // executable: an inherited (or assigned) repo-source UI would prove nothing, so
-    // every UI override is removed rather than overwritten.
-    delete env.DSH_DESKTOP_SHELL_DIR
-  } else if (typeof shellDir === 'string' && shellDir !== '') {
-    env.DSH_DESKTOP_SHELL_DIR = shellDir
-  } else {
-    delete env.DSH_DESKTOP_SHELL_DIR
+  /** Write one intentional fixture value and register it as owned. */
+  const own = (name, value) => {
+    if (value === undefined || value === null || value === '') return
+    env[name] = value
+    ownedNames.add(name)
   }
-  env.DSH_DESKTOP_DEV_URL_FILE = join(paths.ownedRoot, `handoff-${handoffIndex}`, 'gateway-url.txt')
-  env.DSH_DESKTOP_DEV_BOOT_FILE = join(paths.ownedRoot, `handoff-${handoffIndex}`, 'boot.json')
-  env.DSH_DESKTOP_OWNED_CREDENTIAL_NAMESPACE = paths.namespace
-  env.WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS = `--remote-debugging-port=${args.bounds['cdp-port']} --remote-allow-origins=*`
-  env.DSH_ACCEPTANCE_FIXTURE_KEY = FIXTURE_API_KEY
-  env.RUST_LOG = 'info'
+  own('DSH_HOME', paths.home)
+  own('DSH_DESKTOP_USER_DATA_DIR', paths.userData)
+  // Runtime and UI overrides are never INHERITED: they exist only in the mode
+  // that intentionally exports them, and the packaged default exports neither.
+  for (const name of ['DSH_DESKTOP_RUNTIME_DIR', 'DSH_DESKTOP_NODE', 'DSH_DESKTOP_RUNTIME_ADAPTER', 'DSH_DESKTOP_PRIMARY_RUNTIME_DIR', 'DSH_DESKTOP_SHELL_DIR']) {
+    delete env[name]
+  }
+  if (runtimeMode !== 'exe-relative-default') {
+    own('DSH_DESKTOP_RUNTIME_DIR', runtimeDir)
+    own('DSH_DESKTOP_NODE', nodePath)
+    own('DSH_DESKTOP_RUNTIME_ADAPTER', adapterPath)
+  }
+  if (shellDirSource !== 'exe-relative') own('DSH_DESKTOP_SHELL_DIR', shellDir)
+  own('DSH_DESKTOP_DEV_URL_FILE', join(paths.ownedRoot, `handoff-${handoffIndex}`, 'gateway-url.txt'))
+  own('DSH_DESKTOP_DEV_BOOT_FILE', join(paths.ownedRoot, `handoff-${handoffIndex}`, 'boot.json'))
+  own('DSH_DESKTOP_OWNED_CREDENTIAL_NAMESPACE', paths.namespace)
+  own('WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS', `--remote-debugging-port=${args.bounds['cdp-port']} --remote-allow-origins=*`)
+  own('DSH_ACCEPTANCE_FIXTURE_KEY', FIXTURE_API_KEY)
+  own('RUST_LOG', 'info')
+  const violations = [
+    ...assertFixtureEnvironment(env, {
+      root: paths.ownedRoot,
+      controlled: false,
+      ownedKeys: [...ownedNames],
+      inherited,
+    }),
+    ...runnerOnlyEnvViolations(env, ownedNames),
+  ]
+  if (violations.length > 0) {
+    throw refusal(`the child environment is not contained: ${violations.join('; ')}`, 'env-containment')
+  }
   return env
 }
 

@@ -1365,6 +1365,75 @@ test('M6: refusal messages never carry a full 64-hex hash; the truncation passes
 })
 
 // ---------------------------------------------------------------------------
+// O. Known-safe isolation allowlist — the EXACT generated report path only
+// ---------------------------------------------------------------------------
+
+/** A stamp long enough to push the generated run root past the long-run rule. */
+const LONG_STAMP = 'short021-native-b-1818'
+
+test('O1: the generated isolation report path is known-safe; launch and API tokens are still refused', () => {
+  const paths = deriveIsolationPaths({ repoRoot: 'C:\\repo', namespace: UUID, stamp: LONG_STAMP })
+  const isolation = { ...paths, repoRoot: 'C:\\repo' }
+  // The real-run shape: `native-acceptance-<stamp>` is 40 [A-Za-z0-9_-] characters
+  // with digits, so every generated path carries a high-entropy-looking run.
+  assert.ok(isolation.reportPath.endsWith('acceptance-record.json'))
+  assert.ok(isolation.reportPath.includes(LONG_STAMP))
+  assert.deepEqual(findSecretLikeLeaks({ isolation: { reportPath: isolation.reportPath } }), ['$.isolation.reportPath'],
+    'the generated report path IS secret-shaped to the heuristic; that is why it must be allow-listed')
+
+  const record = { isolation, candidate: { sha256: SHA } }
+  // Reproduce the real refusal exactly: with the other generated paths allow-listed
+  // but the report path NOT, the report path is the only offender.
+  const withoutReportPath = redactionAllowList(record).filter(value => value !== isolation.reportPath)
+  assert.deepEqual(findSecretLikeLeaks(record, { allowedStrings: withoutReportPath }), ['$.isolation.reportPath'])
+
+  // With the record's own allowlist the published paths are known safe.
+  assert.deepEqual(findSecretLikeLeaks(record, { allowedStrings: redactionAllowList(record) }), [])
+
+  // Nothing else became acceptable: an unrelated launch token and an API-key-shaped
+  // value are still refused, wherever they sit.
+  const contaminated = structuredClone(record)
+  contaminated.gateway = { authenticatedUrlSeen: `http://127.0.0.1:3099/?token=${FAKE_TOKEN}` }
+  assert.deepEqual(
+    findSecretLikeLeaks(contaminated, { allowedStrings: redactionAllowList(contaminated) }),
+    ['$.gateway.authenticatedUrlSeen'],
+  )
+  const keyShaped = structuredClone(record)
+  keyShaped.fixture = { stagedHeader: `Bearer ${FIXTURE_API_KEY}` }
+  assert.deepEqual(
+    findSecretLikeLeaks(keyShaped, { allowedStrings: redactionAllowList(keyShaped) }),
+    ['$.fixture.stagedHeader'],
+  )
+
+  // The allowlist is an EXACT whole-string match: a report path that merely looks
+  // like the generated one is refused, so no substring/regex policy was widened.
+  const lookalike = { isolation: { reportPath: `${isolation.reportPath}.bak` } }
+  assert.deepEqual(
+    findSecretLikeLeaks(lookalike, { allowedStrings: redactionAllowList(record) }),
+    ['$.isolation.reportPath'],
+  )
+})
+
+test('O2: the allowed report path is the one the record actually carries, not a caller-supplied overflow', () => {
+  const paths = deriveIsolationPaths({ repoRoot: 'C:\\repo', namespace: UUID, stamp: LONG_STAMP })
+  // `--report` changes the WRITE destination only; the record keeps the generated
+  // path under the run root, so an arbitrary external path never enters the
+  // allowlist (it is not part of the record) and stays gate-worthy if it appears.
+  const args = parseArgs(['--exe', EXE, '--sha256', SHA, '--repo', 'C:\\repo', '--stamp', LONG_STAMP,
+    '--report', 'C:\\elsewhere\\custom-report.json'])
+  assert.equal(args.reportPath, 'C:\\elsewhere\\custom-report.json')
+  const record = { isolation: { ...paths, repoRoot: 'C:\\repo' } }
+  const allowed = redactionAllowList(record)
+  assert.ok(allowed.includes(record.isolation.reportPath))
+  assert.equal(allowed.includes(args.reportPath), false, 'a caller-supplied report path is never allow-listed')
+  const tokenShapedExternal = { isolation: { reportPath: `C:\\elsewhere\\${FAKE_TOKEN}.json` } }
+  assert.deepEqual(
+    findSecretLikeLeaks(tokenShapedExternal, { allowedStrings: allowed }),
+    ['$.isolation.reportPath'],
+  )
+})
+
+// ---------------------------------------------------------------------------
 // N. Packaged-node proof + PTY termination lane primitives
 // ---------------------------------------------------------------------------
 

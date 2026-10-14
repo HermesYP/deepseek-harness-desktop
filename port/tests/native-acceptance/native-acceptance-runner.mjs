@@ -2442,7 +2442,10 @@ export function redactionAllowList(record) {
   const allowed = []
   const add = value => { if (typeof value === 'string' && value !== '') allowed.push(value) }
   add(record?.candidate?.sha256)
-  for (const key of ['ownedRoot', 'home', 'userData', 'profileDir', 'runRoot']) {
+  // The generated isolation paths are published evidence. `reportPath` is the
+  // record's own output path UNDER `runRoot`; a long stamp can push its directory
+  // name over the long-run rule, so the exact generated string is listed too.
+  for (const key of ['ownedRoot', 'home', 'userData', 'profileDir', 'runRoot', 'reportPath']) {
     add(record?.isolation?.[key])
   }
   add(record?.fixture?.patchPath)

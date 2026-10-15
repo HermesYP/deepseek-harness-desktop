@@ -64,6 +64,7 @@ const { repairConfigEditorRuntimeImport } = await import(new URL('./config-edito
 const { repairAccountProfileRuntime } = await import(new URL('./account-profile-runtime.mjs', pathToFileURL(lockHelper)).href)
 const { repairAccountLoginRuntime } = await import(new URL('./account-login-runtime.mjs', pathToFileURL(lockHelper)).href)
 const { repairAccountDataRuntime, repairAccountDataClient } = await import(new URL('./account-data-runtime.mjs', pathToFileURL(lockHelper)).href)
+const { applyUpstreamRuntimeDependencyPolicy, seedProjectLockfileFromUpstream } = await import(new URL('./upstream-runtime-dependency-policy.mjs', pathToFileURL(lockHelper)).href)
 const { prepareDesktopPackageSet } = await importUpstream('apps/desktop/scripts/prepare-package-set.ts')
 const { createRuntimeProjectMetadata } = await importUpstream('apps/desktop/src/project-manager.ts')
 const { DESKTOP_HOST_PROTOCOL_VERSION } = await importUpstream('apps/desktop/src/host-protocol.ts')
@@ -145,6 +146,15 @@ if (/^strictDepBuilds:/mu.test(workspaceConfig)) {
 workspaceConfig = `${workspaceConfig.trimEnd()}\nstrictDepBuilds: true\n`
 writeFileSync(join(project, 'pnpm-workspace.yaml'), workspaceConfig)
 
+// Carry the two reviewed upstream runtime patches. The generated Desktop project
+// policy carries neither `patchedDependencies` nor exact versions, so the reviewed
+// pi-ai and node-pty behaviour is lost without this: pi-ai resolves past the
+// patched 1.0.2 and node-pty ships at the reviewed version with unpatched bytes.
+// Applied AFTER the strictDepBuilds append, because the helper asserts that key
+// is present before it amends anything, and it refuses a second application.
+const dependencyPolicy = applyUpstreamRuntimeDependencyPolicy({ upstreamRoot: upstream, projectRoot: project })
+console.log(`Upstream runtime dependency policy: ${dependencyPolicy.changed ? 'applied' : 'not required'}; ${dependencyPolicy.patches.length} reviewed patch(es)`)
+
 // --- install ----------------------------------------------------------------
 // The user config is emptied so a developer's `~/.npmrc` cannot redirect the
 // registry, inject an auth token, or change the linker for a build that ships.
@@ -168,6 +178,12 @@ const lockTarget = process.platform === 'win32' && process.arch === 'x64' ? 'win
 if (lockMode === 'refresh') {
   // This is the only lockfile-writing operation. It is restricted to the explicit
   // maintenance command and writes a CANDIDATE descriptor, never a reviewed lock.
+  // The fresh project is seeded with upstream's OWN lockfile, byte for byte, so
+  // pnpm starts from the reviewed external resolution and regenerates normally
+  // instead of re-resolving every range from scratch. No resolution is edited by
+  // hand, and seeding refuses to overwrite an existing lockfile.
+  const seeded = seedProjectLockfileFromUpstream({ upstreamRoot: upstream, projectRoot: project })
+  console.log(`Seeded runtime lockfile from upstream: ${seeded.bytes} bytes sha256=${seeded.sha256}`)
   pnpm('install', '--lockfile-only')
   const candidate = lockTools.writeRuntimeLockCandidate({
     projectRoot: project, candidateRoot: lockCandidateRoot, target: lockTarget,

@@ -315,6 +315,17 @@ test('the gate actually builds the UI and the qualified build keeps esbuild trus
   assert.match(module, /@esbuild\+win32-x64@\$ExpectedVersion/, 'the esbuild package is resolved by exact version directory, never a glob')
   assert.match(module, /DefaultEsbuildVersion = '0\.25\.12'/, 'the locked version is 0.25.12')
   assert.match(module, /refusing a substituted compiler/, 'a version mismatch is refused')
+  // The recorded version is cross-checked against the compiler the linked
+  // apps/web Vite actually resolves, so the literal cannot rot into a different
+  // compiler than the build runs on. apps/web uses vite 6.4.3, NOT the root
+  // lockfile's newest vite.
+  assert.match(module, /function Get-DshUpstreamEsbuildVersion/, 'the compiler is derived from the linked Vite package')
+  assert.match(module, /apps\\web\\node_modules\\vite\\package\.json/, 'the linked apps/web Vite manifest is the source, not the root lockfile')
+  assert.match(module, /exactly one reviewed compiler is required/, 'an ambiguous compiler resolution is refused')
+  assert.match(module, /is not the one the linked apps\/web Vite resolves/, 'the recorded version is cross-checked before use')
+  assert.match(module, /Unsupported esbuild range/, 'an unrecognised range is refused rather than approximated')
+  assert.match(module, /Export-ModuleMember -Function Get-DshLockedEsbuildBinary, Resolve-DshTrustedEsbuild,\n    Get-DshUpstreamEsbuildVersion, Test-DshEsbuildVersionSatisfies,/,
+    'the derivation and its range check are exported for composition')
   assert.match(module, /Copy-DshTrustedPlainCopy -SourceRoot \$locked\.PackageRoot/, 'the compiler is copied outside, not executed in place')
   assert.match(module, /ESBUILD_BINARY_PATH = \$copiedExe/, 'the child is given the trusted copy')
   assert.match(module, /afterSha -ne \$locked\.Sha256/, 'the copy is hashed after copying')

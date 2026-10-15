@@ -155,7 +155,9 @@ test('the resource stages run before any compile that validates their paths', ()
 
   const buildCore = code.indexOf('function Build-Core')
   const assertInCore = code.indexOf('Assert-ResourceRootsForCompile', buildCore)
-  const cargoBuild = code.indexOf("Invoke-Checked 'cargo' $cargoArgs", buildCore)
+  // The original compile is captured via Get-CompiledResourceArtifactJson (the
+  // message stream is the authoritative artifact source; no second rebuild).
+  const cargoBuild = code.indexOf('Get-CompiledResourceArtifactJson $cargoArgs', buildCore)
   assert.ok(assertInCore > buildCore && assertInCore < cargoBuild,
     'core asserts its resource roots before running cargo')
 
@@ -419,13 +421,18 @@ test('metadata sealing precedes the final file count and post-swap verification 
   assert.match(code, /\$anchors \+= @\('runtime-payload.json', 'desktop-runtime.json'\)/)
 })
 
-test('sealing launches the pinned payload interpreter through tsx/esm via the trusted resolver', () => {
+test('sealing launches the pinned payload interpreter without a loader via the trusted resolver', () => {
   const helper = code.slice(code.indexOf('function Invoke-StagedRuntimeSeal'), code.indexOf('function Get-StagedHostProtocolVersion'))
   assert.match(helper, /\$identity.NodeVersion -ne \$pin.nodeVersion/)
   assert.match(helper, /\$identity.Sha256 -ne \$pinTarget.sha256/)
   assert.match(helper, /\$identity.Target -ne \$targetName/)
   assert.match(helper, /\$bundledNode = Join-Path \$DshRoot \$relativeExecutable/)
-  assert.match(helper, /@\('--import', 'tsx\/esm'/)
+  // `seal-runtime.mjs` imports only Node builtins, so it runs with no TypeScript
+  // loader. Routing it through tsx pulled tsx's own esbuild (0.28.1) into a step
+  // that never uses it. The STAGING program keeps tsx, because it imports upstream
+  // sources and project-manager.ts uses a non-erasable parameter property.
+  assert.match(helper, /\$arguments = @\(\(Join-Path \$PSScriptRoot 'lib\\seal-runtime\.mjs'\)\)/)
+  assert.doesNotMatch(helper, /--import', 'tsx\/esm/)
   // The pinned payload bytes are the REFERENCE for the resolver, never the process
   // that is executed: the shipped image is Low-labelled, so it cannot write the temp
   // and pipes the sealing program needs.
@@ -435,6 +442,29 @@ test('sealing launches the pinned payload interpreter through tsx/esm via the tr
   assert.match(code, /Name = 'final runtime descriptor'.*runtime-seal.test.mjs/)
   assert.match(code, /Name = 'staging execution-node trust'.*execution-node-trust.test.mjs/)
   assert.match(code, /packagingHelper:/)
+})
+
+test('the runtime stage resolves its own trusted esbuild and restores the child environment', () => {
+  const stage = code.slice(code.indexOf('function Stage-RuntimeInto'), code.indexOf('function Copy-PortPackages'))
+  assert.ok(stage.length > 0, 'the runtime stage body is present')
+  assert.match(stage, /Import-Module \(Join-Path \$PackagingTests 'runtime-esbuild-qualification\.psm1'\) -Force/)
+  assert.match(stage, /Resolve-DshTrustedRuntimeEsbuild -UpstreamRoot \$Upstream -OverridePath \$RuntimeEsbuildPath/)
+  // Scoped to THIS child and restored exactly, the same way TEMP/TMP are, so the UI
+  // child can never inherit tsx's compiler and this child can never inherit the UI's.
+  assert.match(stage, /\$hadEsbuildBinaryPath = Test-Path -LiteralPath 'Env:ESBUILD_BINARY_PATH'/)
+  assert.match(stage, /\$env:ESBUILD_BINARY_PATH = \$runtimeEsbuild\.Path/)
+  assert.match(stage, /if \(\$hadEsbuildBinaryPath\) \{ \$env:ESBUILD_BINARY_PATH = \$oldEsbuildBinaryPath \} else \{ Remove-Item -LiteralPath 'Env:ESBUILD_BINARY_PATH'/)
+
+  // The UI stage keeps its own compiler: it must not reach for the runtime one.
+  const ui = code.slice(code.indexOf('function Build-Ui'), code.indexOf('function Build-Core'))
+  assert.doesNotMatch(ui, /runtime-esbuild-qualification/)
+  assert.doesNotMatch(ui, /RuntimeEsbuildPath/)
+
+  const resolver = readFileSync(join(portRoot, 'tests', 'packaging', 'runtime-esbuild-qualification.psm1'), 'utf8')
+  assert.match(resolver, /node_modules\\esbuild\\package\.json/,
+    "the compiler is read from tsx's own resolved dependency link")
+  assert.doesNotMatch(resolver, /Satisfies/,
+    'the runtime resolver must never range-match: tsx declares a range that several installed releases satisfy')
 })
 
 test('runtime qualification isolates payload, manifest and interpreter observations', () => {
@@ -448,6 +478,93 @@ test('runtime qualification isolates payload, manifest and interpreter observati
   assert.match(record, /return \(Join-Path \$InstallerDir 'runtime-payload.json'\)/)
   assert.match(code, /Join-Path \$qualificationRoot 'stage-identity.json'/)
   assert.match(code, /Join-Path \$qualificationRoot 'node-identity.json'/)
+})
+
+test('both build lanes guard the original captured artifact stream before packaging', () => {
+  const core = code.slice(code.indexOf('function Build-Core'), code.indexOf('function Get-PayloadInputs'))
+  assert.match(core, /Get-CompiledResourceArtifactJson/)
+  assert.match(core, /Assert-CompiledResourceMirrorsFromJson/)
+  const bundle = code.slice(code.indexOf('function Build-Bundle'), code.indexOf('function Test-InterfaceFixtures'))
+  assert.match(bundle, /'build', '--no-bundle', '--', '--locked', '--message-format=json-render-diagnostics'/)
+  const compileAt = bundle.indexOf("'build', '--no-bundle'")
+  // The bundle step goes through the declared argument vector: the EXACT
+  // default `@('tauri', 'bundle')` is declared BEFORE the opt-in branch can
+  // append the single `--config` pair, so the default lane stays byte-for-byte
+  // unchanged and the qualification lane can only add packaging config.
+  const argsDeclarationAt = bundle.indexOf("$bundleArguments = @('tauri', 'bundle')")
+  const optInBranchAt = bundle.indexOf('-not [string]::IsNullOrWhiteSpace($QualificationHashObserverRoot)')
+  assert.ok(argsDeclarationAt >= 0, 'the default tauri bundle argument vector is declared')
+  assert.ok(optInBranchAt > argsDeclarationAt, 'the opt-in branch appends after the exact default declaration')
+  const guardAt = bundle.indexOf("Assert-CompiledResourceMirrorsFromJson -ArtifactJsonPath $tauriOutput -Stream 'tauri-build'")
+  const bundleAt = bundle.indexOf("Invoke-Checked 'cargo' $bundleArguments")
+  assert.ok(compileAt >= 0 && guardAt > compileAt && bundleAt > guardAt, 'compile -> guard -> bundle order kept')
+  // The post-bundle recheck reuses the SAME $tauriOutput stream and runs only
+  // on the opt-in lane; there is still exactly one compilation.
+  const postBundleGuardAt = bundle.lastIndexOf("Assert-CompiledResourceMirrorsFromJson -ArtifactJsonPath $tauriOutput -Stream 'tauri-build'")
+  assert.ok(postBundleGuardAt > bundleAt, 'the post-bundle guard reuses the same captured stream')
+  assert.match(bundle, /if \(\$null -ne \$observerReceiptRoot\) \{\s*[\s\S]{0,220}?Assert-CompiledResourceMirrorsFromJson -ArtifactJsonPath \$tauriOutput/,
+    'the post-bundle recheck is conditional on the opt-in lane')
+  assert.equal((bundle.match(/'tauri', 'build'/g) ?? []).length, 1, 'no second compilation after qualification')
+  // The only packaging delta on the opt-in lane is the single --config pair;
+  // prose that merely mentions the flag does not satisfy this assertion.
+  const configAppends = (bundle.match(/\$bundleArguments \+= @\('--config', \$observerOverridePath\)/g) ?? []).length
+  assert.equal(configAppends, 1, 'the opt-in lane appends exactly one --config pair')
+  assert.doesNotMatch(bundle, /Assert-CompiledResourceMirrorsFromTauriStream/)
+  assert.match(bundle, /\$nsis = Join-Path \$exeDir 'bundle\\nsis'/)
+})
+
+test('the hash-observer opt-in refuses early on unsupported stages and stays scratch-owned', () => {
+  // Early refusal before ANY stage body runs (Test-Prerequisites and the
+  // resource stages included), so an unsupported Stage can never silently
+  // ignore the receipt root parameter.
+  const refusalAt = code.indexOf('$Stage -notin @(\'bundle\', \'all\')')
+  assert.ok(refusalAt >= 0, 'the stage constraint is implemented')
+  const stageDispatchAt = code.indexOf('$needsResources = $doAll')
+  assert.ok(stageDispatchAt > refusalAt, 'the refusal runs before stage dispatch')
+  const root = code.slice(code.indexOf('function Assert-QualificationHashObserverRoot'), code.indexOf('function Assert-HashObserverOverrideShape'))
+  assert.match(root, /TAURI_CONFIG/, 'an ambient config overlay environment is refused (fail closed)')
+  assert.match(root, /strictly under the build scratch/, 'the receipt root is confined to the build scratch')
+  assert.match(root, /build scratch root itself is a reparse point/, 'the scratch ancestry check covers the root itself')
+  assert.match(root, /qualification receipt root must be unique and empty/, 'the predetermined root stays unique per release run')
+  const shape = code.slice(code.indexOf('function Assert-HashObserverOverrideShape'), code.indexOf('function Invoke-HashObserverOverrideGeneration'))
+  assert.match(shape, /canonical 64-bit Windows PowerShell full path/, 'the observer cmd must be the canonical full-path PowerShell')
+  assert.match(shape, /override args must be exactly 8 canonical items/, 'the invocation argument list is exactly canonical')
+  assert.match(shape, /override %1 placeholder must precede the receipt root/, 'the %1 substitution site is pinned')
+  const generationStart = code.indexOf('function Invoke-HashObserverOverrideGeneration')
+  const nextFunctionAt = code.indexOf('\nfunction ', generationStart + 1)
+  const generation = code.slice(generationStart, nextFunctionAt)
+  assert.match(generation, /prebundle-provenance\.jsonl/, 'observer+override SHA-256 provenance is recorded pre-bundle')
+  assert.match(generation, /observerSha256/, 'observer script digest recorded')
+  assert.match(generation, /overrideSha256/, 'override digest recorded')
+})
+
+test('shared guard passes the same stream mode to executable derivation and verification', () => {
+  const helper = code.slice(code.indexOf('function Assert-CompiledResourceMirrorsFromJson'), code.indexOf('function Assert-CompiledResourceMirrorsForExe'))
+  assert.match(helper, /Get-ArtifactExeFromCargoJson -ArtifactJsonPath \$ArtifactJsonPath -Stream \$Stream/)
+  assert.match(helper, /'--stream', \$Stream/)
+  assert.match(helper, /Write-CombinedResourcePhysicalMetadata/)
+  assert.match(helper, /'--physical-metadata', \$manifestPath/)
+})
+
+test('bundle configuration refuses post-guard mutation and unsupported overlays before compilation', () => {
+  const helper = code.slice(code.indexOf('function Assert-BundleGuardConfiguration'), code.indexOf('function Build-Bundle'))
+  assert.match(helper, /TAURI_CONFIG/)
+  assert.match(helper, /tauri\.windows\.conf\.json5/)
+  assert.match(helper, /Tauri\.windows\.toml/)
+  assert.match(helper, /\$hook -isnot \[string\]/)
+  assert.doesNotMatch(helper, /\$hook\.Trim\(/, 'object-form hooks fail closed without a string-method crash')
+  const bundle = code.slice(code.indexOf('function Build-Bundle'), code.indexOf('function Test-InterfaceFixtures'))
+  assert.ok(bundle.indexOf('Assert-BundleGuardConfiguration') < bundle.indexOf("'build', '--no-bundle'"))
+})
+
+test('physical metadata walks canonical roots without dot-prefixed children or quadratic accumulation', () => {
+  const helper = code.slice(code.indexOf('function Get-ResourceTreePhysicalMetadata'), code.indexOf('function Use-IsolatedHarnessHome'))
+  assert.match(helper, /\$Root = \[System\.IO\.Path\]::GetFullPath\(\$Root\)/)
+  assert.match(helper, /\$stack\.Push\(\$Root\)/)
+  assert.doesNotMatch(helper, /Join-Path \$Root '\.'/)
+  assert.doesNotMatch(helper, /Get-ChildItem[^\n]*-Recurse/)
+  assert.doesNotMatch(helper, /\$entries \+=/)
+  assert.match(helper, /entries = @\(Get-ResourceTreePhysicalMetadata/)
 })
 
 const windowsOnly = { skip: process.platform !== 'win32' }

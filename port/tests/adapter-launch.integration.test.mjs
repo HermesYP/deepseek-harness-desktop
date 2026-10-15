@@ -158,14 +158,15 @@ test(payload ? 'sealed artifact adapter contract and isolated owned-control Host
       '@deepseek-ai/dsh-base', '@deepseek-ai/dsh-web-app', BUNDLE_ID,
     ] } },
   }, null, 2))
-  // The stock adapter argv asks for port 19387, already owned by another process.
-  // A legitimate profile user-layer changes ONLY the listener to loopback port 0.
-  // No source instrumentation, live-profile mutation or competing server occurs.
-  writeFileSync(join(profile, 'cordis.patch.yml'), '- id: webserver\n  config:\n    host: 127.0.0.1\n    port: 0\n')
+  // No listener override is written. The adapter itself invokes the Host with
+  // `--host 127.0.0.1 --port 0`, so the lane exercises that production invocation
+  // directly instead of overriding it. That also avoids the hazard a listener patch
+  // carries now: a patch REPLACES the matched row's whole `config`, so a partial
+  // `host`/`port` patch silently drops the target's tls and gzip settings.
   const report = {
     scope: artifact
-      ? 'sealed payload adapter, interpreter and dependencies; owned user-layer loopback port 0; not native or installed acceptance'
-      : 'source adapter with retained dependency tree; user-layer loopback port 0; not sealed or installed acceptance',
+      ? 'sealed payload adapter, interpreter and dependencies; adapter-requested loopback ephemeral port; not native or installed acceptance'
+      : 'source adapter with retained dependency tree; adapter-requested loopback ephemeral port; not sealed or installed acceptance',
     sourceSha256: createHash('sha256').update(readFileSync(source)).digest('hex'),
     interpreter: node,
     interpreterSha256: createHash('sha256').update(readFileSync(node)).digest('hex'),

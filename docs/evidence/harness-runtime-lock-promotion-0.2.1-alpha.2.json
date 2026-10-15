@@ -1,0 +1,34 @@
+{
+  "schemaVersion": 1,
+  "generatedAt": "2026-10-14T02:12:39.586Z",
+  "stagingAuthorization": "REVIEWED",
+  "targetRelease": {
+    "schemaVersion": 1,
+    "release": "0.2.1-alpha.2",
+    "channel": "alpha",
+    "upstreamTag": "dsh-v0.2.1-alpha.2",
+    "upstreamCommit": "d743267388641bc76f17c45ce8b4c231aed1d32c",
+    "pnpmVersion": "11.28.5",
+    "nodeVersion": "22.20.0",
+    "enginesRange": "^22.19.0 || >=24.0.0",
+    "hostProtocolVersion": 4,
+    "sessionFormatVersion": 4,
+    "uiEsbuildVersion": "0.25.12",
+    "optionalBundleCount": 11
+  },
+  "candidate": "C:/Users/Yoova/AppData/Local/DSH-Qualification/patched021-input-12c2f445/harness-021-alpha2-patched",
+  "reviewedInputRoot": "C:\\Users\\Yoova\\Hermes\\dsh-desktop\\worktrees\\harness-0.2.1-alpha.2\\port\\runtime-locks\\windows-x64",
+  "withdrawnInputBackup": "C:/Users/Yoova/AppData/Local/DSH-Qualification/withdrawn021-50837612/windows-x64-initial-candidate",
+  "candidateDescriptorSha256": "1d2301923a385affa0d259e051cb9cfafa5c5ef2bf10c0d18c9ca39ab61712b0",
+  "reviewedDescriptorSha256": "208cc9021fa93a9ad62f0dc73637e41deca35d0c7e45dbfa1e6897dc2ed189ce",
+  "lockSha256": "cb390ebcbe4e89ec90ee91c96af2663793a4612d43c006b986c3c0c946e077fd",
+  "dependencyPolicySha256": "58d7a6ce28661d2c52454e15775a849945d5ead2159cd71edc31b00d0ead3117",
+  "patchCount": 2,
+  "tarballCount": 298,
+  "reviewMethods": [
+    "Parent independent YAML/source/integrity audit",
+    "DeepSeek independent read-only semantic audit",
+    "Exact 306-file copy inventory and hashes"
+  ],
+  "approvalScope": "Frozen runtime staging only; not executable, native, production-provider, or installer/update acceptance."
+}

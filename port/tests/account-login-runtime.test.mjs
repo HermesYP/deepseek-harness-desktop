@@ -3,6 +3,7 @@ import test from 'node:test'
 import { readFileSync } from 'node:fs'
 import { desktopCallbackOrigin } from '../src-tauri/runtime/desktop-login.mjs'
 import { repairAccountLoginRuntime } from '../scripts/lib/account-login-runtime.mjs'
+import { accountUpstreamVersion, readAccountUpstream } from './helpers/account-upstream.mjs'
 
 test('native PKCE callback uses the Host listener; ordinary web callers retain their validated origin',()=>{
  const ctx={get:()=>({port:19417})}
@@ -12,14 +13,15 @@ test('native PKCE callback uses the Host listener; ordinary web callers retain t
  for(const port of [undefined,0,-1,65536,'19417']) assert.throws(()=>desktopCallbackOrigin({get:()=>({port})},'unused','desktop',{DSH_DESKTOP_CONTROL_SOCKET:'fixture'}))
 })
 test('actual pinned provider retains caller/PKCE validation and refuses changed generated code',()=>{
- const source=readFileSync(new URL('../../_upstream/packages/credentials/deepseek-account-platform/lib/index.js',import.meta.url),'utf8')
- const result=repairAccountLoginRuntime(source,'0.1.7-rc.2')
+ const source=readAccountUpstream('packages/credentials/deepseek-account-platform/lib/index.js')
+ const result=repairAccountLoginRuntime(source,accountUpstreamVersion)
  assert.equal(result.changed,true)
- assert.equal(repairAccountLoginRuntime(result.source,'0.1.7-rc.2').changed,false)
+ assert.equal(repairAccountLoginRuntime(result.source,accountUpstreamVersion).changed,false)
  assert.ok(result.source.includes('const validatedOrigin = loginOrigin(callbackOrigin);'))
  assert.ok(result.source.includes('timingSafeEqual'))
  assert.throws(()=>repairAccountLoginRuntime(source,'next'))
- assert.throws(()=>repairAccountLoginRuntime(source.replace('const origin = loginOrigin(callbackOrigin);','const origin = callbackOrigin;'),'0.1.7-rc.2'))
+ assert.throws(()=>repairAccountLoginRuntime(source.replace('const origin = loginOrigin(callbackOrigin);','const origin = callbackOrigin;'),accountUpstreamVersion))
+ if(accountUpstreamVersion==='0.2.1-alpha.3') assert.throws(()=>repairAccountLoginRuntime(source,'0.2.1-alpha.2'),/Unreviewed account login semantics/,'the alpha.3 body is never approved by the alpha.2 pin')
 })
 
 test('the official stage owns and pins the login transform before the inventory seal',()=>{

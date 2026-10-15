@@ -11,7 +11,13 @@ Read these first:
 - [`../docs/contracts/`](../docs/contracts/) — the binding interfaces.
 - [`../docs/implementation-plan.md`](../docs/implementation-plan.md) — the workstreams, milestones and the definition of done.
 
-## Current repair checkpoint — 2026-10-12
+## Alpha.3 core end-to-end acceptance — 2026-10-15
+
+The [public qualification report](<../docs/releases/desktop-v0.2.1-alpha.3-port.20261015.1.md>) records a rebuilt `0.2.1-alpha.3` Windows app, successful real NSIS packaging, full installed resource SHA-256/physical qualification, and human-confirmed sign-in through the normal browser profile, real chat, terminal, sidebar collapse/reopen and restart persistence. Actual isolated install and preservation-mode uninstall completed; both original registry leaves were exactly restored after a documented PowerShell stderr-wrapper recovery. Shortcut, jump-list and product-autostart inventories were unchanged. Authenticated owned profiles were retained.
+
+This is an **unsigned prerelease core-flow qualification**, not a default-path production deployment, clean-machine test, in-place upgrade, automatic-update qualification or universal feature acceptance. The isolated test installation was removed as approved. Do not run the installer as an unqualified upgrade over the restored legacy registration; see the report's deployment boundary and artifact hashes.
+
+## Historical repair checkpoint — 2026-10-12
 
 The [Updates repair](../docs/updates-repair-2026-10-12.md) adds the port plugin to the desktop composition while retaining Account and its Settings launcher. Production-loader composition, staged Host serving and real Cordis registration pass. The page reads packaged update configuration through the native bridge, explains disabled delivery, retries failed metadata reads and does not report a fresh idle process as up to date. Native visual acceptance and installed upgrade qualification remain open; no production release source is packaged.
 
@@ -23,14 +29,25 @@ Run the [qualification gate](tests/run-verification-gate.ps1) with an explicitly
 
 | | Value |
 |---|---|
-| Pinned reference revision (what the port builds and targets) | `477b4f420553e8a52c2fbccc464d7561b239c443`, tag [`dsh-v0.1.7-rc.2`](https://github.com/deepseek-ai/deepseek-harness/releases/tag/dsh-v0.1.7-rc.2), root package version `0.1.7-rc.2` |
-| Local checkout | `_upstream/` — **read-only reference; nothing under it is ever edited** |
-| Newer revision **checked only for drift, not adopted** | `639ed015397290b3745d163aafe02ffee4aa3f84`, tag [`dsh-v0.2.0-rc.2`](https://github.com/deepseek-ai/deepseek-harness/releases/tag/dsh-v0.2.0-rc.2) |
+| Supported target revision (what the port stages from and carries) | `2fbf4359b82fb94c03dcce0b831660d87f12ea5c`, tag [`dsh-v0.2.1-alpha.3`](https://github.com/deepseek-ai/deepseek-harness/releases/tag/dsh-v0.2.1-alpha.3), root package version `0.2.1-alpha.3`, pnpm `11.28.5` |
+| Recorded target descriptor | [`scripts/lib/target-release.mjs`](scripts/lib/target-release.mjs) — the one recorded identity, with a fail-closed probe that validates any checkout against it |
+| Upstream checkout | explicit input, defaulting to `_upstream/`; `-UpstreamRoot <path>` or `$env:DSH_UPSTREAM_ROOT` selects an externally owned checkout. **Read-only either way; nothing under it is ever edited** |
+| Previous reviewed revision | `477b4f420553e8a52c2fbccc464d7561b239c443`, tag `dsh-v0.1.7-rc.2` |
 
-The port's product version (`port/src-tauri/app/tauri.conf.json`), the staged runtime payload
-(`port/runtime-payload/dsh/package.json`) and the preserved client are all at `0.1.7-rc.2`. The newer
-revision was inventoried in [`../docs/upstream-drift.md`](../docs/upstream-drift.md) and **has not been
-adopted** — no parity with it is claimed anywhere.
+The product version pins (`port/src-tauri/app/tauri.conf.json`, `port/src-tauri/Cargo.toml` and its lockfile, `port/fixtures/protocol/app-info.json`, the port-owned UI packages) are at `0.2.1-alpha.3`.
+
+**What is recorded, and what is still not claimed.** The staged runtime payload
+(`port/runtime-payload/dsh/package.json`), the reviewed runtime-lock descriptors under
+`port/runtime-locks/` (`win-x64`, `REVIEWED` at the recorded `upstreamCommit`), and the account
+transformation reviews (`port/scripts/lib/account-*-runtime.mjs`) are recorded at this release
+(`0.2.1-alpha.3`) after re-materialization from a *built* checkout of the recorded target
+(sources alone are not enough: the transforms hash reviewed blocks of emitted `lib/`, and the lock
+refresh consumes the target's own pnpm `11.28.5`). The account transforms refuse unreviewed
+versions and emitted shapes, so a payload requires a matching transformation review. See
+[the alpha.2 upgrade record](../docs/harness-upgrade-0.2.1-alpha.2.md) for the previous revision's
+drift inventory. Recording version pins alone is not acceptance: the rebuilt alpha.3 artifact now has
+the scoped core-flow qualification recorded above, while installed upgrade and other explicitly listed
+release gates remain open. No parity with the target is claimed for an artifact not rebuilt from it.
 
 ## Layout
 

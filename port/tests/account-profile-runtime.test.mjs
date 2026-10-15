@@ -41,19 +41,23 @@ test('a failed or invalid update preserves the last complete cache',()=>{
 test('overlay refuses unsupported versions and generated shapes',()=>{
  assert.throws(()=>repairAccountProfileRuntime('', 'unknown'))
  assert.throws(()=>repairAccountProfileRuntime('', '0.1.7-rc.2'))
+ // Both reviewed release literals must be known: an empty body then fails the
+ // SHAPE guard, never the version guard.
+ for(const version of ['0.2.1-alpha.2','0.2.1-alpha.3']) assert.throws(()=>repairAccountProfileRuntime('',version),/Unreviewed account getProfile shape/,'a reviewed release literal must reach the shape guard')
 })
 
 const runtime=process.env.DSH_TEST_ACCOUNT_RUNTIME
+const runtimeVersion=runtime ? JSON.parse(readFileSync(join(runtime,'package.json'),'utf8')).version : undefined
 test('actual packaged getProfile answers cached data while its refresh remains pending', {skip:!runtime, timeout:5000},async()=>{
  const require=createRequire(join(runtime,'package.json'))
  const index=pathToFileURL(require.resolve('@deepseek-ai/dsh-deepseek-account-platform')).href
  const helper=new URL('./profile-cache.js',index).href
  const source=readFileSync(new URL(index),'utf8')
-   const repaired=repairAccountProfileRuntime(source,'0.1.7-rc.2')
+   const repaired=repairAccountProfileRuntime(source,runtimeVersion)
  assert.equal(repaired.changed,!source.includes('DSH_PORT_CACHED_PROFILE_REFRESH'))
-   assert.equal(repairAccountProfileRuntime(repaired.source,'0.1.7-rc.2').changed,false)
-   assert.throws(()=>repairAccountProfileRuntime(source.replace('\tasync getProfile(client) {','\tasync getProfile(client) {\n if (this.closed) return null;'),'0.1.7-rc.2'), /Unreviewed (?:cached )?account getProfile (?:shape|semantics)/)
-   assert.throws(()=>repairAccountProfileRuntime(repaired.source.replace('return cached;','return null;'),'0.1.7-rc.2'), /Unreviewed cached account getProfile shape/)
+   assert.equal(repairAccountProfileRuntime(repaired.source,runtimeVersion).changed,false)
+   assert.throws(()=>repairAccountProfileRuntime(source.replace('\tasync getProfile(client) {','\tasync getProfile(client) {\n if (this.closed) return null;'),runtimeVersion), /Unreviewed (?:cached )?account getProfile (?:shape|semantics)/)
+   assert.throws(()=>repairAccountProfileRuntime(repaired.source.replace('return cached;','return null;'),runtimeVersion), /Unreviewed cached account getProfile shape/)
  const hooks=registerHooks({load(url,context,next){
    if(url===index)return {format:'module',source:repaired.source,shortCircuit:true}
    if(url===helper)return {format:'module',source:readFileSync(new URL('../src-tauri/runtime/account-profile-cache.mjs',import.meta.url),'utf8'),shortCircuit:true}
@@ -100,7 +104,7 @@ test('actual packaged getProfile answers cached data while its refresh remains p
    const fetchBefore=globalThis.fetch
    globalThis.fetch=async url=>{
      assert.equal(String(url),'https://fixture.invalid/auth-api/v0/users/current')
-     return new Response(null,{status:401})
+     return new Response(null,{status:401,headers:{'x-amzn-waf-action':'challenge'}})
    }
    try {
      assert.deepEqual(await instance.getProfile({}),profile)

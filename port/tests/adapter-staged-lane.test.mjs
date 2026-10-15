@@ -200,9 +200,10 @@ test('staged adapter lane: identity, control auth, ready, shutdown, exit, seal',
     name: 'isolated-staged-adapter-profile', private: true,
     dsh: { profile: { bundles: ['@deepseek-ai/dsh-base', '@deepseek-ai/dsh-web-app', BUNDLE_ID] } },
   }, null, 2))
-  // The stock adapter argv asks for port 19387; a legitimate profile user layer
-  // moves the listener to an ephemeral loopback port. No product file is touched.
-  writeFileSync(join(profile, 'cordis.patch.yml'), '- id: webserver\n  config:\n    host: 127.0.0.1\n    port: 0\n')
+  // No listener override is written: the adapter invokes the Host with
+  // `--host 127.0.0.1 --port 0` itself, so this lane exercises the production
+  // invocation. That also avoids a patch replacing the `webserver` row's whole
+  // `config` and silently dropping the target's tls and gzip settings.
 
   const secrets = createRedactor()
   const socketName = process.platform === 'win32'

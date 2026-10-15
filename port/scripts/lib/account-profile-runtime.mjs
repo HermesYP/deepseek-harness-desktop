@@ -1,15 +1,24 @@
 /** Narrow adapter for the pinned account plugin; preserves the upstream checkout. */
 import { createHash } from 'node:crypto'
 
-// Reviewed compiled getProfile bodies: upstream, then the previous portable
-// disk fallback. A package version alone does not identify generated code.
-const reviewedMethods = new Set([
-  '3628899fd423bb6838586f915d7da7ee5b96de6e371546f95a4944ec4f3f97b2',
-  '54a8fea5cf2d53d1fb9fab30c2464f8fa858879acd528ce38b149ef5de52f91f',
+// Reviewed compiled getProfile bodies per EXPLICIT release literal: the accepted
+// upstream body first, then the previous portable disk fallback where that
+// legacy input is still reviewed (0.1.7-rc.2 only). A package version alone does
+// not identify generated code, and a retarget must not re-point a pin.
+// 0.2.1-alpha.3 compiled getProfile is byte-identical to 0.2.1-alpha.2.
+const ACCEPTED_GET_PROFILE = '3628899fd423bb6838586f915d7da7ee5b96de6e371546f95a4944ec4f3f97b2'
+const LEGACY_PORTABLE_GET_PROFILE = '54a8fea5cf2d53d1fb9fab30c2464f8fa858879acd528ce38b149ef5de52f91f'
+const reviewedGetProfile = new Map([
+  ['0.1.7-rc.2', new Set([ACCEPTED_GET_PROFILE, LEGACY_PORTABLE_GET_PROFILE])],
+  ['0.2.1-alpha.2', new Set([ACCEPTED_GET_PROFILE])],
+  ['0.2.1-alpha.3', new Set([ACCEPTED_GET_PROFILE])],
 ])
 
 export function repairAccountProfileRuntime(source, version) {
-  if (version !== '0.1.7-rc.2') throw new Error('Unreviewed account plugin version')
+  // The target getProfile is byte-identical to the reviewed upstream body.
+  // The legacy portable disk fallback is not an accepted target input.
+  const methods = reviewedGetProfile.get(version)
+  if (!methods) throw new Error('Unreviewed account plugin version')
   source = source.replaceAll('\r\n', '\n')
   const start = '\tasync getProfile(client) {'
   const end = '\n\tgetBalance(client) {'
@@ -47,7 +56,7 @@ export function repairAccountProfileRuntime(source, version) {
     if (method !== repaired) throw new Error('Unreviewed cached account getProfile shape')
     return { source, changed: false }
   }
-  if (!reviewedMethods.has(createHash('sha256').update(method).digest('hex'))) {
+  if (!methods.has(createHash('sha256').update(method).digest('hex'))) {
     throw new Error('Unreviewed account getProfile semantics')
   }
   let output = source.slice(0, first) + repaired + source.slice(last)

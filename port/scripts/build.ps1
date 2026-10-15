@@ -85,11 +85,45 @@
   this switch a payload whose bytes differ from the record fails the stage, which
   is what makes dependency drift visible instead of silent.
 
+.PARAMETER RuntimeEsbuildPath
+  An optional source for the runtime staging child's esbuild compiler. The staging
+  program loads upstream TypeScript through `--import tsx/esm`, so it runs tsx's own
+  esbuild, which is a different release from the UI child's. By default that release
+  is resolved from the checkout's tsx dependency and copied into a trusted Medium
+  root outside the labelled tree. This parameter selects WHERE those same bytes come
+  from; the file must be byte-identical to the resolved compiler (otherwise the stage
+  refuses a substituted compiler), must be a regular non-link file, and must produce
+  a Medium child token. The override is scoped to the runtime staging child and
+  restored afterwards; it is never visible to the UI stage or the seal.
+
+.PARAMETER UpstreamRoot
+  An explicitly owned upstream checkout to stage and link from, instead of the
+  repository's own `_upstream` reference. Precedence is this parameter, then
+  `$env:DSH_UPSTREAM_ROOT`, then `<repo>/_upstream`. The checkout is read-only:
+  nothing here writes to it. A missing checkout, a checkout with no root
+  `package.json`, or one without the files the runtime stage imports fails the
+  stage with an actionable message rather than falling back silently.
+
+.PARAMETER QualificationHashObserverRoot
+  Opt-in NSIS hash-observer qualification (-Stage bundle only). A predetermined
+  receipt root that must be a dedicated, currently non-existent leaf strictly
+  under the build scratch. When set, the bundle stage generates the supported
+  `bundle > windows > signCommand` override via
+  port/scripts/lib/nsis-sign-command-override.mjs, validates it in exact shape
+  (schema + bundle.windows.signCommand, canonical full-path 64-bit Windows
+  PowerShell, canonical args with exactly one %1), records observer+override
+  SHA-256 provenance pre-bundle, appends exactly one `--config` argument, and
+  rechecks the resource mirrors post-bundle against the same original cargo
+  JSON stream. Default (unset): the bundle stage is byte-for-byte unchanged.
+
 .EXAMPLE
   .\port\scripts\build.ps1 -Stage all -Release
 
 .EXAMPLE
   .\port\scripts\build.ps1 -Stage core
+
+.EXAMPLE
+  .\port\scripts\build.ps1 -Stage runtime -UpstreamRoot C:\owned\dsh-0.2.1-alpha.2
 #>
 [CmdletBinding()]
 param(
@@ -112,7 +146,22 @@ param(
   [ValidatePattern('^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$')]
   [string]$RuntimeLockCandidateName,
   [string]$RuntimeLockStageRoot,
-  [string]$RuntimeLockCandidateRoot
+  [string]$RuntimeLockCandidateRoot,
+  # An optional byte-identical source for the runtime staging child's esbuild.
+  # See .PARAMETER RuntimeEsbuildPath.
+  [string]$RuntimeEsbuildPath,
+  # An explicitly owned upstream checkout. See .PARAMETER UpstreamRoot.
+  [string]$UpstreamRoot,
+  # Opt-in NSIS hash-observer qualification: a PREDETERMINED receipt root,
+  # which must be a dedicated non-existent leaf strictly under the build
+  # scratch (-Stage bundle only). When set, the bundle stage generates the
+  # supported `bundle > windows > signCommand` override through
+  # port/scripts/lib/nsis-sign-command-override.mjs, validates it in exact
+  # shape, records observer+override SHA-256 pre-bundle provenance, appends
+  # exactly one `--config` argument, and rechecks the resource mirrors after
+  # the bundle against the same original cargo JSON. Default (empty): the
+  # bundle stage is byte-for-byte unchanged.
+  [string]$QualificationHashObserverRoot
 )
 
 $ErrorActionPreference = 'Stop'
@@ -120,7 +169,18 @@ Set-StrictMode -Version Latest
 
 $PortRoot = Split-Path -Parent $PSScriptRoot
 $RepoRoot = Split-Path -Parent $PortRoot
-$Upstream = Join-Path $RepoRoot '_upstream'
+# The upstream checkout is an explicit input rather than a fixed path, so an
+# externally owned qualification clone is a supported staging source. Precedence:
+# -UpstreamRoot, then $env:DSH_UPSTREAM_ROOT, then the repository's own checkout.
+$UpstreamRequested = $UpstreamRoot
+if (-not $UpstreamRequested) { $UpstreamRequested = $env:DSH_UPSTREAM_ROOT }
+if (-not $UpstreamRequested) { $UpstreamRequested = Join-Path $RepoRoot '_upstream' }
+# Canonicalize when it exists; otherwise keep the requested path so the failure
+# names what the caller asked for.
+$Upstream = $UpstreamRequested
+if (Test-Path -LiteralPath $UpstreamRequested -PathType Container) {
+  $Upstream = (Resolve-Path -LiteralPath $UpstreamRequested).Path
+}
 $UiDir = Join-Path $PortRoot 'ui'
 $TauriDir = Join-Path $PortRoot 'src-tauri'
 $AppDir = Join-Path $TauriDir 'app'
@@ -200,6 +260,71 @@ function Assert-Tool([string]$Name, [string]$Hint) {
   }
 }
 
+function Assert-UpstreamCheckout {
+  <#
+  .SYNOPSIS
+    Fail closed unless the resolved upstream checkout can serve every stage.
+  .DESCRIPTION
+    Three inputs are load-bearing: the root manifest (release version and the
+    pnpm packageManager every stage derives its toolchain from), the Desktop Host
+    protocol source the runtime staging imports `DESKTOP_HOST_PROTOCOL_VERSION`
+    from, and the package-set preparer it imports. A checkout missing any of them
+    is refused here rather than failing later inside staging.
+  #>
+  if (-not (Test-Path -LiteralPath $Upstream -PathType Container)) {
+    throw "The upstream checkout was not found at $Upstream. Pass -UpstreamRoot <path> or set DSH_UPSTREAM_ROOT, and run 'pnpm install; pnpm run build' there first (see docs/build-and-install.md section 2)."
+  }
+  foreach ($relative in @('package.json', 'apps\desktop\src\host-protocol.ts', 'apps\desktop\scripts\prepare-package-set.ts')) {
+    if (-not (Test-Path -LiteralPath (Join-Path $Upstream $relative) -PathType Leaf)) {
+      throw "The upstream checkout at $Upstream has no $relative; it cannot serve the runtime stage. Refusing to stage from a checkout that is not the supported target."
+    }
+  }
+  Assert-UpstreamLinkMatches
+}
+
+function Get-UpstreamPackageManager {
+  <#
+  .SYNOPSIS
+    The pnpm packageManager the upstream checkout declares, verbatim.
+  .DESCRIPTION
+    Staging resolves its pnpm entry point from this value, so it is read from the
+    checkout rather than repeated as a literal that can drift from it.
+  #>
+  $manifest = Get-Content -LiteralPath (Join-Path $Upstream 'package.json') -Raw | ConvertFrom-Json
+  $manager = [string]$manifest.packageManager
+  if (-not $manager.StartsWith('pnpm@')) {
+    throw "The upstream checkout at $Upstream declares no pnpm packageManager; refusing to guess the package manager."
+  }
+  return $manager
+}
+
+function Assert-UpstreamLinkMatches {
+  <#
+  .SYNOPSIS
+    The generated `port/.upstream` junction must point at the selected root.
+  .DESCRIPTION
+    The shell build (`port/ui/shell/vite.config.ts`), the port's tsdown preset and
+    the desktop bridge read upstream sources through that junction with STATIC
+    specifiers, because esbuild inlines them when the Vite config is bundled. If
+    the junction pointed at a different checkout than the one being staged from,
+    the build would silently mix two revisions -- exactly the substitution the
+    explicit root exists to prevent. An absent junction is not an error: it is
+    created by `port/ui/link-toolchain.ps1` before the UI stage builds.
+  #>
+  $linkPath = Join-Path $PortRoot '.upstream'
+  $item = Get-Item -LiteralPath $linkPath -Force -ErrorAction SilentlyContinue
+  if ($null -eq $item) { return }
+  if (($item.Attributes -band [System.IO.FileAttributes]::ReparsePoint) -eq 0) {
+    throw "The generated upstream link path is an ordinary file or directory: $linkPath. It must be the junction link-toolchain.ps1 creates; remove it deliberately."
+  }
+  $linkTarget = @($item.Target)[0]
+  if (-not $linkTarget) { throw "The generated upstream link exposes no target: $linkPath" }
+  $linkTarget = [System.IO.Path]::GetFullPath($linkTarget)
+  if (-not [string]::Equals($linkTarget, $Upstream, [System.StringComparison]::OrdinalIgnoreCase)) {
+    throw "The generated upstream link points at $linkTarget, but this build selected $Upstream. Re-run port/ui/link-toolchain.ps1 with the same root; the shell build would otherwise read a different checkout than the one staged from."
+  }
+}
+
 function Invoke-Checked([string]$File, [string[]]$Arguments, [string]$WorkDir) {
   Write-Host "    $File $($Arguments -join ' ')" -ForegroundColor DarkGray
   Push-Location $WorkDir
@@ -222,6 +347,111 @@ function Invoke-Checked([string]$File, [string[]]$Arguments, [string]$WorkDir) {
   if ($exitCode -ne 0) { throw "'$File $($Arguments -join ' ')' failed with exit code $exitCode" }
 }
 
+# --- Minimal opt-in NSIS hash-observer qualification (supported signCommand only).
+# --- No canonical config change, no env overlay, no guard weakening.
+
+# Canonical 64-bit Windows PowerShell; mirrored from
+# port/scripts/lib/nsis-sign-command-override.mjs (SYSTEM_POWERSHELL_64).
+$ObserverCanonicalPowerShell = $env:SystemRoot + '\System32\WindowsPowerShell\v1.0\powershell.exe'
+
+function Assert-QualificationHashObserverRoot {
+  param([string]$ReceiptRoot)
+  if ([string]::IsNullOrWhiteSpace($ReceiptRoot)) {
+    throw 'qualification hash-observer root must be non-empty'
+  }
+  if ($env:TAURI_CONFIG) {
+    throw 'TAURI_CONFIG is set; refusing an ambiguous config overlay (fail closed)'
+  }
+  $full = [System.IO.Path]::GetFullPath($ReceiptRoot)
+  $scratchBoundary = $Scratch.TrimEnd('\') + '\'
+  if (-not $full.StartsWith($scratchBoundary, [System.StringComparison]::OrdinalIgnoreCase)) {
+    throw "qualification receipt root must be strictly under the build scratch ($Scratch)"
+  }
+  if ($full.TrimEnd('\') -ieq $Scratch.TrimEnd('\')) {
+    throw 'qualification receipt root must be a dedicated leaf under the scratch'
+  }
+  # The ancestry check starts at the scratch ROOT ITSELF: it must exist as a
+  # container and never be a reparse point, and the leaf chain is then probed
+  # part by part down to the receipt root.
+  if (-not (Test-Path -LiteralPath $Scratch -PathType Container)) {
+    throw "build scratch root is not a container: $Scratch"
+  }
+  $scratchItem = Get-Item -LiteralPath $Scratch -Force
+  if (($scratchItem.Attributes -band [System.IO.FileAttributes]::ReparsePoint) -ne 0) {
+    throw "build scratch root itself is a reparse point: $Scratch"
+  }
+  $probe = $Scratch.TrimEnd('\')
+  $remaining = $full.TrimEnd('\').Substring($probe.Length).TrimStart('\')
+  foreach ($part in ($remaining -split '\\')) {
+    $probe = Join-Path $probe $part
+    if (Test-Path -LiteralPath $probe) {
+      $item = Get-Item -LiteralPath $probe -Force
+      if (($item.Attributes -band [System.IO.FileAttributes]::ReparsePoint) -ne 0) {
+        throw "qualification receipt root chain contains a reparse point: $probe"
+      }
+      if (-not $item.PSIsContainer) { throw "qualification receipt root chain has a file where a directory is needed: $probe" }
+    } else {
+      New-Item -ItemType Directory -Path $probe -Force | Out-Null
+    }
+  }
+  $existing = @(Get-ChildItem -LiteralPath $full -Force -ErrorAction SilentlyContinue)
+  if ($existing.Count -ne 0) {
+    throw "qualification receipt root must be unique and empty (predetermined per release run): $full"
+  }
+  return $full
+}
+
+function Assert-HashObserverOverrideShape {
+  param([string]$OverridePath, [string]$ExpectedObserverPath, [string]$ExpectedReceiptRoot)
+  $parsed = Get-Content -LiteralPath $OverridePath -Raw | ConvertFrom-Json
+  $topKey = (@($parsed.PSObject.Properties.Name) | Sort-Object) -join '|'
+  if ($topKey -cne '$schema|bundle') { throw "override top-level members refused: $topKey" }
+  if ($parsed.'$schema' -cne 'https://schema.tauri.app/config/2') { throw 'override schema key refused' }
+  if ((@($parsed.bundle.PSObject.Properties.Name) | Sort-Object) -cne 'windows') {
+    throw 'override bundle must contain exactly windows'
+  }
+  $windowsKey = (@($parsed.bundle.windows.PSObject.Properties.Name) | Sort-Object) -join '|'
+  if ($windowsKey -cne 'signCommand') { throw "override bundle.windows members refused: $windowsKey" }
+  $signCommand = $parsed.bundle.windows.signCommand
+  $signCommandKey = (@($signCommand.PSObject.Properties.Name) | Sort-Object) -join '|'
+  if ($signCommandKey -cne 'args|cmd') { throw "override signCommand members refused: $signCommandKey" }
+  # Windows paths are case-insensitive: SystemRoot may be C:\WINDOWS while the generator uses C:\Windows.
+  if ($signCommand.cmd -isnot [string] -or -not [string]::Equals($signCommand.cmd, $ObserverCanonicalPowerShell, [System.StringComparison]::OrdinalIgnoreCase)) { throw 'override cmd must be the canonical 64-bit Windows PowerShell full path' }
+  $argsList = @($signCommand.args)
+  if ($argsList.Count -ne 8) { throw "override args must be exactly 8 canonical items (got $($argsList.Count))" }
+  $expectedFlags = @('-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File')
+  for ($i = 0; $i -lt 5; $i++) {
+    if ($argsList[$i] -cne $expectedFlags[$i]) { throw "override args[$i] refused (expected $($expectedFlags[$i]))" }
+  }
+  $observerPath = [System.IO.Path]::GetFullPath($argsList[5])
+  if ($observerPath -cne [System.IO.Path]::GetFullPath($ExpectedObserverPath)) { throw 'override observer file path refused' }
+  if (-not (Test-Path -LiteralPath $observerPath -PathType Leaf)) { throw 'override observer file absent' }
+  if ($argsList[6] -cne '%1') { throw 'override %1 placeholder must precede the receipt root' }
+  $receiptRoot = [System.IO.Path]::GetFullPath($argsList[7])
+  if ($receiptRoot -cne [System.IO.Path]::GetFullPath($ExpectedReceiptRoot)) { throw 'override receipt root refused' }
+}
+
+function Invoke-HashObserverOverrideGeneration {
+  param([string]$ObserverScript, [string]$ReceiptRoot, [string]$OverridePath)
+  Assert-Tool 'node' 'Install Node.js 22.19+ or 24+.'
+  Invoke-Checked 'node' @(
+    (Join-Path $PortRoot 'scripts\lib\nsis-sign-command-override.mjs'),
+    '--recorder', $ObserverScript,
+    '--root', $ReceiptRoot,
+    '--out', $OverridePath
+  ) $PortRoot
+  Assert-HashObserverOverrideShape -OverridePath $OverridePath -ExpectedObserverPath $ObserverScript -ExpectedReceiptRoot $ReceiptRoot
+  $observerSha = (Get-FileHash -LiteralPath $ObserverScript -Algorithm SHA256).Hash.ToLowerInvariant()
+  $overrideSha = (Get-FileHash -LiteralPath $OverridePath -Algorithm SHA256).Hash.ToLowerInvariant()
+  @{ kind = 'sign-command-override-provenance'; mode = 'observer-only'
+     createdUtc = [DateTime]::UtcNow.ToString('o')
+     observerPath = $ObserverScript; observerSha256 = $observerSha
+     overridePath = $OverridePath; overrideSha256 = $overrideSha } |
+    ConvertTo-Json -Compress |
+    Add-Content -LiteralPath (Join-Path $ReceiptRoot 'prebundle-provenance.jsonl') -Encoding UTF8
+  return $OverridePath
+}
+
 # Isolation: every launched dsh process gets a throwaway home. See
 # docs/verification-report.md finding F-1 for why this is unconditional.
 #
@@ -231,7 +461,188 @@ function Invoke-Checked([string]$File, [string[]]$Arguments, [string]$WorkDir) {
 # whatever `$home` already held. That is how the port once ran an installed
 # application with `DSH_HOME=C:\Users\<user>` (finding F-36). The resolved value
 # is asserted to be under the scratch root before it is exported.
+# Compiled-resource qualification (built-in-only Node helper): the Tauri
+# build-script resource copy is a DIRECTORY MERGE -- files left behind by a
+# previous payload are never removed -- so a compile passing is not evidence
+# the shipped tree is current. The guard verifies exact file membership plus
+# byte identity of the compiled exe-relative `dsh` and `ui` mirrors against
+# the sealed published sources and refuses on missing, EXTRA (the stale-file
+# class) or content-mismatched files. Strictly read-only: no move, delete,
+# rename or write of any resource tree, and no file content is ever logged.
+#
+# ARTIFACT AUTHORITATIVENESS: the cargo message stream is captured from the
+# ORIGINAL compile itself (same arguments, workdir and features -- never a
+# second rebuild, which after a tauri build would use a different feature set
+# and could overwrite the very executable being qualified). Rendered compiler
+# diagnostics stay visible on stderr; only the JSON message stream is captured.
+
+function Get-CompiledResourceArtifactJson([string[]]$CargoArgs) {
+  $artifactJson = Join-Path $Scratch ("cargo-artifacts-{0}.json" -f [guid]::NewGuid().ToString('N'))
+  $previousPreference = $ErrorActionPreference
+  $ErrorActionPreference = 'Continue'
+  Push-Location $TauriDir
+  try {
+    & cargo @CargoArgs --message-format=json-render-diagnostics > $artifactJson
+    $cargoExit = $LASTEXITCODE
+  } finally {
+    $ErrorActionPreference = $previousPreference
+    Pop-Location
+  }
+  if ($cargoExit -ne 0) { throw "cargo build failed with exit code $cargoExit" }
+  return $artifactJson
+}
+
+# Parse the captured cargo JSON stream for the dsh-desktop bin executable.
+# Fail-closed: zero or multiple distinct executables refuse. Malformed line
+# CONTENT is never echoed (sensitive compiler/build-script text).
+function Get-ArtifactExeFromCargoJson(
+  [string]$ArtifactJsonPath,
+  [ValidateSet('cargo', 'tauri-build')][string]$Stream = 'cargo'
+) {
+  $exePaths = @()
+  $lineNumber = 0
+  $buildFinished = $false
+  foreach ($line in (Get-Content -LiteralPath $ArtifactJsonPath)) {
+    $lineNumber += 1
+    if ([string]::IsNullOrWhiteSpace($line)) { continue }
+    $trimmed = $line.Trim()
+    if ($Stream -eq 'tauri-build' -and -not ($trimmed.StartsWith('{') -or $trimmed.StartsWith('['))) { continue }
+    try { $entry = $line | ConvertFrom-Json } catch { throw "malformed cargo JSON at line $lineNumber; line content is never echoed" }
+    if ($entry.reason -ceq 'build-finished') {
+      if ($entry.success -isnot [bool] -or -not $entry.success) { throw 'cargo build-finished did not report success' }
+      $buildFinished = $true
+    }
+    if ($entry.reason -ceq 'compiler-artifact' -and $entry.target.name -ceq 'dsh-desktop' -and
+        $entry.target.kind -ccontains 'bin' -and $entry.executable) {
+      if ($entry.executable -isnot [string] -or -not [System.IO.Path]::IsPathRooted($entry.executable) -or
+          $entry.executable -match '^[A-Za-z]:(?:$|[^\\/])') { throw 'cargo executable must be an absolute path' }
+      $exePaths += $entry.executable
+    }
+  }
+  if (-not $buildFinished) { throw 'captured cargo JSON has no successful build-finished record' }
+  if ($exePaths.Count -eq 0) { throw 'no dsh-desktop bin artifact found in the captured cargo JSON' }
+  # Force @() so Select-Object -Unique on a single-element string array
+  # returns an array, not the string itself (whose [0] would be a character).
+  $distinct = @($exePaths | Select-Object -Unique)
+  if ($distinct.Count -gt 1) { throw "ambiguous: $($distinct.Count) distinct dsh-desktop executables in the cargo JSON" }
+  return $distinct[0]
+}
+
+function Assert-CompiledResourceMirrorsFromJson(
+  [string]$ArtifactJsonPath,
+  [ValidateSet('cargo', 'tauri-build')][string]$Stream = 'cargo'
+) {
+  $verifier = Join-Path $PortRoot 'scripts\verify-build-resources.mjs'
+  $payloadNode = Join-Path $PortRoot 'runtime-payload\dsh\node\node.exe'
+  if (-not (Test-Path -LiteralPath $payloadNode -PathType Leaf)) {
+    throw "The resource guard needs the published payload interpreter at $payloadNode; run the runtime stage (or drop -SkipResourceStages) first. Nothing was qualified."
+  }
+  $guardNode = (Resolve-DshTrustedExecutionNodeCached -StagedExecutable $payloadNode).Path
+  # Derive the artifact exe, then generate physical-metadata manifests for ALL
+  # FOUR trees (sealed sources + compiled mirrors).
+  $exe = Get-ArtifactExeFromCargoJson -ArtifactJsonPath $ArtifactJsonPath -Stream $Stream
+  $exeDir = Split-Path $exe
+  $manifestPath = "$ArtifactJsonPath.physical-metadata.json"
+  Write-CombinedResourcePhysicalMetadata `
+    (Join-Path $PortRoot 'runtime-payload\dsh') `
+    (Join-Path $UiDir 'dist') `
+    (Join-Path $exeDir 'dsh') `
+    (Join-Path $exeDir 'ui') `
+    $manifestPath
+  Invoke-Checked $guardNode @(
+    $verifier,
+    '--artifact-json', $ArtifactJsonPath,
+    '--stream', $Stream,
+    '--source-dsh', (Join-Path $PortRoot 'runtime-payload\dsh'),
+    '--source-ui', (Join-Path $UiDir 'dist'),
+    '--physical-metadata', $manifestPath
+  ) $PortRoot
+  Write-Host '    compiled resource mirrors qualified (exact membership + byte identity + physical metadata)' -ForegroundColor Green
+}
+
+function Assert-CompiledResourceMirrorsForExe([string]$ExePath) {
+  $verifier = Join-Path $PortRoot 'scripts\verify-build-resources.mjs'
+  $payloadNode = Join-Path $PortRoot 'runtime-payload\dsh\node\node.exe'
+  if (-not (Test-Path -LiteralPath $payloadNode -PathType Leaf)) {
+    throw "The resource guard needs the published payload interpreter at $payloadNode; run the runtime stage (or drop -SkipResourceStages) first. Nothing was qualified."
+  }
+  $guardNode = (Resolve-DshTrustedExecutionNodeCached -StagedExecutable $payloadNode).Path
+  $exeDir = Split-Path $ExePath
+  $manifestPath = "$ExePath.physical-metadata.json"
+  Write-CombinedResourcePhysicalMetadata `
+    (Join-Path $PortRoot 'runtime-payload\dsh') `
+    (Join-Path $UiDir 'dist') `
+    (Join-Path $exeDir 'dsh') `
+    (Join-Path $exeDir 'ui') `
+    $manifestPath
+  Invoke-Checked $guardNode @(
+    $verifier,
+    '--exe', $ExePath,
+    '--source-dsh', (Join-Path $PortRoot 'runtime-payload\dsh'),
+    '--source-ui', (Join-Path $UiDir 'dist'),
+    '--physical-metadata', $manifestPath
+  ) $PortRoot
+  Write-Host '    compiled resource mirrors qualified (exact membership + byte identity + physical metadata)' -ForegroundColor Green
+}
+
+# Read-only physical-metadata manifest generator: uses an EXPLICIT directory
+# stack (no Get-ChildItem -Recurse, which can follow junctions on PS5) with
+# Get-Item + attribute check BEFORE enqueueing dirs, and refuses SparseFile,
+# ReparsePoint, Encrypted or any attribute token outside the allowlist.
+# Generates a manifest for ONE tree; the caller combines them. No content is
+# read or logged.
+function Get-ResourceTreePhysicalMetadata([string]$Root) {
+  $Root = [System.IO.Path]::GetFullPath($Root)
+  $allowed = @('Directory', 'Archive', 'ReadOnly', 'NotContentIndexed')
+  $entries = [System.Collections.Generic.List[object]]::new()
+  $stack = [System.Collections.Generic.Stack[string]]::new()
+  # Do not append '.': EnumerateFileSystemEntries preserves that component and
+  # would emit './file' metadata keys instead of the verifier's 'file' keys.
+  $stack.Push($Root)
+  $rootItem = Get-Item -LiteralPath $Root -Force
+  if (-not $rootItem.PSIsContainer) { throw 'resource tree root must be a directory; nothing was qualified' }
+  foreach ($token in ($rootItem.Attributes.ToString().Split(','))) {
+    $t = $token.Trim()
+    if ($t -eq '') { continue }
+    if ($allowed -notcontains $t) { throw "resource tree root '$Root' carries unknown attribute '$t' (SparseFile, ReparsePoint, Encrypted etc. are refused); nothing was qualified." }
+  }
+  $entries.Add(@{ path = '.'; kind = 'directory'; attributes = $rootItem.Attributes.ToString() })
+  while ($stack.Count -gt 0) {
+    $dir = $stack.Pop()
+    foreach ($child in [System.IO.Directory]::EnumerateFileSystemEntries($dir)) {
+      $item = Get-Item -LiteralPath $child -Force
+      foreach ($token in ($item.Attributes.ToString().Split(','))) {
+        $t = $token.Trim()
+        if ($t -eq '') { continue }
+        if ($allowed -notcontains $t) { throw "resource tree entry '$child' carries unknown attribute '$t' (SparseFile, ReparsePoint, Encrypted etc. are refused); nothing was qualified." }
+      }
+      $rel = $child.Substring($Root.Length).TrimStart('\', '/').Replace('\', '/')
+      if ($item.PSIsContainer) {
+        $entries.Add(@{ path = $rel; kind = 'directory'; attributes = $item.Attributes.ToString() })
+        $stack.Push($child)
+      } else {
+        $entries.Add(@{ path = $rel; kind = 'file'; attributes = $item.Attributes.ToString() })
+      }
+    }
+  }
+  return $entries.ToArray()
+}
+
+# Generate the COMBINED physical-metadata manifest for all four trees, bound
+# to canonical roots (schemaVersion 1, per-section {root, entries}).
+function Write-CombinedResourcePhysicalMetadata([string]$SourceDsh, [string]$SourceUi, [string]$MirrorDsh, [string]$MirrorUi, [string]$ManifestPath) {
+  $manifest = @{
+    schemaVersion = 1
+    sourceDsh = @{ root = [System.IO.Path]::GetFullPath($SourceDsh).TrimEnd('\', '/'); entries = @(Get-ResourceTreePhysicalMetadata $SourceDsh) }
+    sourceUi = @{ root = [System.IO.Path]::GetFullPath($SourceUi).TrimEnd('\', '/'); entries = @(Get-ResourceTreePhysicalMetadata $SourceUi) }
+    mirrorDsh = @{ root = [System.IO.Path]::GetFullPath($MirrorDsh).TrimEnd('\', '/'); entries = @(Get-ResourceTreePhysicalMetadata $MirrorDsh) }
+    mirrorUi = @{ root = [System.IO.Path]::GetFullPath($MirrorUi).TrimEnd('\', '/'); entries = @(Get-ResourceTreePhysicalMetadata $MirrorUi) }
+  }
+  $manifest | ConvertTo-Json -Depth 4 | Set-Content -LiteralPath $ManifestPath -Encoding utf8
+}
+
 function Use-IsolatedHarnessHome([string]$Purpose) {
+
   $isolatedHome = Join-Path $Scratch "$Purpose-home"
   $null = New-Item -ItemType Directory -Force -Path $isolatedHome
   $resolved = (Resolve-Path -LiteralPath $isolatedHome).Path
@@ -246,8 +657,9 @@ function Use-IsolatedHarnessHome([string]$Purpose) {
 
 function Test-Prerequisites {
   Write-Stage 'Prerequisites'
+  Assert-UpstreamCheckout
   Assert-Tool 'node' 'Install Node.js 22.19+ or 24+ (upstream engines range).'
-  Assert-Tool 'pnpm' 'Install pnpm 11.7.0 (matches upstream packageManager).'
+  Assert-Tool 'pnpm' "Install $((Get-UpstreamPackageManager)) (matches the target upstream packageManager)."
   Assert-Tool 'cargo' 'Install Rust via rustup with the x86_64-pc-windows-msvc toolchain.'
   if (-not (Test-Path (Join-Path $Upstream 'apps\web\dist'))) {
     throw "The reference web client has not been built. Run 'pnpm install; pnpm run build' in $Upstream first (see docs/build-and-install.md section 2)."
@@ -276,7 +688,8 @@ function Get-UpstreamCommit {
 
 function Build-Ui {
   Write-Stage 'Preserved web client shell (port/ui)'
-  Assert-Tool 'pnpm' 'Install pnpm 11.7.0.'
+  Assert-UpstreamCheckout
+  Assert-Tool 'pnpm' "Install $((Get-UpstreamPackageManager))."
 
   # `port/ui` declares no dependencies of its own (an empty manifest and an empty
   # lockfile importer), so `pnpm install` here is a no-op at best and previously
@@ -289,7 +702,10 @@ function Build-Ui {
   if (-not (Test-Path $linkToolchain)) {
     throw "UI toolchain linker is missing: $linkToolchain"
   }
-  & $linkToolchain
+  & $linkToolchain -UpstreamRoot $Upstream
+  # The linker is what points the shell build at the selected checkout; verify it
+  # did, rather than trusting that a previous run left it right.
+  Assert-UpstreamLinkMatches
   $vite = Join-Path $UiDir 'node_modules\vite\bin\vite.js'
   if (-not (Test-Path $vite)) {
     throw "UI toolchain is not linked: $vite is missing. Build the reference checkout first ('pnpm install; pnpm run build' in $Upstream), then re-run this stage."
@@ -394,9 +810,16 @@ function Build-Core {
   # Never repair the source-controlled dependency lock as a side effect of a
   # product build. The test/lint gates reuse the resolved build dependencies and
   # must remain offline and strict; a passing cargo build alone is not this gate.
+  # The message stream of THIS compile (same arguments, workdir and features) is
+  # the authoritative artifact source for the resource guard -- never a second
+  # rebuild.
   $cargoArgs = @('build', '--workspace', '--locked')
   if ($Release) { $cargoArgs += '--release' }
-  Invoke-Checked 'cargo' $cargoArgs $TauriDir
+  $artifactJson = Get-CompiledResourceArtifactJson $cargoArgs
+  # Compiled-resource qualification: the merge-style resource copy passes even
+  # when stale files from a previous payload ride along; verify the compiled
+  # mirrors byte-exactly right after the compile (finding: 800 stale extras).
+  Assert-CompiledResourceMirrorsFromJson $artifactJson
   Invoke-Checked 'cargo' @('test', '--workspace', '--locked', '--offline') $TauriDir
   Invoke-Checked 'cargo' @('clippy', '--workspace', '--all-targets', '--locked', '--offline', '--', '-D', 'warnings') $TauriDir
 }
@@ -422,6 +845,7 @@ function Assert-ResourceRootsForCompile {
 
 function Stage-Runtime {
   Write-Stage 'Supervised dsh runtime payload (staged, validated, then published atomically)'
+  Assert-UpstreamCheckout
   $runtimeTarget = Get-CurrentNodeTargetName
   if ($runtimeTarget -ne 'win-x64') {
     throw "Runtime target '$runtimeTarget' is explicitly unqualified; reviewed runtime locks currently exist only for win-x64. No payload was published."
@@ -542,6 +966,7 @@ function Stage-Runtime {
 
 function Stage-RuntimeLockRefresh {
   Write-Stage 'Runtime lock refresh (candidate only; no payload publication)'
+  Assert-UpstreamCheckout
   if ((Get-CurrentNodeTargetName) -ne 'win-x64') {
     throw 'Runtime lock refresh is currently qualified only for win-x64.'
   }
@@ -688,7 +1113,7 @@ function Stage-RuntimeInto(
   # prepare-package-set.ts. Its roots are @deepseek-ai/dsh and
   # @deepseek-ai/dsh-desktop-host; required dependencies and peers (including
   # cordis-plugin-group) are traversed from their manifests, not hand-listed.
-  $packageManager = (Get-Content (Join-Path $Upstream 'package.json') -Raw | ConvertFrom-Json).packageManager
+  $packageManager = Get-UpstreamPackageManager
   $pnpmVersion = ([string]$packageManager -replace '^pnpm@', '').Split('+')[0]
   $pnpmEntry = Join-Path $env:LOCALAPPDATA "node\corepack\v1\pnpm\$pnpmVersion\bin\pnpm.mjs"
   if (-not (Test-Path $pnpmEntry)) { throw "Pinned pnpm entry point not found: $pnpmEntry" }
@@ -722,15 +1147,29 @@ function Stage-RuntimeInto(
   # the Low-image interpreter staged inside the workspace. The staged bytes stay in
   # place because they are what ships.
   $executionNode = Resolve-DshStagingExecutionNode -StagedExecutable $stagingNode.Executable -AttestedPath $AttestedNodePath
+  # The staging program loads upstream TypeScript through `--import tsx/esm`, so tsx
+  # runs ITS OWN esbuild -- a different release from the UI child's (which is whatever
+  # `apps/web`'s Vite resolves). One process-wide ESBUILD_BINARY_PATH cannot serve
+  # both: pointing this child at the UI compiler makes tsx abort with "Host version
+  # 0.28.1 does not match binary version 0.25.12". Resolve the release this
+  # checkout's tsx ACTUALLY resolves (through its own dependency link, never by range
+  # matching) into a trusted Medium copy outside the labelled tree, so a normal build
+  # needs no manual environment. The seal needs none of this: it runs no TypeScript.
+  Import-Module (Join-Path $PackagingTests 'runtime-esbuild-qualification.psm1') -Force
+  $runtimeEsbuild = Resolve-DshTrustedRuntimeEsbuild -UpstreamRoot $Upstream -OverridePath $RuntimeEsbuildPath -RequestedRoot $qualificationRoot
   $oldNpmExecPath = $env:npm_execpath
   $oldPath = $env:PATH
   # TEMP/TMP are set per invocation and restored EXACTLY (absent stays absent, empty
   # stays empty) in the finally. A Medium child needs a Medium temp; leaving the
   # caller's TEMP pointed at a fixture root was a defect in this script's siblings.
+  # ESBUILD_BINARY_PATH is scoped and restored the same way, so the UI child can
+  # never inherit this compiler and this child can never inherit the UI's.
   $hadTemp = Test-Path -LiteralPath 'Env:TEMP'
   $hadTmp = Test-Path -LiteralPath 'Env:TMP'
   $oldTemp = if ($hadTemp) { $env:TEMP } else { $null }
   $oldTmp = if ($hadTmp) { $env:TMP } else { $null }
+  $hadEsbuildBinaryPath = Test-Path -LiteralPath 'Env:ESBUILD_BINARY_PATH'
+  $oldEsbuildBinaryPath = if ($hadEsbuildBinaryPath) { $env:ESBUILD_BINARY_PATH } else { $null }
   try {
     $env:npm_execpath = $pnpmEntry
     $env:PATH = (Split-Path -Parent $executionNode.Path) + [IO.Path]::PathSeparator + $oldPath
@@ -739,12 +1178,15 @@ function Stage-RuntimeInto(
       $env:TMP = $executionNode.Temp
       Write-Host "    staging TEMP -> $($executionNode.Temp) (restored on exit)" -ForegroundColor DarkGray
     }
+    $env:ESBUILD_BINARY_PATH = $runtimeEsbuild.Path
+    Write-Host "    staging ESBUILD_BINARY_PATH -> $($runtimeEsbuild.Path) (esbuild $($runtimeEsbuild.Version), restored on exit)" -ForegroundColor DarkGray
     Invoke-Checked $executionNode.Path $nodeArgs $Upstream
   } finally {
     $env:npm_execpath = $oldNpmExecPath
     $env:PATH = $oldPath
     if ($hadTemp) { $env:TEMP = $oldTemp } else { Remove-Item -LiteralPath 'Env:TEMP' -ErrorAction SilentlyContinue }
     if ($hadTmp) { $env:TMP = $oldTmp } else { Remove-Item -LiteralPath 'Env:TMP' -ErrorAction SilentlyContinue }
+    if ($hadEsbuildBinaryPath) { $env:ESBUILD_BINARY_PATH = $oldEsbuildBinaryPath } else { Remove-Item -LiteralPath 'Env:ESBUILD_BINARY_PATH' -ErrorAction SilentlyContinue }
   }
 
   if (-not (Test-Path $identityFile)) {
@@ -980,7 +1422,12 @@ function Invoke-StagedRuntimeSeal {
     throw 'Staged Node identity has an unexpected executable location.'
   }
   $bundledNode = Join-Path $DshRoot $relativeExecutable
-  $arguments = @('--import', 'tsx/esm', (Join-Path $PSScriptRoot 'lib\seal-runtime.mjs'))
+  # `seal-runtime.mjs` imports ONLY Node builtins (node:crypto, node:fs, node:path,
+  # node:url) -- no TypeScript, no upstream package -- so it needs no loader. Running
+  # it through `tsx` pulled tsx's own esbuild (0.28.1) into the runtime stage, which is
+  # a compiler this step never uses and which cannot share the UI's 0.25.12 override.
+  # The staging program below still REQUIRES `tsx` (it imports upstream `.ts`).
+  $arguments = @((Join-Path $PSScriptRoot 'lib\seal-runtime.mjs'))
   if ($VerifyOnly) { $arguments += '--verify' }
   $arguments += @($Upstream, $DshRoot, (Join-Path $StageRoot 'work\runtime-identity.json'),
     (Join-Path $StageRoot 'node-identity.json'))
@@ -1088,7 +1535,11 @@ function Get-PayloadInputs([string]$StageRoot) {
 
   $nodeStageProgram = Get-DshRuntimeStageProgram
   $inputs['stageProgram'] = (Get-DshStringDigest -Value $nodeStageProgram)
-  foreach ($helper in @('seal-runtime.mjs', 'runtime-locks.mjs', 'runtime-payload.psm1', 'payload-manifest.psm1', 'config-editor-runtime-import.mjs', 'account-profile-runtime.mjs', 'account-login-runtime.mjs', 'account-data-runtime.mjs')) {
+  # `target-release.mjs` is a transitive input of the account transforms: each of
+  # them imports TARGET_RELEASE from it to decide which release's reviewed hashes
+  # apply. Sealing the transforms without it would leave the input that governs
+  # the accepted target version outside the manifest.
+  foreach ($helper in @('seal-runtime.mjs', 'runtime-locks.mjs', 'runtime-payload.psm1', 'payload-manifest.psm1', 'config-editor-runtime-import.mjs', 'target-release.mjs', 'upstream-runtime-dependency-policy.mjs', 'account-profile-runtime.mjs', 'account-login-runtime.mjs', 'account-data-runtime.mjs')) {
     $inputs["packagingHelper:$helper"] = (Get-FileHash -LiteralPath (Join-Path $PSScriptRoot "lib\$helper") -Algorithm SHA256).Hash.ToLowerInvariant()
   }
   $inputs['accountProfileCache'] = (Get-FileHash -LiteralPath (Join-Path $TauriDir 'runtime\account-profile-cache.mjs') -Algorithm SHA256).Hash.ToLowerInvariant()
@@ -1096,7 +1547,7 @@ function Get-PayloadInputs([string]$StageRoot) {
   $inputs['accountData'] = (Get-FileHash -LiteralPath (Join-Path $TauriDir 'runtime\account-data.mjs') -Algorithm SHA256).Hash.ToLowerInvariant()
   $inputs['accountDataClient'] = (Get-FileHash -LiteralPath (Join-Path $UiDir 'account-data\client-state.mjs') -Algorithm SHA256).Hash.ToLowerInvariant()
 
-  $packageManager = (Get-Content (Join-Path $Upstream 'package.json') -Raw | ConvertFrom-Json).packageManager
+  $packageManager = Get-UpstreamPackageManager
   $inputs['upstreamPackageManager'] = [string]$packageManager
 
   $runtimeIdentityPath = Join-Path $StageRoot 'work\runtime-identity.json'
@@ -1211,6 +1662,31 @@ recorded diff.
 "@
 }
 
+function Assert-BundleGuardConfiguration([string]$ConfigRoot) {
+  if (-not [string]::IsNullOrWhiteSpace($env:TAURI_CONFIG)) {
+    throw 'TAURI_CONFIG overlays are unsupported by the resource guard; clear the override before bundling'
+  }
+  # These CLI auto-merged overlays could inject a post-qualification hook. Until
+  # merged configuration is explicitly qualified, refuse them rather than guess.
+  foreach ($overlay in @('tauri.windows.conf.json', 'tauri.windows.conf.json5', 'Tauri.windows.toml')) {
+    if (Test-Path -LiteralPath (Join-Path $ConfigRoot $overlay)) {
+      throw 'platform configuration overlays are unsupported by the resource guard'
+    }
+  }
+  $tauriConf = Get-Content -LiteralPath (Join-Path $ConfigRoot 'tauri.conf.json') -Raw | ConvertFrom-Json
+  # These optional properties are normally absent; build.ps1 runs in strict
+  # mode, so inspect their presence without dereferencing missing members.
+  $hook = $null
+  $buildProperty = $tauriConf.PSObject.Properties['build']
+  if ($null -ne $buildProperty -and $null -ne $buildProperty.Value) {
+    $hookProperty = $buildProperty.Value.PSObject.Properties['beforeBundleCommand']
+    if ($null -ne $hookProperty) { $hook = $hookProperty.Value }
+  }
+  if ($null -ne $hook -and ($hook -isnot [string] -or -not [string]::IsNullOrWhiteSpace($hook))) {
+    throw 'build.beforeBundleCommand is configured; a post-qualification hook could mutate the guarded resource trees'
+  }
+}
+
 function Build-Bundle {
   Write-Stage 'Release bundle and Windows installer (NSIS)'
   Assert-Tool 'cargo' 'Install Rust via rustup.'
@@ -1225,8 +1701,99 @@ function Build-Bundle {
     throw "Another cargo/rustc process is running ($($running.Count) of them): $(($running | ForEach-Object { "$($_.ProcessName)($($_.Id))" }) -join ', '). A bundling build needs the target directory to itself; wait for it to finish."
   }
 
-  Invoke-Checked 'cargo' @('tauri', 'build') $TauriDir
-  $nsis = Join-Path $TauriDir 'target\release\bundle\nsis'
+  # Fail closed if a beforeBundleCommand hook is configured: it could mutate
+  # the source trees AFTER the resource guard has qualified them, which would
+  # invalidate the physical-metadata and byte-identity proofs.
+  Assert-BundleGuardConfiguration -ConfigRoot $AppDir
+
+  # Split build and bundle: the tauri CLI forwards trailing ARGS to the cargo
+  # runner (help-verified: "[ARGS]... Command line arguments passed to the
+  # runner"). The forwarded --message-format=json-render-diagnostics makes the
+  # original compile emit the cargo JSON message stream on stdout. The stream
+  # is captured to a scratch file (stderr: rendered diagnostics, visible).
+  # The resource guard then derives the exe from that stream and qualifies all
+  # four trees (sealed sources + compiled mirrors) before the bundle step.
+  $tauriOutput = Join-Path $Scratch ("tauri-build-{0}.json" -f [guid]::NewGuid().ToString('N'))
+  $previousPreference = $ErrorActionPreference
+  $ErrorActionPreference = 'Continue'
+  Push-Location $TauriDir
+  try {
+    & cargo @('tauri', 'build', '--no-bundle', '--', '--locked', '--message-format=json-render-diagnostics') > $tauriOutput
+    $tauriExit = $LASTEXITCODE
+  } finally {
+    $ErrorActionPreference = $previousPreference
+    Pop-Location
+  }
+  if ($tauriExit -ne 0) { throw "cargo tauri build failed with exit code $tauriExit" }
+
+  # Derive the artifact exe from the captured tauri-build stream.
+  $exe = Get-ArtifactExeFromCargoJson -ArtifactJsonPath $tauriOutput -Stream 'tauri-build'
+  $exeDir = Split-Path $exe
+
+  # The shared guard generates physical metadata and verifies the original CLI
+  # stream plus all four trees, with JSON-looking malformed lines still refused.
+  Assert-CompiledResourceMirrorsFromJson -ArtifactJsonPath $tauriOutput -Stream 'tauri-build'
+
+  # Bundle the qualified artifacts. No recompile: the bundle step packages
+  # the already-built binaries and reads the SOURCE trees (which the runtime
+  # stage sealed and the guard proved the mirrors match). Same env/profile.
+  $bundleArguments = @('tauri', 'bundle')
+  $observerReceiptRoot = $null
+  if (-not [string]::IsNullOrWhiteSpace($QualificationHashObserverRoot)) {
+    # Opt-in only (predetermined parent pass; -Stage bundle): the canonical
+    # tauri.conf.json is untouched; the only packaging delta is exactly one
+    # `--config` argument carrying the strictly validated override.
+    Write-Stage 'Opt-in NSIS hash-observer qualification (supported signCommand)'
+    $observerScript = Join-Path $PortRoot 'installer\hash-observer.ps1'
+    if (-not (Test-Path -LiteralPath $observerScript -PathType Leaf)) {
+      throw "hash observer script must exist: $observerScript"
+    }
+    $observerReceiptRoot = Assert-QualificationHashObserverRoot -ReceiptRoot $QualificationHashObserverRoot
+    $observerOverridePath = Join-Path $Scratch ("nsis-hash-observer-override-{0}.json" -f [guid]::NewGuid().ToString('N'))
+    Invoke-HashObserverOverrideGeneration -ObserverScript $observerScript -ReceiptRoot $observerReceiptRoot -OverridePath $observerOverridePath | Out-Null
+    $bundleArguments += @('--config', $observerOverridePath)
+  }
+  # Resource SOURCE paths must be absolute and collapsed before the bundler renders
+  # them. `tauri-bundler` 2.9.4 joins each `bundle.resources` key onto the app
+  # directory verbatim (`src/bundle/windows/nsis/mod.rs`, `generate_resource_data`),
+  # so the generated script names sources as
+  # `<repo>\port\src-tauri\app\..\..\runtime-payload\dsh\<file>` - 20 characters
+  # longer than the same path collapsed. NSIS's `File` opens the SOURCE through a
+  # Win32 path that must stay under MAX_PATH: MEASURED on this host with real
+  # makensis against the real resource file, 259 characters opens and 260 or more
+  # fails with `File: failed opening file "<path>"`. The bundle died on a
+  # 261-character source whose canonical form is 241.
+  #
+  # The canonical tauri.conf.json is NOT edited. The only delta is one more
+  # `--config` JSON Merge Patch that replaces each relative source key with its
+  # canonical absolute form and DELETES the relative key. The CLI composes and
+  # applies `--config` in two different layers: composing the given patches retains
+  # a `null` value (helpers/config.rs `merge_patches`), and applying the composed
+  # patch to the canonical configuration is `json_patch::merge`, where `null`
+  # REMOVES the key. Without the nulls the relative sources would survive, and those
+  # are the spellings that broke MAX_PATH. Every DESTINATION value is copied
+  # verbatim, so the installed layout (`$INSTDIR\ui\...`, `$INSTDIR\dsh\...`) is
+  # unchanged. The bundler documents `--config` as repeatable and merged in the
+  # order given (tauri-cli-2.11.5/src/bundle.rs), so this patch is appended AFTER
+  # the observer's: the two are DISJOINT (windows.signCommand vs resources), which
+  # is why neither composition order (nor keeping them as two arguments) matters.
+  # The override is generated on the ordinary lane too.
+  Assert-Tool 'node' 'Install Node.js 22.19+ or 24+.'
+  $resourceOverridePath = Join-Path $Scratch ("bundle-resource-override-{0}.json" -f [guid]::NewGuid().ToString('N'))
+  Invoke-Checked 'node' @(
+    (Join-Path $PortRoot 'scripts\lib\bundle-resource-override.mjs'),
+    '--app-dir', $AppDir,
+    '--out', $resourceOverridePath
+  ) $PortRoot
+  $bundleArguments += @('--config', $resourceOverridePath)
+  Invoke-Checked 'cargo' $bundleArguments $TauriDir
+  if ($null -ne $observerReceiptRoot) {
+    # Post-bundle resource-guard recheck over the SAME original cargo JSON
+    # stream: proves the observer/packaging pass modified no exe/resources.
+    Assert-CompiledResourceMirrorsFromJson -ArtifactJsonPath $tauriOutput -Stream 'tauri-build'
+    Write-Host "    observer receipts: $observerReceiptRoot"
+  }
+  $nsis = Join-Path $exeDir 'bundle\nsis'
   if (Test-Path $nsis) {
     Write-Host "    installer output: $nsis" -ForegroundColor Green
     Get-ChildItem $nsis -File | ForEach-Object { Write-Host "      $($_.Name)  $([math]::Round($_.Length / 1MB, 2)) MB" }
@@ -1277,6 +1844,7 @@ function Test-Packaging {
     @{ Name = 'reviewed runtime lock inputs'; Path = (Join-Path $PackagingTests 'runtime-lock-inputs.test.mjs') }
     @{ Name = 'final runtime descriptor'; Path = (Join-Path $PackagingTests 'runtime-seal.test.mjs') }
     @{ Name = 'build order and safety'; Path = (Join-Path $PackagingTests 'build-script.test.mjs') }
+    @{ Name = 'compiled resource guard functions'; Path = (Join-Path $PackagingTests 'resource-guard-functions.test.ps1') }
     @{ Name = 'installer hook control flow'; Path = (Join-Path $PackagingTests 'nsis-hook-behavior.ps1') }
     @{ Name = 'installed qualification safety guards'; Path = (Join-Path $PackagingTests 'verify-installed-guards.ps1') }
     @{ Name = 'qualification gate contract'; Path = (Join-Path $PackagingTests 'gate-contract.test.mjs') }
@@ -1316,6 +1884,14 @@ function Test-Packaging {
 }
 
 Test-Prerequisites
+
+# The hash-observer opt-in qualifies ONLY the bundle stage. An unsupported
+# stage combination would otherwise silently ignore the receipt root, so this
+# refusal runs before any stage body, not after the resources have been built.
+if (-not [string]::IsNullOrWhiteSpace($QualificationHashObserverRoot) -and
+    $Stage -notin @('bundle', 'all')) {
+  throw "QualificationHashObserverRoot qualifies only -Stage bundle (or all); requested stage is '$Stage'."
+}
 
 if ($Stage -ne 'runtime-lock-refresh') { $null = New-Item -ItemType Directory -Force -Path $Scratch }
 $doAll = $Stage -eq 'all'

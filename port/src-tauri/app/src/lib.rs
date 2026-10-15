@@ -106,9 +106,11 @@ const WINDOWS_CHROME_SCRIPT: &str = r#"
         #root { height: 100% !important; box-sizing: border-box !important; }
         #dsh-native-chrome { position: fixed; inset: 0 0 auto 0; height: 40px; z-index: 1090;
           display: flex; justify-content: flex-end; pointer-events: none; color: var(--dsh-caption-symbol, #0f1115);
-          background: var(--dsh-caption-fill, #f9fafb); font-family: system-ui, sans-serif; }
-        #dsh-native-chrome .dsh-drag { flex: 1; min-width: 0; pointer-events: auto; }
-        #dsh-native-chrome .dsh-buttons { display: flex; width: 138px; height: 40px; pointer-events: auto; }
+          background: transparent; font-family: system-ui, sans-serif; }
+        #dsh-native-chrome .dsh-drag { flex: 1; min-width: 0; pointer-events: auto;
+          margin-left: var(--dsh-windows-menu-start, 48px); background: var(--dsh-caption-fill, #f9fafb); }
+        #dsh-native-chrome .dsh-buttons { display: flex; width: 138px; height: 40px; pointer-events: auto;
+          background: var(--dsh-caption-fill, #f9fafb); }
         #dsh-native-chrome button { width: 46px; height: 40px; padding: 0; border: 0; border-radius: 0;
           color: inherit; background: transparent; display: grid; place-items: center; cursor: default; }
         #dsh-native-chrome button:hover { background: color-mix(in srgb, currentColor 12%, transparent); }
@@ -672,19 +674,135 @@ fn executable_directory() -> Result<std::path::PathBuf, dsh_core::error::DshErro
         })
 }
 
+/// True only when `directory/index.html` exists AND is a regular file.
+///
+/// A missing path, or a directory named `index.html`, is not a bundled UI. The
+/// probe follows links (`std::fs::metadata`), so a symlinked entry point counts
+/// as present, matching how the shell later reads it.
+fn shell_index_is_regular_file(directory: &std::path::Path) -> bool {
+    std::fs::metadata(directory.join("index.html"))
+        .map(|metadata| metadata.is_file())
+        .unwrap_or(false)
+}
+
+/// Choose the shell (client UI) directory from injected inputs.
+///
+/// Order, and why:
+///   1. an explicit `DSH_DESKTOP_SHELL_DIR` always wins (development override);
+///   2. otherwise the UI bundled BESIDE THE EXECUTABLE wins whenever its
+///      `index.html` is a regular file — in debug AND release builds, so a
+///      packaged debug candidate proves its own assembled UI instead of a
+///      checkout source tree;
+///   3. only when no bundled UI exists does a debug build fall back to the
+///      checkout source directory (development without an assembled bundle);
+///   4. a release build falls back to `resource_dir()/ui` (the Tauri bundle).
+///
+/// Pure: every input — including the regular-file probe result and the resource
+/// directory outcome — is injected, so the decision can be unit-tested without
+/// touching the filesystem or the process environment.
+fn select_shell_directory(
+    explicit: Option<std::path::PathBuf>,
+    bundled_ui: Option<std::path::PathBuf>,
+    bundled_ui_present: bool,
+    development_source: Option<std::path::PathBuf>,
+    release_fallback: Result<std::path::PathBuf, dsh_core::error::DshError>,
+) -> Result<std::path::PathBuf, dsh_core::error::DshError> {
+    if let Some(directory) = explicit {
+        return Ok(directory);
+    }
+    if let Some(directory) = bundled_ui.filter(|_| bundled_ui_present) {
+        return Ok(directory);
+    }
+    if let Some(directory) = development_source {
+        return Ok(directory);
+    }
+    release_fallback
+}
+
 fn resolve_shell_directory(
     app: &tauri::App,
 ) -> Result<std::path::PathBuf, dsh_core::error::DshError> {
-    if let Ok(directory) = std::env::var("DSH_DESKTOP_SHELL_DIR") {
-        return Ok(std::path::PathBuf::from(directory));
-    }
-    if cfg!(debug_assertions) {
-        return Ok(std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../ui/dist"));
-    }
-    app.path()
+    let bundled_ui = executable_directory()
+        .ok()
+        .map(|directory| directory.join("ui"));
+    let bundled_ui_present = bundled_ui
+        .as_deref()
+        .map(shell_index_is_regular_file)
+        .unwrap_or(false);
+    // A debug build without an assembled bundle still runs from the checkout; a
+    // release build never reads the source tree.
+    let development_source = cfg!(debug_assertions)
+        .then(|| std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../ui/dist"));
+    let release_fallback = app
+        .path()
         .resource_dir()
         .map(|directory| directory.join("ui"))
-        .map_err(|error| dsh_core::error::DshError::other("resource_dir", error.to_string()))
+        .map_err(|error| dsh_core::error::DshError::other("resource_dir", error.to_string()));
+    select_shell_directory(
+        std::env::var("DSH_DESKTOP_SHELL_DIR")
+            .ok()
+            .map(std::path::PathBuf::from),
+        bundled_ui,
+        bundled_ui_present,
+        development_source,
+        release_fallback,
+    )
+}
+
+/// The WebView2 arguments wry 0.55.1 installs when a caller supplies none.
+///
+/// Supplying `additional_browser_args` REPLACES this default (wry's own warning
+/// on `WebviewWindowBuilder::additional_browser_args` says so), so the
+/// owned-debug acceptance arguments must carry it verbatim.
+const WRY_DEFAULT_BROWSER_ARGS: &str =
+    "--disable-features=msWebOOUI,msPdfOOUI,msSmartScreenProtection";
+
+/// Environment variable naming the owned-debug acceptance CDP port.
+///
+/// It is consumed ONLY to append a loopback debugging port on a DEBUG build that
+/// already passed the owned-credential namespace fence, and its value is never
+/// used as arbitrary browser arguments: it must be plain decimal digits that
+/// parse as a `u16` inside `1024..=65535`, and the arguments are assembled here
+/// from fixed literals.
+const DEV_CDP_PORT_ENV: &str = "DSH_DESKTOP_DEV_CDP_PORT";
+
+/// The additional WebView2 arguments for the owned-debug acceptance lane.
+///
+/// `None` means "leave wry's default arguments alone", which is the answer for a
+/// release build, for a run without the validated owned-credential namespace
+/// fence, with no requested port, or with a port that is not plain decimal
+/// digits inside `1024..=65535`. Only when every gate passes is the single
+/// debugging port appended, with wry's own defaults preserved in front of it.
+///
+/// Chromium binds its debugging endpoint to loopback on its own, so no
+/// `--remote-debugging-address` is emitted, and no `--remote-allow-origins`
+/// relaxation is added: this lane adds the port switch and nothing else.
+///
+/// Pure: every input is injected, so the decision is unit-tested without an
+/// environment, a filesystem or a window.
+fn dev_cdp_browser_args(
+    debug_build: bool,
+    fence_namespace: Option<&str>,
+    requested_port: Option<&str>,
+) -> Option<String> {
+    if !debug_build {
+        return None;
+    }
+    if fence_namespace.map(str::is_empty).unwrap_or(true) {
+        return None;
+    }
+    // Plain decimal digits only: no sign, no radix prefix, no surrounding text.
+    let requested = requested_port?;
+    if requested.is_empty() || !requested.bytes().all(|byte| byte.is_ascii_digit()) {
+        return None;
+    }
+    let port: u16 = requested.parse().ok()?;
+    if !(1024..=65535).contains(&port) {
+        return None;
+    }
+    Some(format!(
+        "{WRY_DEFAULT_BROWSER_ARGS} --remote-debugging-port={port}"
+    ))
 }
 
 /// Report a startup failure that happens before the shell state exists.
@@ -1078,7 +1196,18 @@ fn setup(app: &mut tauri::App) -> Result<(), dsh_core::error::DshError> {
         .map_err(|e: url::ParseError| {
             dsh_core::error::DshError::invalid_argument("url", e.to_string())
         })?;
-    let window = tauri::WebviewWindowBuilder::new(
+    // Owned-debug CDP: the acceptance lane may request ONE loopback debugging
+    // port. It is honoured only on a debug build that already passed the owned
+    // credential namespace fence, and only as a validated u16 — a release build,
+    // or a run without the fence, leaves wry's defaults untouched and no
+    // debugging port can be opened. Arbitrary `WEBVIEW2_*` arguments are never
+    // read here.
+    let dev_cdp_args = dev_cdp_browser_args(
+        cfg!(debug_assertions),
+        owned_namespace.as_deref(),
+        std::env::var(DEV_CDP_PORT_ENV).ok().as_deref(),
+    );
+    let mut window_builder = tauri::WebviewWindowBuilder::new(
         app,
         "main",
         tauri::WebviewUrl::External("about:blank".parse().expect("static empty webview URL")),
@@ -1116,9 +1245,13 @@ fn setup(app: &mut tauri::App) -> Result<(), dsh_core::error::DshError> {
             }
         }
     })
-    .initialization_script(init_script(effective))
-    .build()
-    .map_err(|e| dsh_core::error::DshError::other("window_create", e.to_string()))?;
+    .initialization_script(init_script(effective));
+    if let Some(additional_args) = dev_cdp_args.as_deref() {
+        window_builder = window_builder.additional_browser_args(additional_args);
+    }
+    let window = window_builder
+        .build()
+        .map_err(|e| dsh_core::error::DshError::other("window_create", e.to_string()))?;
 
     wire_window_events(&app_handle, &window);
     power_resume::install(&window)
@@ -1625,5 +1758,274 @@ mod desktop_node_resolver_tests {
         assert_eq!(resolved, runtime.join("node").join("node.exe"));
         #[cfg(not(target_os = "windows"))]
         assert_eq!(resolved, runtime.join("node").join("bin").join("node"));
+    }
+}
+
+#[cfg(test)]
+mod shell_directory_resolver_tests {
+    use super::{select_shell_directory, shell_index_is_regular_file};
+    use std::path::{Path, PathBuf};
+
+    fn path(parts: &[&str]) -> PathBuf {
+        let mut result = PathBuf::new();
+        for part in parts {
+            result.push(part);
+        }
+        result
+    }
+
+    #[test]
+    fn bundled_ui_beside_the_executable_wins_in_debug_and_release() {
+        let bundled = path(&["candidate", "ui"]);
+        let development = path(&["checkout", "port", "ui", "dist"]);
+        let installed = path(&["installed", "resources", "ui"]);
+        // DEBUG: the assembled UI beside the executable outranks the checkout.
+        assert_eq!(
+            select_shell_directory(
+                None,
+                Some(bundled.clone()),
+                true,
+                Some(development),
+                Ok(installed.clone()),
+            )
+            .unwrap(),
+            bundled
+        );
+        // RELEASE: identical preference; no development source is even offered.
+        assert_eq!(
+            select_shell_directory(None, Some(bundled.clone()), true, None, Ok(installed)).unwrap(),
+            bundled
+        );
+    }
+
+    #[test]
+    fn explicit_override_always_wins() {
+        let explicit = path(&["explicit", "ui"]);
+        for bundled_ui_present in [true, false] {
+            assert_eq!(
+                select_shell_directory(
+                    Some(explicit.clone()),
+                    Some(path(&["candidate", "ui"])),
+                    bundled_ui_present,
+                    Some(path(&["checkout", "port", "ui", "dist"])),
+                    Ok(path(&["installed", "resources", "ui"])),
+                )
+                .unwrap(),
+                explicit
+            );
+        }
+    }
+
+    #[test]
+    fn absent_bundled_ui_falls_back_to_the_checkout_in_debug() {
+        let development = path(&["checkout", "port", "ui", "dist"]);
+        assert_eq!(
+            select_shell_directory(
+                None,
+                Some(path(&["candidate", "ui"])),
+                false,
+                Some(development.clone()),
+                Ok(path(&["installed", "resources", "ui"])),
+            )
+            .unwrap(),
+            development
+        );
+        // Not knowing the executable directory is the same as having no bundle.
+        assert_eq!(
+            select_shell_directory(
+                None,
+                None,
+                false,
+                Some(development.clone()),
+                Ok(path(&["installed", "resources", "ui"])),
+            )
+            .unwrap(),
+            development
+        );
+    }
+
+    #[test]
+    fn release_falls_back_to_the_resource_directory_and_keeps_its_error() {
+        let installed = path(&["installed", "resources", "ui"]);
+        assert_eq!(
+            select_shell_directory(
+                None,
+                Some(path(&["candidate", "ui"])),
+                false,
+                None,
+                Ok(installed.clone()),
+            )
+            .unwrap(),
+            installed
+        );
+        let error = select_shell_directory(
+            None,
+            None,
+            false,
+            None,
+            Err(dsh_core::error::DshError::other(
+                "resource_dir",
+                "unavailable",
+            )),
+        )
+        .unwrap_err();
+        assert!(
+            error.to_string().contains("resource_dir"),
+            "the resource_dir failure must be retained: {error}"
+        );
+    }
+
+    #[test]
+    fn only_a_regular_index_html_counts_as_a_bundled_ui() {
+        assert!(!shell_index_is_regular_file(
+            &Path::new("directory-that-does-not-exist").join("ui")
+        ));
+        let fixture = tempfile::tempdir().unwrap();
+        // No index.html at all.
+        assert!(!shell_index_is_regular_file(fixture.path()));
+        // An index.html that is a DIRECTORY is not a regular file.
+        std::fs::create_dir(fixture.path().join("index.html")).unwrap();
+        assert!(!shell_index_is_regular_file(fixture.path()));
+        std::fs::remove_dir(fixture.path().join("index.html")).unwrap();
+        // Only a real file counts.
+        std::fs::write(fixture.path().join("index.html"), "<html></html>").unwrap();
+        assert!(shell_index_is_regular_file(fixture.path()));
+    }
+}
+
+#[cfg(test)]
+mod dev_cdp_args_tests {
+    use super::{dev_cdp_browser_args, WRY_DEFAULT_BROWSER_ARGS};
+
+    /// A canonical namespace value is opaque here: the fence has already accepted
+    /// it, so the helper only distinguishes present from absent.
+    const FENCE_NAMESPACE: &str = "6284973d-2f3f-4b79-b957-2d35df6e89df";
+
+    #[test]
+    fn owned_debug_appends_the_port_only_and_preserves_wry_defaults() {
+        let args = dev_cdp_browser_args(true, Some(FENCE_NAMESPACE), Some("9341")).unwrap();
+        // The exact reviewed form: wry's defaults, then the one port switch.
+        assert_eq!(
+            args,
+            format!("{WRY_DEFAULT_BROWSER_ARGS} --remote-debugging-port=9341")
+        );
+        assert!(
+            args.starts_with(WRY_DEFAULT_BROWSER_ARGS),
+            "wry's defaults must be preserved verbatim: {args}"
+        );
+        assert_eq!(args.matches("--disable-features=").count(), 1);
+        assert!(args.contains(" --remote-debugging-port=9341"));
+        // Alignment: Chromium binds its debugging endpoint to loopback itself, and
+        // no origin relaxation is added on this lane.
+        assert!(!args.contains("--remote-debugging-address"));
+        assert!(!args.contains("--remote-allow-origins"));
+    }
+
+    #[test]
+    fn the_port_is_refused_without_the_validated_owned_namespace_fence() {
+        assert_eq!(dev_cdp_browser_args(true, None, Some("9341")), None);
+        assert_eq!(dev_cdp_browser_args(true, Some(""), Some("9341")), None);
+    }
+
+    #[test]
+    fn a_release_build_can_never_enable_the_port() {
+        assert_eq!(
+            dev_cdp_browser_args(false, Some(FENCE_NAMESPACE), Some("9341")),
+            None
+        );
+    }
+
+    #[test]
+    fn an_absent_malformed_or_out_of_range_port_is_refused() {
+        for port in [
+            None,
+            Some(""),
+            Some("   "),
+            Some(" 9341"),
+            Some("9341 "),
+            Some("\t9341"),
+            Some("abc"),
+            Some("9341x"),
+            Some("+9341"),
+            Some("-1"),
+            Some("0"),
+            Some("1023"),
+            Some("65536"),
+            Some("99999"),
+        ] {
+            assert_eq!(
+                dev_cdp_browser_args(true, Some(FENCE_NAMESPACE), port),
+                None,
+                "accepted {port:?}"
+            );
+        }
+        // The bounds themselves are inclusive.
+        assert!(dev_cdp_browser_args(true, Some(FENCE_NAMESPACE), Some("1024")).is_some());
+        assert!(dev_cdp_browser_args(true, Some(FENCE_NAMESPACE), Some("65535")).is_some());
+    }
+}
+
+#[cfg(test)]
+mod windows_chrome_script_tests {
+    use super::WINDOWS_CHROME_SCRIPT;
+
+    /// The injected controls must not occlude the SHARED client's fixed caption
+    /// controls (the official sidebar toggle sits at left 12-40 with z-index 30).
+    /// The band is therefore transparent on the host, and the drag child starts
+    /// after the slot the client reserves through `--dsh-windows-menu-start`
+    /// (48px expanded, 84px collapsed) and paints the caption fill itself.
+    #[test]
+    fn chrome_host_is_transparent_and_the_drag_child_starts_after_the_reserved_slot() {
+        let css = WINDOWS_CHROME_SCRIPT;
+        // 1. Host: full-width band, still non-interactive, now unpainted.
+        assert!(
+            css.contains("background: transparent"),
+            "the chrome host must not paint over the client controls: {css}"
+        );
+        assert!(
+            !css.contains("background: var(--dsh-caption-fill, #f9fafb); font-family"),
+            "the host keeps no opaque caption fill: {css}"
+        );
+        assert!(css.contains("inset: 0 0 auto 0"), "{css}");
+        assert!(css.contains("pointer-events: none"), "{css}");
+        // 2. Drag child: begins after the reserved slot and carries the fill.
+        assert!(
+            css.contains("margin-left: var(--dsh-windows-menu-start, 48px)"),
+            "the drag region must start after the reserved client slot: {css}"
+        );
+        assert!(
+            css.contains(".dsh-drag { flex: 1; min-width: 0; pointer-events: auto;"),
+            "{css}"
+        );
+        // 3. Buttons keep the same fill so the band reads as one caption.
+        assert!(
+            css.contains(
+                ".dsh-buttons { display: flex; width: 138px; height: 40px; pointer-events: auto;"
+            ),
+            "{css}"
+        );
+        assert_eq!(
+            css.matches("background: var(--dsh-caption-fill, #f9fafb)")
+                .count(),
+            3,
+            "body, drag child and buttons are the only caption-fill painters: {css}"
+        );
+        // 4. Disposition and palette are unchanged.
+        assert!(css.contains("height: 40px"), "{css}");
+        assert!(css.contains("z-index: 1090"), "{css}");
+        assert!(
+            css.contains("color: var(--dsh-caption-symbol, #0f1115)"),
+            "{css}"
+        );
+        assert!(
+            css.contains("body { background: var(--dsh-caption-fill, #f9fafb); }"),
+            "{css}"
+        );
+        for action in ["minimize", "maximize", "close"] {
+            assert!(
+                css.contains(&format!("data-action=\"{action}\"")),
+                "{action}: {css}"
+            );
+        }
     }
 }

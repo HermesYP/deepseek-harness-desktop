@@ -18,6 +18,32 @@ ManifestDPIAwareness PerMonitorV2
 {{#if signed_plugins_path}}
 !addplugindir "{{signed_plugins_path}}"
 {{/if}}
+; The additional plugin directory (Tauri's own `nsis_tauri_utils`) MUST be on the
+; search path BEFORE the hooks include below: installer-process.nsh calls
+; `nsis_tauri_utils::FindProcessCurrentUser`, and the stock template registers
+; this path only after its own `${ADDITIONALPLUGINSPATH}` define further down -
+; which is the "plugin not found" compile failure. The registration therefore
+; happens HERE, once, and the stock site below is suppressed by this sentinel.
+;
+; REGISTERING THE SAME PATH A SECOND TIME IS NOT HARMLESS. MEASURED, NSIS 3.11 on
+; this host, with the real `nsis_tauri_utils.dll` copied into the real layout:
+; once a plugin command has RESOLVED this plugin out of this directory, any later
+; `!addplugindir` that also provides it - including the identical path - makes the
+; next command naming that plugin abort with
+;
+;   Plugin command nsis_tauri_utils::SemverCompare conflicts with a plugin in
+;   another directory!
+;
+; That is exactly the bundle failure this sentinel fixes: `SemverCompare` in
+; `PageReinstall` is the first `nsis_tauri_utils` command after the stock site.
+; Registering the very same directory twice before the first plugin use is
+; harmless, and registering a directory that does not itself hold the DLL is
+; harmless, so the fix is "register this directory once", not "register a
+; different directory".
+{{#if additional_plugins_path}}
+!addplugindir "{{additional_plugins_path}}"
+!define DSH_ADDITIONAL_PLUGINS_REGISTERED
+{{/if}}
 
 !include MUI2.nsh
 !include FileFunc.nsh
@@ -31,6 +57,32 @@ ManifestDPIAwareness PerMonitorV2
 ${StrCase}
 ${StrLoc}
 
+; The two mode Vars are declared HERE, above the hooks include, and announced with
+; a sentinel define.
+;
+; WHY THE ORDER IS LOAD-BEARING. `installer-process.nsh`, reached through the
+; hooks include below, reads `$UpdateMode` while it is compiled; the stock
+; template declares both names later instead (upstream installer.nsi:73-77, after
+; its own hooks include at :34-36). Both arrangements that were tried fail under
+; real makensis, each reproduced with a standalone script on this host:
+;
+;   * a `$X` compiled BEFORE `Var X` in an output position aborts with
+;     `Usage: StrCpy $(user_var: output) str [maxlen] [startoffset]`;
+;   * `Var X` emitted TWICE aborts with `Error: variable "X" already declared`.
+;
+; So exactly ONE file may declare these two names, and the sentinel decides which:
+; this template declares them here, and `installer-process.nsh` skips its own
+; guarded fallback. A caller that compiles the hooks with no template at all - the
+; port's standalone fixtures - never defines the sentinel and gets the
+; declarations from the module.
+!define DSH_TEMPLATE_MODE_VARS_DECLARED
+Var PassiveMode
+Var UpdateMode
+
+; The hooks include must also stay BELOW the two `!addplugindir` directives
+; above: `installer-process.nsh` names `nsis_tauri_utils` while it is compiled,
+; and a plugin call compiled before its directory is registered fails with
+; `Plugin not found, cannot call nsis_tauri_utils::FindProcessCurrentUser`.
 {{#if installer_hooks}}
 !include "{{installer_hooks}}"
 {{/if}}
@@ -70,8 +122,12 @@ ${StrLoc}
 !define ESTIMATEDSIZE "{{estimated_size}}"
 !define STARTMENUFOLDER "{{start_menu_folder}}"
 
-Var PassiveMode
-Var UpdateMode
+; `PassiveMode` and `UpdateMode` are NOT re-declared here. They are declared
+; above, immediately before the hooks include, because `installer-process.nsh`
+; reads them while it is compiled. This is where the stock template declares
+; them, and repeating a `Var` for a name that is already declared is
+; `Error: variable "PassiveMode" already declared` - a hard failure, not a
+; redundant-but-tolerated line. The single declaration site above is deliberate.
 Var NoShortcutMode
 Var WixMode
 Var OldMainBinaryName
@@ -111,7 +167,19 @@ VIAddVersionKey "FileVersion" "${VERSION}"
 VIAddVersionKey "ProductVersion" "${VERSION}"
 
 # additional plugins
+;
+; This is the stock template's own registration site. It is kept - so that a
+; rendering whose `additional_plugins_path` is empty behaves exactly as upstream -
+; but it is now conditional on the early registration above NOT having happened.
+; `${ADDITIONALPLUGINSPATH}` and `{{additional_plugins_path}}` are the same data
+; key, so without the guard this line registers one directory a second time and
+; the next `nsis_tauri_utils` command aborts with `Plugin command
+; nsis_tauri_utils::SemverCompare conflicts with a plugin in another directory!`
+; (see the note at the early registration). The two directives are kept in sync by
+; `DSH_ADDITIONAL_PLUGINS_REGISTERED`, so exactly one of them ever emits.
+!ifndef DSH_ADDITIONAL_PLUGINS_REGISTERED
 !addplugindir "${ADDITIONALPLUGINSPATH}"
+!endif
 
 ; Uninstaller signing command
 !if "${UNINSTALLERSIGNCOMMAND}" != ""

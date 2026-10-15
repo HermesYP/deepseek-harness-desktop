@@ -13,7 +13,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import type {
   DesktopShortcutInput, ShortcutConfigSnapshot, ShortcutDefinition,
 } from '../protocol.ts'
-import { ShortcutRegistry } from '../../../../_upstream/packages/client/shortcuts/src/client/registry.ts'
+import { ShortcutRegistry } from '../../../.upstream/packages/client/shortcuts/src/client/registry.ts'
 
 interface TauriEventEnvelope {
   readonly event: string

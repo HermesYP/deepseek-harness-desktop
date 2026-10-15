@@ -74,7 +74,95 @@ if (-not (Get-Command -Name 'Install-DshPinnedNode' -ErrorAction SilentlyContinu
     Import-Module (Join-Path $PSScriptRoot '..\..\scripts\lib\node-runtime.psm1') -Global -ErrorAction Stop
 }
 
+# The compiler the target's OWN Web build resolves. This is not the root
+# lockfile's newest esbuild: `apps/web` declares `vite: ^6.4.3`, the linked
+# `vite@6.4.3` declares `esbuild: ^0.25.0`, and exactly one installed
+# `@esbuild/win32-x64` version (0.25.12) satisfies that range.
+# `Get-DshUpstreamEsbuildVersion` re-derives this from the linked Vite package on
+# every use and refuses a disagreement, so a stale literal cannot pick a
+# different compiler than the build actually runs on.
 $script:DefaultEsbuildVersion = '0.25.12'
+
+function Test-DshEsbuildVersionSatisfies {
+    <#
+    .SYNOPSIS
+      Whether an exact esbuild version satisfies a declared range.
+    .DESCRIPTION
+      Supports the exact, caret and tilde forms the workspace uses. Any other
+      syntax is refused rather than approximated: a guessed comparison could accept
+      the wrong compiler, which is the failure this check exists to prevent.
+    #>
+    param(
+        [Parameter(Mandatory)][string]$Version,
+        [Parameter(Mandatory)][string]$Range
+    )
+
+    $parts = $Version.Split('-')[0].Split('.')
+    if ($parts.Count -ne 3) { return $false }
+    $major = 0; $minor = 0; $patch = 0
+    if (-not [int]::TryParse($parts[0], [ref]$major)) { return $false }
+    if (-not [int]::TryParse($parts[1], [ref]$minor)) { return $false }
+    if (-not [int]::TryParse($parts[2], [ref]$patch)) { return $false }
+
+    $text = $Range.Trim()
+    if ($text -match '^\^(\d+)\.(\d+)\.(\d+)$') {
+        $rMajor = [int]$Matches[1]; $rMinor = [int]$Matches[2]; $rPatch = [int]$Matches[3]
+        if ($major -ne $rMajor) { return $false }
+        if ($rMajor -gt 0) {
+            if ($minor -ne $rMinor) { return $minor -gt $rMinor }
+            return $patch -ge $rPatch
+        }
+        # Caret below 1.0.0 pins the leftmost non-zero position.
+        if ($rMinor -gt 0) { return ($minor -eq $rMinor) -and ($patch -ge $rPatch) }
+        return ($minor -eq 0) -and ($patch -eq $rPatch)
+    }
+    if ($text -match '^~(\d+)\.(\d+)\.(\d+)$') {
+        return ($major -eq [int]$Matches[1]) -and ($minor -eq [int]$Matches[2]) -and ($patch -ge [int]$Matches[3])
+    }
+    if ($text -match '^(\d+)\.(\d+)\.(\d+)$') {
+        return ($major -eq [int]$Matches[1]) -and ($minor -eq [int]$Matches[2]) -and ($patch -eq [int]$Matches[3])
+    }
+    throw "Unsupported esbuild range '$Range'; refusing to guess whether a compiler satisfies it."
+}
+
+function Get-DshUpstreamEsbuildVersion {
+    <#
+    .SYNOPSIS
+      The unique esbuild version the linked `apps/web` Vite resolves.
+    .DESCRIPTION
+      `apps/web` owns its own Vite, which is not the root lockfile's newest Vite.
+      The linked Vite package declares an esbuild range; the installed
+      `@esbuild/win32-x64` directories are the candidates. Exactly one candidate
+      must satisfy the range, otherwise the compiler is ambiguous and the caller is
+      refused instead of being handed a guessed one.
+    #>
+    param(
+        [Parameter(Mandatory)][string]$UpstreamRoot
+    )
+
+    $viteManifestPath = Join-Path $UpstreamRoot 'apps\web\node_modules\vite\package.json'
+    if (-not (Test-Path -LiteralPath $viteManifestPath -PathType Leaf)) {
+        throw "The linked apps/web Vite manifest is absent: $viteManifestPath. Link the toolchain first (port/ui/link-toolchain.ps1)."
+    }
+    $vite = Get-Content -LiteralPath $viteManifestPath -Raw | ConvertFrom-Json
+    $range = [string]$vite.dependencies.esbuild
+    if (-not $range) {
+        throw "The linked apps/web Vite $($vite.version) declares no esbuild dependency; refusing to guess the compiler."
+    }
+    $store = Join-Path $UpstreamRoot 'node_modules\.pnpm'
+    if (-not (Test-Path -LiteralPath $store -PathType Container)) {
+        throw "The pnpm store is absent: $store"
+    }
+    $satisfying = @()
+    foreach ($dir in Get-ChildItem -LiteralPath $store -Directory -Filter '@esbuild+win32-x64@*') {
+        $candidate = $dir.Name.Substring('@esbuild+win32-x64@'.Length).Split('_')[0]
+        if (Test-DshEsbuildVersionSatisfies -Version $candidate -Range $range) { $satisfying += $candidate }
+    }
+    if ($satisfying.Count -ne 1) {
+        throw "The linked apps/web Vite $($vite.version) declares esbuild '$range' and $($satisfying.Count) installed @esbuild/win32-x64 versions satisfy it ($($satisfying -join ', ')); exactly one reviewed compiler is required. Clean the toolchain link and re-run link-toolchain.ps1."
+    }
+    return $satisfying[0]
+}
 
 function Test-DshPathContained {
     <#
@@ -196,6 +284,13 @@ function Get-DshLockedEsbuildBinary {
     if ($manifest.name -ne '@esbuild/win32-x64') { throw "Unexpected esbuild package name '$($manifest.name)' at $packageRoot" }
     if ([string]$manifest.version -ne $ExpectedVersion) {
         throw "The locked esbuild package declares version '$($manifest.version)', not '$ExpectedVersion'; refusing a substituted compiler."
+    }
+    # Cross-check the recorded version against the compiler the linked apps/web
+    # Vite actually resolves, so this literal cannot silently rot into a
+    # different compiler than the build runs on.
+    $derived = Get-DshUpstreamEsbuildVersion -UpstreamRoot $UpstreamRoot
+    if ($derived -ne $ExpectedVersion) {
+        throw "The recorded esbuild version '$ExpectedVersion' is not the one the linked apps/web Vite resolves ('$derived'); update the recorded version deliberately rather than staging a compiler the build does not use."
     }
     $executable = Join-Path $packageRoot 'esbuild.exe'
     if (-not (Test-Path -LiteralPath $executable -PathType Leaf)) { throw "The esbuild executable is absent: $executable" }
@@ -565,6 +660,9 @@ function Invoke-DshQualifiedUiBuild {
 
     $uiDir = Join-Path $PortRoot 'ui'
     $upstream = if ($RepoRoot) { Join-Path $RepoRoot '_upstream' } else { Join-Path (Split-Path -Parent $PortRoot) '_upstream' }
+    # An explicitly owned upstream checkout overrides the default, so the UI build
+    # can be qualified against a checkout outside this repository.
+    if ($env:DSH_UPSTREAM_ROOT) { $upstream = $env:DSH_UPSTREAM_ROOT }
     $pinPath = Join-Path $PortRoot 'installer\node-runtime.json'
     $vite = Join-Path $uiDir 'node_modules\vite\bin\vite.js'
     foreach ($required in @($vite, $pinPath)) {
@@ -688,5 +786,6 @@ function Invoke-DshQualifiedUiBuild {
 }
 
 Export-ModuleMember -Function Get-DshLockedEsbuildBinary, Resolve-DshTrustedEsbuild,
+    Get-DshUpstreamEsbuildVersion, Test-DshEsbuildVersionSatisfies,
     Assert-DshUiBuildArtifacts, Publish-DshUiBuildTree, Resolve-DshQualifiedUiNode,
     Invoke-DshQualifiedNodeScript, Invoke-DshQualifiedUiBuild

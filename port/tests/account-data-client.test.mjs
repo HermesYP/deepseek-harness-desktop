@@ -4,12 +4,13 @@ import test from 'node:test'
 import {readFileSync} from 'node:fs'
 import {runInNewContext} from 'node:vm'
 import {repairAccountDataClient} from '../scripts/lib/account-data-runtime.mjs'
+import {accountUpstreamVersion,readAccountUpstream} from './helpers/account-upstream.mjs'
 
-const base=readFileSync(new URL('../../_upstream/packages/client/ui-settings-account/lib/client.js',import.meta.url),'utf8')
+const base=readAccountUpstream('packages/client/ui-settings-account/lib/client.js')
 const helper=readFileSync(new URL('../ui/account-data/client-state.mjs',import.meta.url),'utf8')
 const fixed=process.env.DSH_TEST_ACCOUNT_CLIENT
  ? readFileSync(process.env.DSH_TEST_ACCOUNT_CLIENT,'utf8')
- : repairAccountDataClient(base,helper,'0.1.7-rc.2').source
+ : repairAccountDataClient(base,helper,accountUpstreamVersion).source
 const deferred=()=>{let resolve;const promise=new Promise(done=>{resolve=done});return {promise,resolve}}
 const flush=()=>new Promise(resolve=>setImmediate(resolve))
 const session=id=>({status:'credential-stored',portSessionId:id,attempt:null,links:{usageUrl:'https://platform.deepseek.com/usage',topUpUrl:'https://platform.deepseek.com/top_up'}})
@@ -36,9 +37,13 @@ function harness(source,{onboarding=false}={}){
  }
  // Account-only cases omit the independent overlay. The onboarding case below
  // executes the real registration, controller and credit button as well.
- const anchor='\t\t\tif ("dshDesktop" in globalThis) {'
- assert.equal(source.split(anchor).length,2)
- runInNewContext(onboarding?source:source.replace(anchor,'\t\t\tif (false) {'),{
+ // 0.2.1-alpha.3 replaced the desktop gate with a `const desktop = ...` value;
+ // the alpha.2 wording is kept so both reviewed releases stay executable here.
+ const gate=source.includes('\t\t\tconst desktop = "dshDesktop" in globalThis;')
+  ? ['\t\t\tconst desktop = "dshDesktop" in globalThis;','\t\t\tconst desktop = false;']
+  : ['\t\t\tif ("dshDesktop" in globalThis) {','\t\t\tif (false) {']
+ assert.equal(source.split(gate[0]).length,2)
+ runInNewContext(onboarding?source:source.replace(gate[0],gate[1]),{
   dshDesktop:{},window:{
    __ModuleLoader__:{load:row=>{module=row.factory(name=>{assert.ok(name in framework);return framework[name]})}},
    addEventListener:(event,handler)=>browserEvents.set(event,handler),removeEventListener:event=>browserEvents.delete(event),
@@ -48,6 +53,7 @@ function harness(source,{onboarding=false}={}){
  })
  const read=pending=>{const request=deferred();pending.push(request);return request.promise}
  module.apply({
+  get:()=>undefined,
   effect:callback=>{const dispose=callback();if(typeof dispose==='function')effects.push(dispose)},
   locale:{register:(_,value)=>{dictionaries=value;return ()=>{}},bind:()=>key=>dictionaries.en[key]??key,getSnapshot:()=>({active:'en'})},
   theme:{getTheme:()=>({active:{colorScheme:'dark'}})},on:()=>()=>{},

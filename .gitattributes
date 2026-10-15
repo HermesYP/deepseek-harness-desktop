@@ -1,0 +1,2 @@
+# Frozen runtime descriptors hash exact bytes; Windows checkout must not rewrite them.
+port/runtime-locks/windows-x64/** -text

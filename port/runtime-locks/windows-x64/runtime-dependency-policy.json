@@ -1,13 +1,13 @@
 {
   "schemaVersion": 1,
-  "sourcePolicySha256": "5a01817df635631895cc69d8e82a895c4cc335b16d7eeb8a14cb63f8ce55b332",
-  "sourceLockSha256": "b45f8695fb0dca90d3ed07afc766e923356539962706ee36ac8cdb396e6d734d",
+  "sourcePolicySha256": "3c624c26e58ab02ffc8d653bb8a9e8767a63fe0576bc0dbfaa3a5e43f88d973b",
+  "sourceLockSha256": "087cc6686b9b51ba764742eba50e1d3125e9706af7b430a578789281750f9b2a",
   "patches": [
     {
-      "selector": "@earendil-works/pi-ai@1.0.2",
-      "path": "patches/@earendil-works__pi-ai@1.0.2.patch",
+      "selector": "@earendil-works/pi-ai@1.1.0",
+      "path": "patches/@earendil-works__pi-ai@1.1.0.patch",
       "bytes": 4477,
-      "sha256": "1cc211bc358d30cb58bd975f39c03e296f8a277c3de845514d12f9ae77ebab5f"
+      "sha256": "66eaf960054f10441b93ac3857114e96c1901f6d183713e2f21437b007111644"
     },
     {
       "selector": "node-pty@1.2.0-beta.15",

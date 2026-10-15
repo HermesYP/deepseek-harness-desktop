@@ -20,7 +20,9 @@ const read = relative => readFileSync(join(port, relative), 'utf8')
 
 test('the build script takes an explicit upstream root with a documented precedence', () => {
   const build = read(join('scripts', 'build.ps1'))
-  assert.match(build, /\[string\]\$UpstreamRoot\n\)/, 'the parameter exists on the param block')
+  // Optional qualification parameters may follow UpstreamRoot; it need not be last.
+  const parameters = build.match(/^param\(\r?\n[\s\S]*?^\)/m)?.[0] ?? ''
+  assert.match(parameters, /^\s*\[string\]\$UpstreamRoot,?\r?$/m, 'the parameter exists on the param block')
   assert.match(build, /\.PARAMETER UpstreamRoot/, 'the parameter is documented')
   assert.match(build, /\$UpstreamRequested = \$UpstreamRoot/, 'the parameter is the first source')
   assert.match(build, /\$UpstreamRequested = \$env:DSH_UPSTREAM_ROOT/, 'the environment is the second source')

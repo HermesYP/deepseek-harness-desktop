@@ -698,6 +698,8 @@ if ($Groups -ccontains 'B') {
 # ---------------------------------------------------------------------------
 
 if ($Groups -ccontains 'C') {
+    # Match build.ps1: optional config properties must also work in strict mode.
+    Set-StrictMode -Version Latest
     Write-Host ''
     Write-Host 'Group C: Assert-BundleGuardConfiguration' -ForegroundColor Cyan
 

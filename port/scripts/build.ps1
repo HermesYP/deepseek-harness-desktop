@@ -104,6 +104,18 @@
   `package.json`, or one without the files the runtime stage imports fails the
   stage with an actionable message rather than falling back silently.
 
+.PARAMETER QualificationHashObserverRoot
+  Opt-in NSIS hash-observer qualification (-Stage bundle only). A predetermined
+  receipt root that must be a dedicated, currently non-existent leaf strictly
+  under the build scratch. When set, the bundle stage generates the supported
+  `bundle > windows > signCommand` override via
+  port/scripts/lib/nsis-sign-command-override.mjs, validates it in exact shape
+  (schema + bundle.windows.signCommand, canonical full-path 64-bit Windows
+  PowerShell, canonical args with exactly one %1), records observer+override
+  SHA-256 provenance pre-bundle, appends exactly one `--config` argument, and
+  rechecks the resource mirrors post-bundle against the same original cargo
+  JSON stream. Default (unset): the bundle stage is byte-for-byte unchanged.
+
 .EXAMPLE
   .\port\scripts\build.ps1 -Stage all -Release
 
@@ -139,7 +151,17 @@ param(
   # See .PARAMETER RuntimeEsbuildPath.
   [string]$RuntimeEsbuildPath,
   # An explicitly owned upstream checkout. See .PARAMETER UpstreamRoot.
-  [string]$UpstreamRoot
+  [string]$UpstreamRoot,
+  # Opt-in NSIS hash-observer qualification: a PREDETERMINED receipt root,
+  # which must be a dedicated non-existent leaf strictly under the build
+  # scratch (-Stage bundle only). When set, the bundle stage generates the
+  # supported `bundle > windows > signCommand` override through
+  # port/scripts/lib/nsis-sign-command-override.mjs, validates it in exact
+  # shape, records observer+override SHA-256 pre-bundle provenance, appends
+  # exactly one `--config` argument, and rechecks the resource mirrors after
+  # the bundle against the same original cargo JSON. Default (empty): the
+  # bundle stage is byte-for-byte unchanged.
+  [string]$QualificationHashObserverRoot
 )
 
 $ErrorActionPreference = 'Stop'
@@ -323,6 +345,111 @@ function Invoke-Checked([string]$File, [string[]]$Arguments, [string]$WorkDir) {
     Pop-Location
   }
   if ($exitCode -ne 0) { throw "'$File $($Arguments -join ' ')' failed with exit code $exitCode" }
+}
+
+# --- Minimal opt-in NSIS hash-observer qualification (supported signCommand only).
+# --- No canonical config change, no env overlay, no guard weakening.
+
+# Canonical 64-bit Windows PowerShell; mirrored from
+# port/scripts/lib/nsis-sign-command-override.mjs (SYSTEM_POWERSHELL_64).
+$ObserverCanonicalPowerShell = $env:SystemRoot + '\System32\WindowsPowerShell\v1.0\powershell.exe'
+
+function Assert-QualificationHashObserverRoot {
+  param([string]$ReceiptRoot)
+  if ([string]::IsNullOrWhiteSpace($ReceiptRoot)) {
+    throw 'qualification hash-observer root must be non-empty'
+  }
+  if ($env:TAURI_CONFIG) {
+    throw 'TAURI_CONFIG is set; refusing an ambiguous config overlay (fail closed)'
+  }
+  $full = [System.IO.Path]::GetFullPath($ReceiptRoot)
+  $scratchBoundary = $Scratch.TrimEnd('\') + '\'
+  if (-not $full.StartsWith($scratchBoundary, [System.StringComparison]::OrdinalIgnoreCase)) {
+    throw "qualification receipt root must be strictly under the build scratch ($Scratch)"
+  }
+  if ($full.TrimEnd('\') -ieq $Scratch.TrimEnd('\')) {
+    throw 'qualification receipt root must be a dedicated leaf under the scratch'
+  }
+  # The ancestry check starts at the scratch ROOT ITSELF: it must exist as a
+  # container and never be a reparse point, and the leaf chain is then probed
+  # part by part down to the receipt root.
+  if (-not (Test-Path -LiteralPath $Scratch -PathType Container)) {
+    throw "build scratch root is not a container: $Scratch"
+  }
+  $scratchItem = Get-Item -LiteralPath $Scratch -Force
+  if (($scratchItem.Attributes -band [System.IO.FileAttributes]::ReparsePoint) -ne 0) {
+    throw "build scratch root itself is a reparse point: $Scratch"
+  }
+  $probe = $Scratch.TrimEnd('\')
+  $remaining = $full.TrimEnd('\').Substring($probe.Length).TrimStart('\')
+  foreach ($part in ($remaining -split '\\')) {
+    $probe = Join-Path $probe $part
+    if (Test-Path -LiteralPath $probe) {
+      $item = Get-Item -LiteralPath $probe -Force
+      if (($item.Attributes -band [System.IO.FileAttributes]::ReparsePoint) -ne 0) {
+        throw "qualification receipt root chain contains a reparse point: $probe"
+      }
+      if (-not $item.PSIsContainer) { throw "qualification receipt root chain has a file where a directory is needed: $probe" }
+    } else {
+      New-Item -ItemType Directory -Path $probe -Force | Out-Null
+    }
+  }
+  $existing = @(Get-ChildItem -LiteralPath $full -Force -ErrorAction SilentlyContinue)
+  if ($existing.Count -ne 0) {
+    throw "qualification receipt root must be unique and empty (predetermined per release run): $full"
+  }
+  return $full
+}
+
+function Assert-HashObserverOverrideShape {
+  param([string]$OverridePath, [string]$ExpectedObserverPath, [string]$ExpectedReceiptRoot)
+  $parsed = Get-Content -LiteralPath $OverridePath -Raw | ConvertFrom-Json
+  $topKey = (@($parsed.PSObject.Properties.Name) | Sort-Object) -join '|'
+  if ($topKey -cne '$schema|bundle') { throw "override top-level members refused: $topKey" }
+  if ($parsed.'$schema' -cne 'https://schema.tauri.app/config/2') { throw 'override schema key refused' }
+  if ((@($parsed.bundle.PSObject.Properties.Name) | Sort-Object) -cne 'windows') {
+    throw 'override bundle must contain exactly windows'
+  }
+  $windowsKey = (@($parsed.bundle.windows.PSObject.Properties.Name) | Sort-Object) -join '|'
+  if ($windowsKey -cne 'signCommand') { throw "override bundle.windows members refused: $windowsKey" }
+  $signCommand = $parsed.bundle.windows.signCommand
+  $signCommandKey = (@($signCommand.PSObject.Properties.Name) | Sort-Object) -join '|'
+  if ($signCommandKey -cne 'args|cmd') { throw "override signCommand members refused: $signCommandKey" }
+  # Windows paths are case-insensitive: SystemRoot may be C:\WINDOWS while the generator uses C:\Windows.
+  if ($signCommand.cmd -isnot [string] -or -not [string]::Equals($signCommand.cmd, $ObserverCanonicalPowerShell, [System.StringComparison]::OrdinalIgnoreCase)) { throw 'override cmd must be the canonical 64-bit Windows PowerShell full path' }
+  $argsList = @($signCommand.args)
+  if ($argsList.Count -ne 8) { throw "override args must be exactly 8 canonical items (got $($argsList.Count))" }
+  $expectedFlags = @('-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File')
+  for ($i = 0; $i -lt 5; $i++) {
+    if ($argsList[$i] -cne $expectedFlags[$i]) { throw "override args[$i] refused (expected $($expectedFlags[$i]))" }
+  }
+  $observerPath = [System.IO.Path]::GetFullPath($argsList[5])
+  if ($observerPath -cne [System.IO.Path]::GetFullPath($ExpectedObserverPath)) { throw 'override observer file path refused' }
+  if (-not (Test-Path -LiteralPath $observerPath -PathType Leaf)) { throw 'override observer file absent' }
+  if ($argsList[6] -cne '%1') { throw 'override %1 placeholder must precede the receipt root' }
+  $receiptRoot = [System.IO.Path]::GetFullPath($argsList[7])
+  if ($receiptRoot -cne [System.IO.Path]::GetFullPath($ExpectedReceiptRoot)) { throw 'override receipt root refused' }
+}
+
+function Invoke-HashObserverOverrideGeneration {
+  param([string]$ObserverScript, [string]$ReceiptRoot, [string]$OverridePath)
+  Assert-Tool 'node' 'Install Node.js 22.19+ or 24+.'
+  Invoke-Checked 'node' @(
+    (Join-Path $PortRoot 'scripts\lib\nsis-sign-command-override.mjs'),
+    '--recorder', $ObserverScript,
+    '--root', $ReceiptRoot,
+    '--out', $OverridePath
+  ) $PortRoot
+  Assert-HashObserverOverrideShape -OverridePath $OverridePath -ExpectedObserverPath $ObserverScript -ExpectedReceiptRoot $ReceiptRoot
+  $observerSha = (Get-FileHash -LiteralPath $ObserverScript -Algorithm SHA256).Hash.ToLowerInvariant()
+  $overrideSha = (Get-FileHash -LiteralPath $OverridePath -Algorithm SHA256).Hash.ToLowerInvariant()
+  @{ kind = 'sign-command-override-provenance'; mode = 'observer-only'
+     createdUtc = [DateTime]::UtcNow.ToString('o')
+     observerPath = $ObserverScript; observerSha256 = $observerSha
+     overridePath = $OverridePath; overrideSha256 = $overrideSha } |
+    ConvertTo-Json -Compress |
+    Add-Content -LiteralPath (Join-Path $ReceiptRoot 'prebundle-provenance.jsonl') -Encoding UTF8
+  return $OverridePath
 }
 
 # Isolation: every launched dsh process gets a throwaway home. See
@@ -1547,7 +1674,14 @@ function Assert-BundleGuardConfiguration([string]$ConfigRoot) {
     }
   }
   $tauriConf = Get-Content -LiteralPath (Join-Path $ConfigRoot 'tauri.conf.json') -Raw | ConvertFrom-Json
-  $hook = $tauriConf.build.beforeBundleCommand
+  # These optional properties are normally absent; build.ps1 runs in strict
+  # mode, so inspect their presence without dereferencing missing members.
+  $hook = $null
+  $buildProperty = $tauriConf.PSObject.Properties['build']
+  if ($null -ne $buildProperty -and $null -ne $buildProperty.Value) {
+    $hookProperty = $buildProperty.Value.PSObject.Properties['beforeBundleCommand']
+    if ($null -ne $hookProperty) { $hook = $hookProperty.Value }
+  }
   if ($null -ne $hook -and ($hook -isnot [string] -or -not [string]::IsNullOrWhiteSpace($hook))) {
     throw 'build.beforeBundleCommand is configured; a post-qualification hook could mutate the guarded resource trees'
   }
@@ -1584,7 +1718,7 @@ function Build-Bundle {
   $ErrorActionPreference = 'Continue'
   Push-Location $TauriDir
   try {
-    & cargo @('tauri', 'build', '--no-bundle', '--', '--message-format=json-render-diagnostics') > $tauriOutput
+    & cargo @('tauri', 'build', '--no-bundle', '--', '--locked', '--message-format=json-render-diagnostics') > $tauriOutput
     $tauriExit = $LASTEXITCODE
   } finally {
     $ErrorActionPreference = $previousPreference
@@ -1603,7 +1737,62 @@ function Build-Bundle {
   # Bundle the qualified artifacts. No recompile: the bundle step packages
   # the already-built binaries and reads the SOURCE trees (which the runtime
   # stage sealed and the guard proved the mirrors match). Same env/profile.
-  Invoke-Checked 'cargo' @('tauri', 'bundle') $TauriDir
+  $bundleArguments = @('tauri', 'bundle')
+  $observerReceiptRoot = $null
+  if (-not [string]::IsNullOrWhiteSpace($QualificationHashObserverRoot)) {
+    # Opt-in only (predetermined parent pass; -Stage bundle): the canonical
+    # tauri.conf.json is untouched; the only packaging delta is exactly one
+    # `--config` argument carrying the strictly validated override.
+    Write-Stage 'Opt-in NSIS hash-observer qualification (supported signCommand)'
+    $observerScript = Join-Path $PortRoot 'installer\hash-observer.ps1'
+    if (-not (Test-Path -LiteralPath $observerScript -PathType Leaf)) {
+      throw "hash observer script must exist: $observerScript"
+    }
+    $observerReceiptRoot = Assert-QualificationHashObserverRoot -ReceiptRoot $QualificationHashObserverRoot
+    $observerOverridePath = Join-Path $Scratch ("nsis-hash-observer-override-{0}.json" -f [guid]::NewGuid().ToString('N'))
+    Invoke-HashObserverOverrideGeneration -ObserverScript $observerScript -ReceiptRoot $observerReceiptRoot -OverridePath $observerOverridePath | Out-Null
+    $bundleArguments += @('--config', $observerOverridePath)
+  }
+  # Resource SOURCE paths must be absolute and collapsed before the bundler renders
+  # them. `tauri-bundler` 2.9.4 joins each `bundle.resources` key onto the app
+  # directory verbatim (`src/bundle/windows/nsis/mod.rs`, `generate_resource_data`),
+  # so the generated script names sources as
+  # `<repo>\port\src-tauri\app\..\..\runtime-payload\dsh\<file>` - 20 characters
+  # longer than the same path collapsed. NSIS's `File` opens the SOURCE through a
+  # Win32 path that must stay under MAX_PATH: MEASURED on this host with real
+  # makensis against the real resource file, 259 characters opens and 260 or more
+  # fails with `File: failed opening file "<path>"`. The bundle died on a
+  # 261-character source whose canonical form is 241.
+  #
+  # The canonical tauri.conf.json is NOT edited. The only delta is one more
+  # `--config` JSON Merge Patch that replaces each relative source key with its
+  # canonical absolute form and DELETES the relative key. The CLI composes and
+  # applies `--config` in two different layers: composing the given patches retains
+  # a `null` value (helpers/config.rs `merge_patches`), and applying the composed
+  # patch to the canonical configuration is `json_patch::merge`, where `null`
+  # REMOVES the key. Without the nulls the relative sources would survive, and those
+  # are the spellings that broke MAX_PATH. Every DESTINATION value is copied
+  # verbatim, so the installed layout (`$INSTDIR\ui\...`, `$INSTDIR\dsh\...`) is
+  # unchanged. The bundler documents `--config` as repeatable and merged in the
+  # order given (tauri-cli-2.11.5/src/bundle.rs), so this patch is appended AFTER
+  # the observer's: the two are DISJOINT (windows.signCommand vs resources), which
+  # is why neither composition order (nor keeping them as two arguments) matters.
+  # The override is generated on the ordinary lane too.
+  Assert-Tool 'node' 'Install Node.js 22.19+ or 24+.'
+  $resourceOverridePath = Join-Path $Scratch ("bundle-resource-override-{0}.json" -f [guid]::NewGuid().ToString('N'))
+  Invoke-Checked 'node' @(
+    (Join-Path $PortRoot 'scripts\lib\bundle-resource-override.mjs'),
+    '--app-dir', $AppDir,
+    '--out', $resourceOverridePath
+  ) $PortRoot
+  $bundleArguments += @('--config', $resourceOverridePath)
+  Invoke-Checked 'cargo' $bundleArguments $TauriDir
+  if ($null -ne $observerReceiptRoot) {
+    # Post-bundle resource-guard recheck over the SAME original cargo JSON
+    # stream: proves the observer/packaging pass modified no exe/resources.
+    Assert-CompiledResourceMirrorsFromJson -ArtifactJsonPath $tauriOutput -Stream 'tauri-build'
+    Write-Host "    observer receipts: $observerReceiptRoot"
+  }
   $nsis = Join-Path $exeDir 'bundle\nsis'
   if (Test-Path $nsis) {
     Write-Host "    installer output: $nsis" -ForegroundColor Green
@@ -1695,6 +1884,14 @@ function Test-Packaging {
 }
 
 Test-Prerequisites
+
+# The hash-observer opt-in qualifies ONLY the bundle stage. An unsupported
+# stage combination would otherwise silently ignore the receipt root, so this
+# refusal runs before any stage body, not after the resources have been built.
+if (-not [string]::IsNullOrWhiteSpace($QualificationHashObserverRoot) -and
+    $Stage -notin @('bundle', 'all')) {
+  throw "QualificationHashObserverRoot qualifies only -Stage bundle (or all); requested stage is '$Stage'."
+}
 
 if ($Stage -ne 'runtime-lock-refresh') { $null = New-Item -ItemType Directory -Force -Path $Scratch }
 $doAll = $Stage -eq 'all'

@@ -8,11 +8,12 @@
 // The inlined constant is NOT a guess. Each reviewed Cordis release records the
 // index of ACTIVE in its declared member order, and a version absent from the
 // table is refused, so an unreviewed release can never have an enum value
-// transcribed on its behalf. Both entries below were read from the vendored
-// source of their own checkout:
+// transcribed on its behalf. Each entry below was read from the vendored
+// source of its own checkout:
 //
-//   4.0.4         members [PENDING, LOADING, ACTIVE, FAILED, DISPOSED, UNLOADING] -> ACTIVE 2
-//   4.0.5-alpha.1 members [PENDING, LOADING, ACTIVE, FAILED, DISPOSED, UNLOADING] -> ACTIVE 2
+//   4.0.4          members [PENDING, LOADING, ACTIVE, FAILED, DISPOSED, UNLOADING] -> ACTIVE 2
+//   4.0.5-alpha.1  members [PENDING, LOADING, ACTIVE, FAILED, DISPOSED, UNLOADING] -> ACTIVE 2
+//   4.0.5-alpha.2  members [PENDING, LOADING, ACTIVE, FAILED, DISPOSED, UNLOADING] -> ACTIVE 2
 //
 // `port/tests/packaging/config-editor-runtime-import.test.mjs` re-derives that
 // index from the reference checkout, so this table cannot drift from the source
@@ -20,6 +21,7 @@
 export const REVIEWED_CORDIS_FIBER_STATES = Object.freeze({
   '4.0.4': 2,
   '4.0.5-alpha.1': 2,
+  '4.0.5-alpha.2': 2,
 })
 
 /**

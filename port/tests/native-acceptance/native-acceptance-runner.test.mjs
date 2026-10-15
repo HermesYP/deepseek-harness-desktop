@@ -2051,11 +2051,15 @@ test('R1: the debug CDP port is consumed only through the owned-debug builder la
   assert.ok(source.includes('owned_namespace.as_deref()'), 'the port is gated on the validated owned-credential fence')
   assert.ok(source.includes('is_ascii_digit()'), 'the port must be plain decimal digits')
   assert.ok(source.includes('(1024..=65535).contains(&port)'), 'the port bounds must be enforced')
-  // The builder keeps wry's defaults and adds only loopback debugging.
+  // The builder keeps wry's defaults and adds ONLY the validated port switch:
+  // Chromium binds its debugging endpoint to loopback itself, and no
+  // --remote-allow-origins relaxation is added.
   assert.ok(source.includes('const WRY_DEFAULT_BROWSER_ARGS'), 'wry`s default arguments must be preserved verbatim')
   assert.ok(source.includes('--disable-features=msWebOOUI,msPdfOOUI,msSmartScreenProtection'))
-  assert.ok(source.includes('--remote-debugging-address=127.0.0.1'), 'the port must stay loopback-only')
   assert.ok(source.includes('--remote-debugging-port={port}'), 'only the validated port is interpolated')
+  assert.ok(source.includes('"{WRY_DEFAULT_BROWSER_ARGS} --remote-debugging-port={port}"'), 'the emitted form is wry`s defaults plus the one port switch')
+  assert.ok(!source.includes('--remote-debugging-address='), 'no address switch value is emitted; Chromium binds loopback itself')
+  assert.ok(!source.includes('--remote-allow-origins='), 'no origin relaxation value is added')
   assert.ok(source.includes('.additional_browser_args(additional_args)'), 'the arguments must be applied to the window builder')
 })
 

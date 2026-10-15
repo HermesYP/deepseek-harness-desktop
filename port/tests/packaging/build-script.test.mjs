@@ -485,13 +485,57 @@ test('both build lanes guard the original captured artifact stream before packag
   assert.match(core, /Get-CompiledResourceArtifactJson/)
   assert.match(core, /Assert-CompiledResourceMirrorsFromJson/)
   const bundle = code.slice(code.indexOf('function Build-Bundle'), code.indexOf('function Test-InterfaceFixtures'))
+  assert.match(bundle, /'build', '--no-bundle', '--', '--locked', '--message-format=json-render-diagnostics'/)
   const compileAt = bundle.indexOf("'build', '--no-bundle'")
+  // The bundle step goes through the declared argument vector: the EXACT
+  // default `@('tauri', 'bundle')` is declared BEFORE the opt-in branch can
+  // append the single `--config` pair, so the default lane stays byte-for-byte
+  // unchanged and the qualification lane can only add packaging config.
+  const argsDeclarationAt = bundle.indexOf("$bundleArguments = @('tauri', 'bundle')")
+  const optInBranchAt = bundle.indexOf('-not [string]::IsNullOrWhiteSpace($QualificationHashObserverRoot)')
+  assert.ok(argsDeclarationAt >= 0, 'the default tauri bundle argument vector is declared')
+  assert.ok(optInBranchAt > argsDeclarationAt, 'the opt-in branch appends after the exact default declaration')
   const guardAt = bundle.indexOf("Assert-CompiledResourceMirrorsFromJson -ArtifactJsonPath $tauriOutput -Stream 'tauri-build'")
-  const bundleAt = bundle.indexOf("Invoke-Checked 'cargo' @('tauri', 'bundle')")
-  assert.ok(compileAt >= 0 && guardAt > compileAt && bundleAt > guardAt)
+  const bundleAt = bundle.indexOf("Invoke-Checked 'cargo' $bundleArguments")
+  assert.ok(compileAt >= 0 && guardAt > compileAt && bundleAt > guardAt, 'compile -> guard -> bundle order kept')
+  // The post-bundle recheck reuses the SAME $tauriOutput stream and runs only
+  // on the opt-in lane; there is still exactly one compilation.
+  const postBundleGuardAt = bundle.lastIndexOf("Assert-CompiledResourceMirrorsFromJson -ArtifactJsonPath $tauriOutput -Stream 'tauri-build'")
+  assert.ok(postBundleGuardAt > bundleAt, 'the post-bundle guard reuses the same captured stream')
+  assert.match(bundle, /if \(\$null -ne \$observerReceiptRoot\) \{\s*[\s\S]{0,220}?Assert-CompiledResourceMirrorsFromJson -ArtifactJsonPath \$tauriOutput/,
+    'the post-bundle recheck is conditional on the opt-in lane')
   assert.equal((bundle.match(/'tauri', 'build'/g) ?? []).length, 1, 'no second compilation after qualification')
+  // The only packaging delta on the opt-in lane is the single --config pair;
+  // prose that merely mentions the flag does not satisfy this assertion.
+  const configAppends = (bundle.match(/\$bundleArguments \+= @\('--config', \$observerOverridePath\)/g) ?? []).length
+  assert.equal(configAppends, 1, 'the opt-in lane appends exactly one --config pair')
   assert.doesNotMatch(bundle, /Assert-CompiledResourceMirrorsFromTauriStream/)
   assert.match(bundle, /\$nsis = Join-Path \$exeDir 'bundle\\nsis'/)
+})
+
+test('the hash-observer opt-in refuses early on unsupported stages and stays scratch-owned', () => {
+  // Early refusal before ANY stage body runs (Test-Prerequisites and the
+  // resource stages included), so an unsupported Stage can never silently
+  // ignore the receipt root parameter.
+  const refusalAt = code.indexOf('$Stage -notin @(\'bundle\', \'all\')')
+  assert.ok(refusalAt >= 0, 'the stage constraint is implemented')
+  const stageDispatchAt = code.indexOf('$needsResources = $doAll')
+  assert.ok(stageDispatchAt > refusalAt, 'the refusal runs before stage dispatch')
+  const root = code.slice(code.indexOf('function Assert-QualificationHashObserverRoot'), code.indexOf('function Assert-HashObserverOverrideShape'))
+  assert.match(root, /TAURI_CONFIG/, 'an ambient config overlay environment is refused (fail closed)')
+  assert.match(root, /strictly under the build scratch/, 'the receipt root is confined to the build scratch')
+  assert.match(root, /build scratch root itself is a reparse point/, 'the scratch ancestry check covers the root itself')
+  assert.match(root, /qualification receipt root must be unique and empty/, 'the predetermined root stays unique per release run')
+  const shape = code.slice(code.indexOf('function Assert-HashObserverOverrideShape'), code.indexOf('function Invoke-HashObserverOverrideGeneration'))
+  assert.match(shape, /canonical 64-bit Windows PowerShell full path/, 'the observer cmd must be the canonical full-path PowerShell')
+  assert.match(shape, /override args must be exactly 8 canonical items/, 'the invocation argument list is exactly canonical')
+  assert.match(shape, /override %1 placeholder must precede the receipt root/, 'the %1 substitution site is pinned')
+  const generationStart = code.indexOf('function Invoke-HashObserverOverrideGeneration')
+  const nextFunctionAt = code.indexOf('\nfunction ', generationStart + 1)
+  const generation = code.slice(generationStart, nextFunctionAt)
+  assert.match(generation, /prebundle-provenance\.jsonl/, 'observer+override SHA-256 provenance is recorded pre-bundle')
+  assert.match(generation, /observerSha256/, 'observer script digest recorded')
+  assert.match(generation, /overrideSha256/, 'override digest recorded')
 })
 
 test('shared guard passes the same stream mode to executable derivation and verification', () => {

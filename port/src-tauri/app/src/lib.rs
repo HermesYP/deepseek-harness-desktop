@@ -106,9 +106,11 @@ const WINDOWS_CHROME_SCRIPT: &str = r#"
         #root { height: 100% !important; box-sizing: border-box !important; }
         #dsh-native-chrome { position: fixed; inset: 0 0 auto 0; height: 40px; z-index: 1090;
           display: flex; justify-content: flex-end; pointer-events: none; color: var(--dsh-caption-symbol, #0f1115);
-          background: var(--dsh-caption-fill, #f9fafb); font-family: system-ui, sans-serif; }
-        #dsh-native-chrome .dsh-drag { flex: 1; min-width: 0; pointer-events: auto; }
-        #dsh-native-chrome .dsh-buttons { display: flex; width: 138px; height: 40px; pointer-events: auto; }
+          background: transparent; font-family: system-ui, sans-serif; }
+        #dsh-native-chrome .dsh-drag { flex: 1; min-width: 0; pointer-events: auto;
+          margin-left: var(--dsh-windows-menu-start, 48px); background: var(--dsh-caption-fill, #f9fafb); }
+        #dsh-native-chrome .dsh-buttons { display: flex; width: 138px; height: 40px; pointer-events: auto;
+          background: var(--dsh-caption-fill, #f9fafb); }
         #dsh-native-chrome button { width: 46px; height: 40px; padding: 0; border: 0; border-radius: 0;
           color: inherit; background: transparent; display: grid; place-items: center; cursor: default; }
         #dsh-native-chrome button:hover { background: color-mix(in srgb, currentColor 12%, transparent); }
@@ -769,9 +771,12 @@ const DEV_CDP_PORT_ENV: &str = "DSH_DESKTOP_DEV_CDP_PORT";
 /// `None` means "leave wry's default arguments alone", which is the answer for a
 /// release build, for a run without the validated owned-credential namespace
 /// fence, with no requested port, or with a port that is not plain decimal
-/// digits inside `1024..=65535`. Only when every gate passes are the debugging
-/// arguments appended, and they stay loopback-only (`--remote-debugging-address=127.0.0.1`)
-/// with wry's own defaults preserved in front of them.
+/// digits inside `1024..=65535`. Only when every gate passes is the single
+/// debugging port appended, with wry's own defaults preserved in front of it.
+///
+/// Chromium binds its debugging endpoint to loopback on its own, so no
+/// `--remote-debugging-address` is emitted, and no `--remote-allow-origins`
+/// relaxation is added: this lane adds the port switch and nothing else.
 ///
 /// Pure: every input is injected, so the decision is unit-tested without an
 /// environment, a filesystem or a window.
@@ -796,7 +801,7 @@ fn dev_cdp_browser_args(
         return None;
     }
     Some(format!(
-        "{WRY_DEFAULT_BROWSER_ARGS} --remote-debugging-address=127.0.0.1 --remote-debugging-port={port} --remote-allow-origins=*"
+        "{WRY_DEFAULT_BROWSER_ARGS} --remote-debugging-port={port}"
     ))
 }
 
@@ -1897,16 +1902,23 @@ mod dev_cdp_args_tests {
     const FENCE_NAMESPACE: &str = "6284973d-2f3f-4b79-b957-2d35df6e89df";
 
     #[test]
-    fn owned_debug_appends_loopback_cdp_args_and_preserves_wry_defaults() {
+    fn owned_debug_appends_the_port_only_and_preserves_wry_defaults() {
         let args = dev_cdp_browser_args(true, Some(FENCE_NAMESPACE), Some("9341")).unwrap();
+        // The exact reviewed form: wry's defaults, then the one port switch.
+        assert_eq!(
+            args,
+            format!("{WRY_DEFAULT_BROWSER_ARGS} --remote-debugging-port=9341")
+        );
         assert!(
             args.starts_with(WRY_DEFAULT_BROWSER_ARGS),
             "wry's defaults must be preserved verbatim: {args}"
         );
         assert_eq!(args.matches("--disable-features=").count(), 1);
-        assert!(args.contains(" --remote-debugging-address=127.0.0.1"));
         assert!(args.contains(" --remote-debugging-port=9341"));
-        assert!(args.contains(" --remote-allow-origins=*"));
+        // Alignment: Chromium binds its debugging endpoint to loopback itself, and
+        // no origin relaxation is added on this lane.
+        assert!(!args.contains("--remote-debugging-address"));
+        assert!(!args.contains("--remote-allow-origins"));
     }
 
     #[test]
@@ -1950,5 +1962,70 @@ mod dev_cdp_args_tests {
         // The bounds themselves are inclusive.
         assert!(dev_cdp_browser_args(true, Some(FENCE_NAMESPACE), Some("1024")).is_some());
         assert!(dev_cdp_browser_args(true, Some(FENCE_NAMESPACE), Some("65535")).is_some());
+    }
+}
+
+#[cfg(test)]
+mod windows_chrome_script_tests {
+    use super::WINDOWS_CHROME_SCRIPT;
+
+    /// The injected controls must not occlude the SHARED client's fixed caption
+    /// controls (the official sidebar toggle sits at left 12-40 with z-index 30).
+    /// The band is therefore transparent on the host, and the drag child starts
+    /// after the slot the client reserves through `--dsh-windows-menu-start`
+    /// (48px expanded, 84px collapsed) and paints the caption fill itself.
+    #[test]
+    fn chrome_host_is_transparent_and_the_drag_child_starts_after_the_reserved_slot() {
+        let css = WINDOWS_CHROME_SCRIPT;
+        // 1. Host: full-width band, still non-interactive, now unpainted.
+        assert!(
+            css.contains("background: transparent"),
+            "the chrome host must not paint over the client controls: {css}"
+        );
+        assert!(
+            !css.contains("background: var(--dsh-caption-fill, #f9fafb); font-family"),
+            "the host keeps no opaque caption fill: {css}"
+        );
+        assert!(css.contains("inset: 0 0 auto 0"), "{css}");
+        assert!(css.contains("pointer-events: none"), "{css}");
+        // 2. Drag child: begins after the reserved slot and carries the fill.
+        assert!(
+            css.contains("margin-left: var(--dsh-windows-menu-start, 48px)"),
+            "the drag region must start after the reserved client slot: {css}"
+        );
+        assert!(
+            css.contains(".dsh-drag { flex: 1; min-width: 0; pointer-events: auto;"),
+            "{css}"
+        );
+        // 3. Buttons keep the same fill so the band reads as one caption.
+        assert!(
+            css.contains(
+                ".dsh-buttons { display: flex; width: 138px; height: 40px; pointer-events: auto;"
+            ),
+            "{css}"
+        );
+        assert_eq!(
+            css.matches("background: var(--dsh-caption-fill, #f9fafb)")
+                .count(),
+            3,
+            "body, drag child and buttons are the only caption-fill painters: {css}"
+        );
+        // 4. Disposition and palette are unchanged.
+        assert!(css.contains("height: 40px"), "{css}");
+        assert!(css.contains("z-index: 1090"), "{css}");
+        assert!(
+            css.contains("color: var(--dsh-caption-symbol, #0f1115)"),
+            "{css}"
+        );
+        assert!(
+            css.contains("body { background: var(--dsh-caption-fill, #f9fafb); }"),
+            "{css}"
+        );
+        for action in ["minimize", "maximize", "close"] {
+            assert!(
+                css.contains(&format!("data-action=\"{action}\"")),
+                "{action}: {css}"
+            );
+        }
     }
 }

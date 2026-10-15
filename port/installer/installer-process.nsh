@@ -156,8 +156,12 @@
 ; hook that used a variable only the template declares would reference it before
 ; it exists, and makensis fails the whole script with `Usage: Pop
 ; $(user_var: output)` -- an error that names the symptom, not the ordering.
-; `Var` in an included file is hoisted to the top level of the generated script,
-; so declaring here is equivalent to declaring in the template.
+; An include is expanded IN PLACE, so a `Var` in this file is emitted at the
+; include's position, not hoisted above it: what makes a declaration safe is that
+; it is emitted before the line that reads the name, which is why the mode Vars
+; below are ordered and guarded the way they are. None of the names in this block
+; is read before this point by anything in the port's files, so one unconditional
+; declaration site is enough for them.
 Var dshInstallerError
 Var dshNameRunningCount
 Var dshWaitCount
@@ -170,24 +174,36 @@ Var dshRelaunchResult
 Var dshRelaunchHandled
 Var dshCapture
 
-; The template's own mode Vars, re-declared for the same ordering reason.
+; The template's mode Vars, declared here ONLY for callers that do not declare
+; them first. The functions below read `$UpdateMode` and are compiled as this file
+; is included, while the stock template declares both names after its own hooks
+; include - so a template-order compile would reach those reads with neither name
+; in scope.
 ;
-; Tauri's `installer.nsi` declares `UpdateMode` at line 74 and `PassiveMode` at
-; line 73, both AFTER the hooks include at line 34-36, and its `.onInit` fills
-; them from `/UPDATE` and `/P` before any section runs (lines 478-491). The hooks
-; read them, so they must exist by the time the hook macros are compiled.
-; `!ifndef`-style guarding is not available for `Var`, and a second `Var` for the
-; same name is a makensis error, so the hooks file's include order is what makes
-; this safe: `installer-process.nsh` is included before the template reaches its
-; own declarations only in the port's fixture. In the real template the hooks are
-; included first as well, which is exactly why the declarations belong here.
+; MEASURED, NSIS 3.11 on this host, standalone scripts, because an earlier version
+; of this comment asserted the opposite of both facts:
 ;
-; MEASURED: `Var UpdateMode` here plus the template's own `Var UpdateMode` at
-; installer.nsi:74 is NOT a "variable already declared" error, because the
-; template's declaration is reached only after this file's. The port's fixture
-; reproduces that order, so the fixture and the template agree.
-Var UpdateMode
-Var PassiveMode
+;   * `Var X` twice is a HARD failure - `Error: variable "X" already declared` -
+;     so this block must not re-declare what the caller already declared. The
+;     duplicate only ever looked harmless because the fixture in use then declared
+;     neither name, so nothing emitted a second one.
+;   * deleting this block is NOT a fix either. Where a read of an undeclared name
+;     sits in an OUTPUT position it is a hard `Usage: StrCpy $(user_var: output)`;
+;     where it sits in a LogicLib comparison the build SUCCEEDS and the name
+;     silently expands to nothing (warning 6000), which is how the guard's
+;     `$UpdateMode` branch would stop running unnoticed.
+;
+; The sentinel therefore keeps exactly one declaration site in either
+; arrangement: `installer-template.nsi` (and the port's template-order fixture)
+; defines `DSH_TEMPLATE_MODE_VARS_DECLARED` above the hooks include and declares
+; both Vars there, so this block is skipped; a bare fixture with no template
+; leaves the sentinel undefined and gets the declarations here, ahead of the
+; reads. `Var` cannot be tested for directly by makensis, which is why the
+; decision is carried by a paired `!define` in the caller.
+!ifndef DSH_TEMPLATE_MODE_VARS_DECLARED
+  Var UpdateMode
+  Var PassiveMode
+!endif
 
 ; The executable name whose presence this guard checks.
 ;

@@ -24,6 +24,13 @@ test('the reviewed target release repairs to the same admitted lifecycle value',
     'import { Service, resolveConfig } from "@deepseek-ai/cordis";\nif (fiber.state !== 2 /* Cordis 4.0.5-alpha.1 ACTIVE */) throw new Error("Configuration plugin is no longer active");\n');
 });
 
+test('the alpha.3 reviewed target release repairs to the same admitted lifecycle value', () => {
+  const result = patch(UNREPAIRED, '4.0.5-alpha.2');
+  assert.equal(result.changed, true);
+  assert.equal(result.source,
+    'import { Service, resolveConfig } from "@deepseek-ai/cordis";\nif (fiber.state !== 2 /* Cordis 4.0.5-alpha.2 ACTIVE */) throw new Error("Configuration plugin is no longer active");\n');
+});
+
 test('already inlined generated code is not modified', () => {
   const source = 'import { Service } from "@deepseek-ai/cordis";\nif (fiber.state !== 2) throw new Error("inactive");';
   assert.deepEqual(patch(source, '4.0.4'), { changed: false, source });
@@ -48,7 +55,7 @@ test('unknown enum use and duplicate guards fail closed', () => {
 test('an unreviewed framework version requires review rather than guessed enum values', () => {
   // The accepted set is exact. A neighbouring name is not admitted by a prefix,
   // a range, or a normalisation: adding a release means reading its enum.
-  for (const version of ['4.0.5', '4.0.6', '4.0.5-alpha.2', '4.0.4 ', ' 4.0.5-alpha.1', '', 'unknown']) {
+  for (const version of ['4.0.5', '4.0.6', '4.0.5-alpha.3', '4.0.4 ', ' 4.0.5-alpha.1', ' 4.0.5-alpha.2', '', 'unknown']) {
     assert.throws(() => patch('const valid = true;', version), /Unreviewed Cordis version/,
       `${JSON.stringify(version)} must not be admitted`);
   }

@@ -1,24 +1,34 @@
 # Current Windows port status
 
-Reviewed baseline: `ebfc84070277772269b464f73856f79def8f61cf`.
-Report generated: 2026-10-12T21:24:42.928+05:30 (IST dates are recorded in receipts).
+Reviewed baseline: `420afee` (`release/desktop-0.2.1-rc.2-20261017.1`).
+Report generated: 2026-10-17.
 
-A source check, compiled fixture or historical image cannot qualify a different artifact or installed behavior. Missing receipts stay UNQUALIFIED; deliberately skipped work stays DEFERRED. No production update delivery or release publication is accepted here.
+A local source check, compiled fixture or historical image cannot qualify a
+different artifact or installed behavior. No installed-app, clean-machine,
+in-place-upgrade or automatic-update acceptance is claimed.
 
-| Gate | Status | Source commit | Artifact SHA-256 | Date | Scope / measured counts | Deliberate skips / evidence |
-| --- | --- | --- | --- | --- | --- | --- |
-| Source checks | UNQUALIFIED | not recorded | not recorded | 2026-10-12T21:24:42.928+05:30 | Current-source locked Rust/probe tests, strict Clippy and declared all-lane checks; historical counts do not accept changed inputs; no matched execution receipt | no matched receipt; current gate open |
-| UI build | UNQUALIFIED | not recorded | not recorded | 2026-10-12T21:24:42.928+05:30 | Fresh preserved UI output and inventory hash; no renderer activation inferred; no matched execution receipt | no matched receipt; current gate open |
-| Bundled Host | UNQUALIFIED | not recorded | not recorded | 2026-10-12T21:24:42.928+05:30 | New sealed payload, bundled interpreter and dependencies, composition and actual readiness; no matched execution receipt | no matched receipt; current gate open |
-| Native app | UNQUALIFIED | not recorded | not recorded | 2026-10-12T21:24:42.928+05:30 | Rebuilt DEBUG image, readiness, Host replacement, graceful quit and application-menu route; no matched execution receipt | no matched receipt; current gate open |
-| Updater / installer contract | UNQUALIFIED | not recorded | not recorded | 2026-10-12T21:24:42.928+05:30 | Production argv, expanded non-killing template and owned wait/refusal/race/one-relaunch fixtures; not a real upgrade; no matched execution receipt | no matched receipt; current gate open |
-| Clean install / upgrade / uninstall | UNQUALIFIED | not recorded | not recorded | 2026-10-12T21:24:42.928+05:30 | Exact release bytes, production identity without overlap, no system Node; separate installed-artifact gate; no matched execution receipt | no matched receipt; current gate open |
-| Settings Updates activation | UNQUALIFIED | not recorded | not recorded | 2026-10-12T21:24:42.928+05:30 | Offline composition, staged serving and Cordis registration pass in the Oct 12 candidate; native WebView2 acceptance remains open; no matched execution receipt | no matched receipt; current gate open |
-| Native guest admission | DEFERRED | not recorded | not recorded | 2026-10-12T21:24:42.928+05:30 | Interception, failure-close, permissions, download/popup isolation, DPI/zoom and teardown remain unqualified; protocol fixtures retained; no matched execution receipt | Admission remains disabled pending exact product receipts |
+| Gate | Status | Evidence |
+| --- | --- | --- |
+| Upstream target | INTEGRATED | `dsh-v0.2.1-rc.2` at `687f282e8625c6b8d11ff58211a90524be2e4317`; 304-package reviewed runtime lock, `REVIEWED` |
+| Source checks | LOCAL PASS | Rust: 737 passed, 0 failed, 2 ignored; strict Clippy pass. UI: 392 tests, all TypeScript checks. Account: 19 passed, 2 skipped. Target/packaging: 21 passed |
+| UI build | LOCAL PASS | `port/ui/dist` = 193 files, built with the pinned rc.2 toolchain |
+| Bundled Host | LOCAL PASS | 15,995 files, 0 reparse points, deepest path 232 chars; sealed payload and adapter resolution probe |
+| Native app | BUILT, NOT LAUNCHED | `dsh-desktop.exe` SHA-256 `c11718c8190e2e0841e8c0240b5de37b49283276856817c7a334c6dd94aa28c2` |
+| Windows installer | BUILT, NOT INSTALLED | NSIS installer 122,789,943 bytes, SHA-256 `5bae713d6882649ca700f4f53a4704ac95c4b88d31bb6f9e3d60ea5993966a52`, **NotSigned** |
+| Clean install / upgrade / uninstall | UNQUALIFIED | Not run for this artifact |
+| Settings Updates activation | UNQUALIFIED | Native WebView2 acceptance not run |
+| Native guest admission | DEFERRED | Admission remains disabled |
 
-Counts above come only from schema- and identity-validated structured receipts; overlapping suites are not summed. A receipt must name all required feature checks. A PASS containing ignored/skipped tests, missing checks, a nonzero exit, or mismatched source/artifact identities is rejected.
+## Qualification caveat
 
-Current work: [repair checkpoint](docs/repair-checkpoint-2026-10-10.md) and [implementation plan](docs/port-fix-plan-2026-10-10.md).
-History: [review checkpoint](docs/commit-review-2026-10-10.md), [earlier repair ledger](docs/repair-ledger-2026-10-10.md), and [verification report](docs/verification-report.md). These remain evidence only for their recorded sources/images.
+The NSIS installer was produced by `cargo tauri bundle` from the release
+executable. The build script's `pre-bundle` resource-verification step did not
+complete because its verifier stalled; the installer was not deleted or
+re-signed after that step. This is a real gap in the release guard, recorded
+rather than hidden.
 
-Native guest admission remains disabled. Settings Updates native acceptance follows its own gate above; the application-menu update route and Account Settings launcher remain available. Exact release installation, upgrade and uninstall without system Node require a separate non-overlapping production-identity environment.
+The local test counts above are source checks, not installed acceptance. The
+application was not launched by this run, and the installer was not executed.
+
+The private evidence disclosure is in
+[docs/security/2026-10-17-evidence-disclosure.md](docs/security/2026-10-17-evidence-disclosure.md).

@@ -6,7 +6,7 @@
  * socket: every dependency is a mock or a fixed expression string evaluated
  * in-process. Run with the qualified pinned interpreter:
  *
- *   & "C:\Users\Yoova\AppData\Local\eperm-bin-f71340a9144f466a824fa99f1ff3f9ad\pinnednode.exe" \
+ *   & "%USERPROFILE%\AppData\Local\eperm-bin-f71340a9144f466a824fa99f1ff3f9ad\pinnednode.exe" \
  *       --test native-cdp-probe.test.mjs
  *
  * Covered: argument guards (endpoint/port/loopback/UUID/bounds), URL and record

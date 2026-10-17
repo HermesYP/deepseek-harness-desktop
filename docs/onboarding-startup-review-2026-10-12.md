@@ -6,7 +6,7 @@ Date: 2026-10-12. Source checkpoint: `bff03b421bebc9e051236169f15f4e3793127a6d`,
 
 A separate local test portable is assembled at:
 
-`C:\Users\Yoova\Hermes\dsh-desktop\onboarding-startup-fixed-portable\dsh-desktop.exe`
+`%USERPROFILE%\Hermes\dsh-desktop\onboarding-startup-fixed-portable\dsh-desktop.exe`
 
 It contains a newly built Release executable, the freshly built UI, the source adapter and the repaired account plugin. Its Host passed an isolated launch, authenticated settings read/write, orderly shutdown and sampled-descendant settlement check. Its runtime seal verified before and after that run. Native WebView2 interaction with the user's account remains pending. The 1.5-second startup target has **not** been achieved.
 

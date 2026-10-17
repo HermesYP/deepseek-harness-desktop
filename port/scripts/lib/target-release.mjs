@@ -33,17 +33,17 @@ export const TARGET_RELEASE_SCHEMA_VERSION = 1
  */
 export const TARGET_RELEASE = Object.freeze({
   schemaVersion: TARGET_RELEASE_SCHEMA_VERSION,
-  release: '0.2.1-alpha.3',
-  channel: 'alpha',
-  upstreamTag: 'dsh-v0.2.1-alpha.3',
-  upstreamCommit: '2fbf4359b82fb94c03dcce0b831660d87f12ea5c',
+  release: '0.2.1-rc.2',
+  channel: 'rc',
+  upstreamTag: 'dsh-v0.2.1-rc.2',
+  upstreamCommit: '687f282e8625c6b8d11ff58211a90524be2e4317',
   pnpmVersion: '11.28.5',
   nodeVersion: '22.20.0',
   enginesRange: '^22.19.0 || >=24.0.0',
   hostProtocolVersion: 4,
   sessionFormatVersion: 4,
   uiEsbuildVersion: '0.25.12',
-  optionalBundleCount: 11,
+  optionalBundleCount: 12,
 })
 
 const COMMIT = /^[0-9a-f]{40}$/u

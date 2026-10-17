@@ -23,8 +23,7 @@
  * test does not copy 85 MB; the byte-equality rule is exercised by the mismatch case.
  */
 
-import { spawnSync } from 'node:child_process'
-import { existsSync, mkdtempSync, copyFileSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs'
+import { spawnSync } from 'node:child_process'import { existsSync, mkdtempSync, copyFileSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import { dirname, join } from 'node:path'
 import assert from 'node:assert/strict'
@@ -38,6 +37,14 @@ const pinPath = join(portRoot, 'installer', 'node-runtime.json')
 
 const powershell = process.env.DSH_PACKAGING_POWERSHELL
   ?? join(process.env.SystemRoot ?? 'C:\\Windows', 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe')
+
+function rustcExecutable() {
+  if (process.env.DSH_RUSTC) return process.env.DSH_RUSTC
+  const found = spawnSync('where.exe', ['rustc.exe'], { encoding: 'utf8' })
+  return found.status === 0
+    ? found.stdout.split(/\r?\n/u).find(Boolean) ?? 'rustc.exe'
+    : 'rustc.exe'
+}
 
 function findOutsidePinnedNode() {
   const local = process.env.LOCALAPPDATA ?? ''
@@ -111,7 +118,7 @@ test('a candidate that is not byte-identical to the staged interpreter is refuse
     copyFileSync(join(pinned), other)
     // The same bytes as the staged reference would pass; a different reference must
     // not. `rustc.exe` differs from `node.exe` in both digest and version.
-    const staged = process.env.DSH_RUSTC ?? 'C:\\Users\\Yoova\\.cargo\\bin\\rustc.exe'
+    const staged = rustcExecutable()
     if (!existsSync(staged)) return
     const result = resolveInPowerShell({ staged, attested: other })
     assert.equal(result.status, 7, `expected a refusal, got: ${result.output}`)
@@ -120,7 +127,7 @@ test('a candidate that is not byte-identical to the staged interpreter is refuse
 })
 
 test('a byte-identical candidate that is not the pinned Node build is refused on version', windowsOnly, () => {
-  const rustc = 'C:\\Users\\Yoova\\.cargo\\bin\\rustc.exe'
+  const rustc = rustcExecutable()
   if (!existsSync(rustc)) return
   // staged == attested == rustc.exe: the digest rule is satisfied, so the ONLY thing
   // that can refuse this is the version check. That is what makes this test

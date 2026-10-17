@@ -2,11 +2,11 @@
 
 ## Starting point and preservation
 
-- Authorized source root: `C:/Users/Yoova/OneDrive/Dokumen/Coding/dsh`.
+- Authorized source root: `%USERPROFILE%/OneDrive/Dokumen/Coding/dsh`.
 - Reviewed baseline: `bd4641e1c58928add9f0adddf5e9afe8fbd201ea`.
 - Work branch: `repair/installer-runtime-release-20261010`.
 - Preserved upstream: `477b4f420553e8a52c2fbccc464d7561b239c443`; upstream edits remain prohibited.
-- [Verified source checkpoint](C:/Users/Yoova/Hermes/dsh-desktop/port-repair-20261010-220615-33378627/checkpoint.json): 444 tracked-source/plan files archived and hash-read back before edits; dependencies and generated resources are explicitly outside this snapshot's scope.
+- [Verified source checkpoint](%USERPROFILE%/Hermes/dsh-desktop/port-repair-20261010-220615-33378627/checkpoint.json): 444 tracked-source/plan files archived and hash-read back before edits; dependencies and generated resources are explicitly outside this snapshot's scope.
 - Archive SHA-256: `4f0d14e3b4da72065384102e564dac45803fc3615729c22a563520ad76ff99c0`.
 - The older `Documents/dq-5a111a08` repair tree and its unsigned installer are separate sources/bytes. Their 569/20-test counts and installer readback are not acceptance of this Git checkout.
 
@@ -18,13 +18,13 @@ The initial [current status](../STATUS.md) has eight explicit rows. It deliberat
 
 ### Focused status-contract source regression
 
-- [Latest stdout](C:/Users/Yoova/Hermes/dsh-desktop/port-repair-20261010-220615-33378627/status/declaration-green-13/stdout.log) and [runner receipt](C:/Users/Yoova/Hermes/dsh-desktop/port-repair-20261010-220615-33378627/status/declaration-green-13/receipt.json): **6 tests, 6 passed, 0 failed, 0 skipped**, exit 0.
+- [Latest stdout](%USERPROFILE%/Hermes/dsh-desktop/port-repair-20261010-220615-33378627/status/declaration-green-13/stdout.log) and [runner receipt](%USERPROFILE%/Hermes/dsh-desktop/port-repair-20261010-220615-33378627/status/declaration-green-13/receipt.json): **6 tests, 6 passed, 0 failed, 0 skipped**, exit 0.
 - Pinned Node 22.20.0, exact image SHA-256 `fdddbf4581e046b8102815d56208d6a248950bb554570b81519a8a5dacfee95d`; parent and actual runner Medium; owned pipe/write/sentinel/watchdog preflight passed.
 - This accepts only the dirty-tree helper inputs named by the receipt. It is not a committed whole-source gate, application image, installer contract or installed-artifact qualification.
 - Six separately retained RED slots reproduce missing helper/identity guard/incomplete-PASS guard/renderer/duplicate-row guard/explicit declaration defects. Each subsequent GREEN is a distinct slot; failed receipts were not overwritten.
 - Schema validation rejects mismatched source/input/artifact identities, unsupported schema/result values, booleans as counts/exits, accounting mismatches, missing/duplicate feature checks, absent hashed evidence references and invalid execution intervals. PASS cannot hide failures, skips or ignored tests. Receipt schema validation does not authenticate a report's author or replace inspection of its producing stage.
 - The source contract is explicitly named in `run-verification-gate.ps1` with nonempty floors; this source declaration is not an all-lane execution result.
-- [Actual status-generator invocation](C:/Users/Yoova/Hermes/dsh-desktop/port-repair-20261010-220615-33378627/status/generation-11/receipt.json) exited 0 under the attested interpreter and produced the eight-row root status page. The generator accepts structured inputs in `docs/current-status.json`; ordinary prose edits have no invented test counts.
+- [Actual status-generator invocation](%USERPROFILE%/Hermes/dsh-desktop/port-repair-20261010-220615-33378627/status/generation-11/receipt.json) exited 0 under the attested interpreter and produced the eight-row root status page. The generator accepts structured inputs in `docs/current-status.json`; ordinary prose edits have no invented test counts.
 
 ## Entry points and historical evidence
 

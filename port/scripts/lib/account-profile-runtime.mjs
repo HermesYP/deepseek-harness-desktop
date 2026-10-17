@@ -12,6 +12,7 @@ const reviewedGetProfile = new Map([
   ['0.1.7-rc.2', new Set([ACCEPTED_GET_PROFILE, LEGACY_PORTABLE_GET_PROFILE])],
   ['0.2.1-alpha.2', new Set([ACCEPTED_GET_PROFILE])],
   ['0.2.1-alpha.3', new Set([ACCEPTED_GET_PROFILE])],
+  ['0.2.1-rc.2', new Set([ACCEPTED_GET_PROFILE])],
 ])
 
 export function repairAccountProfileRuntime(source, version) {

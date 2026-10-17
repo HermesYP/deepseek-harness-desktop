@@ -34,10 +34,10 @@ consistent with a destination that supplies no scriptable WindowProxy.
 ### Local delivery
 
 Portable application:
-`C:\Users\Yoova\Hermes\dsh-desktop\onboarding-fixed-portable\dsh-desktop.exe`
+`%USERPROFILE%\Hermes\dsh-desktop\onboarding-fixed-portable\dsh-desktop.exe`
 
 Evidence and rollback:
-`C:\Users\Yoova\Hermes\dsh-desktop\repair-evidence\external-links-20261011-3bd0fe66`
+`%USERPROFILE%\Hermes\dsh-desktop\repair-evidence\external-links-20261011-3bd0fe66`
 
 - Production UI built with the pinned Node and byte-identical esbuild copies in
   an owned directory outside the workspace; both child tokens were Medium.

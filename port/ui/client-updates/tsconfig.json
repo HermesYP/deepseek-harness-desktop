@@ -11,7 +11,10 @@
       "@deepseek-ai/dsh-client-ui-primitives": ["../../.upstream/packages/client/ui-primitives/lib/types/index.d.ts"],
       "@deepseek-ai/dsh-client-ui-settings/client": ["../../.upstream/packages/client/ui-settings/lib/types/client/index.d.ts"],
       "@deepseek-ai/dsh-client-locale/client": ["../../.upstream/packages/client/locale/lib/types/client/index.d.ts"],
-      "@deepseek-ai/dsh-client-ui-renderer/client": ["../../.upstream/packages/client/ui-renderer/lib/types/client/index.d.ts"]
+      "@deepseek-ai/dsh-client-ui-renderer/client": ["../../.upstream/packages/client/ui-renderer/lib/types/client/index.d.ts"],
+      "react/jsx-runtime": ["../../.upstream/node_modules/@types/react/jsx-runtime.d.ts"],
+      "react": ["../../.upstream/node_modules/@types/react/index.d.ts"],
+      "react-dom": ["../../.upstream/node_modules/@types/react-dom/index.d.ts"]
     }
   },
   "include": ["src", "../desktop-bridge/index.ts", "../desktop-bridge/protocol.ts"]

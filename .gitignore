@@ -46,5 +46,11 @@ port/ui/.scratch-guests/
 # store and real session data. Never commit it.
 .ref-home/
 
+# Harness homes, credentials and evidence captured against a real session must
+# never be committed. The gate in scripts/check-repo-hygiene.mjs enforces this.
+**/.credentials.yaml
+**/.anonymous-user-id
+/docs/evidence/port-sessions/
+
 # Nested package metadata anywhere in the tree
 **/node_modules/

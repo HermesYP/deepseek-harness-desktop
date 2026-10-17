@@ -35,7 +35,7 @@
 
   Safety: never sets or inherits DSH_HOME from the caller's profile. Any run that
   launches a dsh process uses a throwaway home under port\.scratch\ and a port
-  above 3084, because a live agent harness owns C:\Users\Yoova\.dsh and port 3080.
+  above 3084, because a developer's live agent harness owns the profile home and port 3080.
 
 .PARAMETER Stage
   ui                 build the preserved web client shell

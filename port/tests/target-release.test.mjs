@@ -37,6 +37,7 @@ const PROFILE = `export const OPTIONAL_BUNDLES: readonly string[] = [
   '@deepseek-ai/dsh-experimental-nine',
   '@deepseek-ai/dsh-experimental-ten',
   '@deepseek-ai/dsh-experimental-eleven',
+  '@deepseek-ai/dsh-experimental-twelve',
 ]
 `
 
@@ -53,7 +54,7 @@ function reader(files) {
 function checkoutFiles(overrides = {}) {
   return {
     'package.json': JSON.stringify({
-      version: '0.2.1-alpha.3',
+      version: '0.2.1-rc.2',
       packageManager: 'pnpm@11.28.5',
       engines: { node: '^22.19.0 || >=24.0.0' },
     }),
@@ -89,7 +90,7 @@ test('a malformed release identity is rejected rather than coerced', () => {
 test('declared source constants are read, and an absent constant fails closed', () => {
   assert.equal(extractHostProtocolVersion(HOST_PROTOCOL), 4)
   assert.equal(extractSessionFormatVersion(SESSION_TYPES), 4)
-  assert.equal(extractOptionalBundleCount(PROFILE), 11)
+  assert.equal(extractOptionalBundleCount(PROFILE), 12)
 
   assert.throws(() => extractHostProtocolVersion('// no constant here\n'), /DESKTOP_HOST_PROTOCOL_VERSION/)
   assert.throws(() => extractHostProtocolVersion('export const DESKTOP_HOST_PROTOCOL_VERSION = 4\n'), /DESKTOP_HOST_PROTOCOL_VERSION/)
@@ -104,12 +105,12 @@ test('declared source constants are read, and an absent constant fails closed', 
 test('the facts a checkout declares are read from the checkout, not assumed', () => {
   const facts = readUpstreamFacts('ignored', { readFile: reader(checkoutFiles()) })
   assert.deepEqual(facts, {
-    release: '0.2.1-alpha.3',
+    release: '0.2.1-rc.2',
     pnpmVersion: '11.28.5',
     enginesRange: '^22.19.0 || >=24.0.0',
     hostProtocolVersion: 4,
     sessionFormatVersion: 4,
-    optionalBundleCount: 11,
+    optionalBundleCount: 12,
   })
   assert.throws(() => readUpstreamFacts('ignored', { readFile: reader({}) }), /cannot read package\.json/)
 })
@@ -130,11 +131,11 @@ test('every drifted field is named with both values, and the probe does not pass
   const report = probeUpstreamRelease('/checkout', { readFile: reader(drifted) })
   assert.equal(report.ok, false)
   assert.deepEqual(report.mismatches, [
-    { field: 'release', expected: '0.2.1-alpha.3', found: '0.2.1-alpha.2' },
+    { field: 'release', expected: '0.2.1-rc.2', found: '0.2.1-alpha.2' },
   ])
   assert.throws(
     () => assertUpstreamRelease('/checkout', { readFile: reader(drifted) }),
-    /not the recorded target 0\.2\.1-alpha\.3: release: expected 0\.2\.1-alpha\.3, found 0\.2\.1-alpha\.2/)
+    /not the recorded target 0\.2\.1-rc\.2: release: expected 0\.2\.1-rc\.2, found 0\.2\.1-alpha\.2/)
 })
 
 test('a drifted protocol generation or bundle count is caught', () => {
@@ -146,7 +147,7 @@ test('a drifted protocol generation or bundle count is caught', () => {
   const bundles = probeUpstreamRelease('ignored', {
     readFile: reader(checkoutFiles({ 'packages/boot/app-boot/src/profile.ts': PROFILE.replace("  '@deepseek-ai/dsh-experimental-eleven',\n", '') })),
   })
-  assert.deepEqual(bundles.mismatches, [{ field: 'optionalBundleCount', expected: 11, found: 10 }])
+  assert.deepEqual(bundles.mismatches, [{ field: 'optionalBundleCount', expected: 12, found: 11 }])
 })
 
 test('the shipped checkout is the recorded target when it is present', { skip: !existsSync(join(checkout, 'package.json')) }, () => {

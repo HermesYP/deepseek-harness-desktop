@@ -94,6 +94,25 @@ const reviewedVersions = new Map([
       ['const zh = {', 'e162549f2b24d3fa850b9d00301b92ee536716da045f1a2e332c48e9974e83a5'],
     ],
   }],
+  // 0.2.1-rc.2 changed only the client `apply` block (account notice handling).
+  // The host request/user/getState/readAccountDetail bodies and the client
+  // AccountSection/en/zh blocks are byte-identical to alpha.3. The user schema
+  // block now closes directly before `const wallet`, not `const decimal`.
+  ['0.2.1-rc.2', {
+    request: {
+      block: '9cfe20e68a4581a5f109115870ab98ee258d309fcbc5950c02ec405bb005835c',
+      anchor: REVIEWED_REQUEST_401,
+      replacement: `${SILENT_VERIFICATION_GUARD}\n\t${REVIEWED_REQUEST_401}`,
+    },
+    accountSection: { anchor: ACCOUNT_SECTION_AVATAR, replacement: ACCOUNT_SECTION_AVATAR_REPAIRED },
+    userEnd: '\nconst wallet = z.object({',
+    client: [
+      ['function AccountSection({', '941d715a4843073861fe6137a0917331091ee73c21e04f0aa8456de7289fb595'],
+      ['function apply(ctx) {', 'd6090694de75ab64a731209060fcb2733bfacf5fbf957f4cfd5559484e9f0d66'],
+      ['const en = {', '3f3ce636669ce75254e5bfffcaded7cf4d1c196e09326c58e4ae02243e7259c4'],
+      ['const zh = {', 'e162549f2b24d3fa850b9d00301b92ee536716da045f1a2e332c48e9974e83a5'],
+    ],
+  }],
 ])
 
 const hash = source => createHash('sha256').update(source).digest('hex')
@@ -114,7 +133,7 @@ export function repairAccountDataRuntime(source, version) {
   if (!reviewed) throw new Error('Unreviewed account-data version')
   source = source.replaceAll('\r\n', '\n')
   if (source.includes('DSH_PORT_ACCOUNT_DATA')) throw new Error('Account-data overlay must be applied to the reviewed base once')
-  source = repairBlock(source, 'const user = z.object({', '\nconst decimal =', '8d5f2bf44712c9e338a60497b65859abaa1d4df7405d8ab253a7d6a12a44ec1b', block => {
+  source = repairBlock(source, 'const user = z.object({', reviewed.userEnd ?? '\nconst decimal =', '8d5f2bf44712c9e338a60497b65859abaa1d4df7405d8ab253a7d6a12a44ec1b', block => {
     block = replaceOnce(block, 'email: z.string(),', 'email: z.string().nullish(),')
     block = replaceOnce(block, 'mobile: z.string().optional(),', 'mobile: z.string().nullish(),')
     block = replaceOnce(block, 'mobile_number: z.string().optional(),', 'mobile_number: z.string().nullish(),')
@@ -145,8 +164,14 @@ export function repairAccountDataClient(source, helper, version) {
   source = replaceOnce(source, '\t\tvar module = { exports: {} };', '\t\tvar module = { exports: {} };\n\t\t// DSH_PORT_ACCOUNT_DATA_CLIENT\n' + embedded)
   source = replaceOnce(source, '\t\t\t\t\t\t\t[field]: value', '\t\t\t\t\t\t\t[field]: settledAccountDetail(snapshot.details?.[field], value)')
   source = replaceOnce(source, '\t\t\t\t\trevision++;\n\t\t\t\t\trefreshing = void 0;', '\t\t\t\t\tconst sameSession = sameAccountSession(snapshot.view, frame.value);\n\t\t\t\t\tif (!sameSession) { revision++; refreshing = void 0; }')
-  source = replaceOnce(source, '\t\t\t\t\t\tdetails: void 0,', '\t\t\t\t\t\tdetails: sameSession ? snapshot.details : void 0,')
-  source = replaceOnce(source, '...frame.value.status === "credential-stored" && notice ? { notice } : {}', '...sameSession && notice ? { notice } : {}')
+  source = replaceOnce(source, '\t\t\t\t\tdetails: void 0,', '\t\t\t\t\t\tdetails: sameSession ? snapshot.details : void 0,')
+  const noticeAnchor = version === '0.2.1-rc.2'
+    ? '...frame.value.status === "credential-stored" && previousNotices ? { notices: previousNotices } : {}'
+    : '...frame.value.status === "credential-stored" && notice ? { notice } : {}'
+  const noticeReplacement = version === '0.2.1-rc.2'
+    ? '...sameSession && previousNotices ? { notices: previousNotices } : {}'
+    : '...sameSession && notice ? { notice } : {}'
+  source = replaceOnce(source, noticeAnchor, noticeReplacement)
   source = replaceOnce(source, '...nativePlatform === void 0 ? {} : { openPlatformPage: platformPageOpener(refresh) },', `openPlatformPage: nativePlatform === void 0 ? (page, onClose) => openAccountPageInBrowser(snapshot.view?.links, page, window, () => {
         onClose("returned");
         if (page === "top-up") refreshAfterReturn(refreshing, refresh);

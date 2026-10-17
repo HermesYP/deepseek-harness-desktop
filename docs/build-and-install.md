@@ -5,7 +5,7 @@ described in [`reference-environment.md`](reference-environment.md); the archite
 [`decisions/0001-desktop-architecture.md`](decisions/0001-desktop-architecture.md).
 
 > **Safety rule.** A live agent harness runs on this machine at `http://127.0.0.1:3080` with
-> `DSH_HOME=C:\Users\Yoova\.dsh`. Never run the reference or the port against that home or that port.
+> `DSH_HOME=%USERPROFILE%\.dsh`. Never run the reference or the port against that home or that port.
 > Every command below isolates `DSH_HOME` and uses port 3085+.
 
 > **Approval rule.** Nothing in §5–§7 may be performed without separate explicit approval: installing to

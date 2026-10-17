@@ -1,7 +1,7 @@
 {
   "schemaVersion": 1,
   "sourcePolicySha256": "3c624c26e58ab02ffc8d653bb8a9e8767a63fe0576bc0dbfaa3a5e43f88d973b",
-  "sourceLockSha256": "087cc6686b9b51ba764742eba50e1d3125e9706af7b430a578789281750f9b2a",
+  "sourceLockSha256": "4637cca3b89c4c8d5a147321710e597aa62ec2444a3772ab542be5690893dfe4",
   "patches": [
     {
       "selector": "@earendil-works/pi-ai@1.1.0",

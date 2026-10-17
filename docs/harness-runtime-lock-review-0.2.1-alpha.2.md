@@ -2,11 +2,11 @@
 
 ## Scope and status
 
-**Patched inputs authorised for frozen staging; executable acceptance still pending.** The current [descriptor](<C:/Users/Yoova/Hermes/dsh-desktop/worktrees/harness-0.2.1-alpha.2/port/runtime-locks/windows-x64/descriptor.json>) is `REVIEWED` after the two independent audits below. The outside-workspace patched candidate remains immutable `CANDIDATE`. No dependency resolution or package bytes were hand-edited; the only promotion edit is the copied descriptor's review status. The [promotion receipt](<C:/Users/Yoova/Hermes/dsh-desktop/worktrees/harness-0.2.1-alpha.2/docs/evidence/harness-runtime-lock-promotion-0.2.1-alpha.2.json>) binds both descriptor digests and derives the release identity from the target-release module. The narrow [Git attributes rule](<C:/Users/Yoova/Hermes/dsh-desktop/worktrees/harness-0.2.1-alpha.2/.gitattributes>) preserves the frozen input bytes on Windows checkout.
+**Patched inputs authorised for frozen staging; executable acceptance still pending.** The current [descriptor](<%USERPROFILE%/Hermes/dsh-desktop/worktrees/harness-0.2.1-alpha.2/port/runtime-locks/windows-x64/descriptor.json>) is `REVIEWED` after the two independent audits below. The outside-workspace patched candidate remains immutable `CANDIDATE`. No dependency resolution or package bytes were hand-edited; the only promotion edit is the copied descriptor's review status. The [promotion receipt](<%USERPROFILE%/Hermes/dsh-desktop/worktrees/harness-0.2.1-alpha.2/docs/evidence/harness-runtime-lock-promotion-0.2.1-alpha.2.json>) binds both descriptor digests and derives the release identity from the target-release module. The narrow [Git attributes rule](<%USERPROFILE%/Hermes/dsh-desktop/worktrees/harness-0.2.1-alpha.2/.gitattributes>) preserves the frozen input bytes on Windows checkout.
 
 ## Initial unpatched candidate: approval withdrawn
 
-The initial byte/integrity audit below remains valid, but its staging approval is withdrawn. The original candidate and [archived input copy](<C:/Users/Yoova/AppData/Local/DSH-Qualification/withdrawn021-50837612/windows-x64-initial-candidate/descriptor.json>) remain `CANDIDATE`. The initial audit JSON explicitly records `WITHDRAWN`; it is not the current runtime baseline.
+The initial byte/integrity audit below remains valid, but its staging approval is withdrawn. The original candidate and [archived input copy](<%USERPROFILE%/AppData/Local/DSH-Qualification/withdrawn021-50837612/windows-x64-initial-candidate/descriptor.json>) remain `CANDIDATE`. The initial audit JSON explicitly records `WITHDRAWN`; it is not the current runtime baseline.
 
 - Source: tag `dsh-v0.2.1-alpha.2`, commit `d743267388641bc76f17c45ce8b4c231aed1d32c`.
 - Package manager: pnpm `11.28.5`; archive-pinned Node `22.20.0`, ABI 127.
@@ -17,7 +17,7 @@ The initial byte/integrity audit below remains valid, but its staging approval i
 
 ## Review evidence
 
-[Full generated audit](<C:/Users/Yoova/Hermes/dsh-desktop/worktrees/harness-0.2.1-alpha.2/docs/evidence/harness-runtime-lock-review-0.2.1-alpha.2.json>) records the actual metadata, policy and external dependency differences. Independent derivation of the descriptor matched the generator; all four project metadata files matched byte-for-byte; all **298** candidate tarballs (**24,791,992 bytes**) were regular files with the exact declared sizes and SHA-512 integrities. The tarball directory contained exactly the declared set. Every local DSH package is the target version and every local override points to its declared relative tarball. Strict dependency-build policy, hoisted linking and disabled automatic peers were checked.
+[Full generated audit](<%USERPROFILE%/Hermes/dsh-desktop/worktrees/harness-0.2.1-alpha.2/docs/evidence/harness-runtime-lock-review-0.2.1-alpha.2.json>) records the actual metadata, policy and external dependency differences. Independent derivation of the descriptor matched the generator; all four project metadata files matched byte-for-byte; all **298** candidate tarballs (**24,791,992 bytes**) were regular files with the exact declared sizes and SHA-512 integrities. The tarball directory contained exactly the declared set. Every local DSH package is the target version and every local override points to its declared relative tarball. Strict dependency-build policy, hoisted linking and disabled automatic peers were checked.
 
 The runtime lock contains **346** external package entries; **66** entries are absent from the upstream workspace lock. This includes published unsupported-platform native packages (the workspace uses links), as well as newer dependency versions resolved within package constraints: notably pi-ai/pi-telemetry `1.1.0`, zod `4.6.7` and koffi platform packages `3.3.3`. No unchanged external package identity has a changed integrity. This is **not** a claim that the external closure equals the upstream workspace lock or that integrity proves compatibility. Actual staged Host, account and native chat/tool/cancellation tests must verify it.
 
@@ -36,7 +36,7 @@ Decision: preserve the two exact upstream patch files, pin their reviewed target
 
 ## Regenerated patched candidate: staging approval
 
-The [new independent audit](<C:/Users/Yoova/Hermes/dsh-desktop/worktrees/harness-0.2.1-alpha.2/docs/evidence/harness-runtime-lock-review-patched-0.2.1-alpha.2.json>) and a separate DeepSeek read-only semantic audit agree:
+The [new independent audit](<%USERPROFILE%/Hermes/dsh-desktop/worktrees/harness-0.2.1-alpha.2/docs/evidence/harness-runtime-lock-review-patched-0.2.1-alpha.2.json>) and a separate DeepSeek read-only semantic audit agree:
 
 - Lock SHA-256: `cb390ebcbe4e89ec90ee91c96af2663793a4612d43c006b986c3c0c946e077fd`.
 - Workspace policy SHA-256: `dcf46a8daad5258c1394433fd22753fa64e79dda338f3f7e57e553ddb02ebcc5`.

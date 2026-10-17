@@ -8,10 +8,15 @@
 import { createRequire } from 'node:module'
 import { mkdir, writeFile, readFile } from 'node:fs/promises'
 import { join } from 'node:path'
+import { fileURLToPath } from 'node:url'
 
-const require = createRequire(
-  'file:///C:/Users/Yoova/OneDrive/Dokumen/Coding/dsh/_upstream/node_modules/.pnpm/sharp@0.35.3_@types+node@22.20.0/node_modules/sharp',
-)
+// Resolve `sharp` from the selected upstream checkout instead of a
+// developer-specific pnpm store path. `DSH_UPSTREAM_ROOT` matches the build
+// scripts' upstream selection; the default is the repository's checked-out
+// `_upstream/` tree.
+const upstreamRoot = process.env.DSH_UPSTREAM_ROOT
+  ?? fileURLToPath(new URL('../../../../_upstream/', import.meta.url))
+const require = createRequire(join(upstreamRoot, 'package.json'))
 const sharp = require('sharp')
 
 const [source, outDir] = process.argv.slice(2)

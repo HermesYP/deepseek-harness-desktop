@@ -60,7 +60,7 @@ function relativeTarball(record) {
   return `desktop-packages/${record.file}`
 }
 
-const PATCHED_WINDOWS_UPSTREAM = '2fbf4359b82fb94c03dcce0b831660d87f12ea5c'
+const PATCHED_WINDOWS_UPSTREAM = '687f282e8625c6b8d11ff58211a90524be2e4317'
 const DEPENDENCY_POLICY_FILE = 'runtime-dependency-policy.json'
 const PATCH_PATH = /^patches\/[A-Za-z0-9@._+-]+\.patch$/u
 const REQUIRED_PATCHES = new Map([

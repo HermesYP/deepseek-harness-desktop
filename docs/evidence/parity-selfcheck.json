@@ -1,7 +1,7 @@
 {
   "generatedAt": "2026-09-24T15:29:46.823Z",
-  "referenceRoot": "C:\\Users\\Yoova\\OneDrive\\Dokumen\\Coding\\dsh\\docs\\evidence\\reference",
-  "portRoot": "C:\\Users\\Yoova\\OneDrive\\Dokumen\\Coding\\dsh\\docs\\evidence\\reference",
+  "referenceRoot": "<repo>/docs/evidence/reference",
+  "portRoot": "<repo>/docs/evidence/reference",
   "trackedFacts": [
     "title",
     "lang",

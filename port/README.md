@@ -11,6 +11,15 @@ Read these first:
 - [`../docs/contracts/`](../docs/contracts/) — the binding interfaces.
 - [`../docs/implementation-plan.md`](../docs/implementation-plan.md) — the workstreams, milestones and the definition of done.
 
+## RC.2 upgrade — 2026-10-17
+
+The port now targets upstream `0.2.1-rc.2` (tag `dsh-v0.2.1-rc.2`, commit
+`687f282e8625c6b8d11ff58211a90524be2e4317`). The runtime lock was re-materialized
+from a built rc.2 checkout, the account/Cordis transformations were re-anchored,
+and the repository hygiene fixes (evidence removal, LICENSE/NOTICE, CI gate) are
+part of the same line. Installer qualification for this build is recorded in the
+release notes for the exact artifact; this section alone is not acceptance.
+
 ## Alpha.3 core end-to-end acceptance — 2026-10-15
 
 The [public qualification report](<../docs/releases/desktop-v0.2.1-alpha.3-port.20261015.1.md>) records a rebuilt `0.2.1-alpha.3` Windows app, successful real NSIS packaging, full installed resource SHA-256/physical qualification, and human-confirmed sign-in through the normal browser profile, real chat, terminal, sidebar collapse/reopen and restart persistence. Actual isolated install and preservation-mode uninstall completed; both original registry leaves were exactly restored after a documented PowerShell stderr-wrapper recovery. Shortcut, jump-list and product-autostart inventories were unchanged. Authenticated owned profiles were retained.
@@ -29,18 +38,18 @@ Run the [qualification gate](tests/run-verification-gate.ps1) with an explicitly
 
 | | Value |
 |---|---|
-| Supported target revision (what the port stages from and carries) | `2fbf4359b82fb94c03dcce0b831660d87f12ea5c`, tag [`dsh-v0.2.1-alpha.3`](https://github.com/deepseek-ai/deepseek-harness/releases/tag/dsh-v0.2.1-alpha.3), root package version `0.2.1-alpha.3`, pnpm `11.28.5` |
+| Supported target revision (what the port stages from and carries) | `687f282e8625c6b8d11ff58211a90524be2e4317`, tag [`dsh-v0.2.1-rc.2`](https://github.com/deepseek-ai/deepseek-harness/releases/tag/dsh-v0.2.1-rc.2), root package version `0.2.1-rc.2`, pnpm `11.28.5` |
 | Recorded target descriptor | [`scripts/lib/target-release.mjs`](scripts/lib/target-release.mjs) — the one recorded identity, with a fail-closed probe that validates any checkout against it |
 | Upstream checkout | explicit input, defaulting to `_upstream/`; `-UpstreamRoot <path>` or `$env:DSH_UPSTREAM_ROOT` selects an externally owned checkout. **Read-only either way; nothing under it is ever edited** |
 | Previous reviewed revision | `477b4f420553e8a52c2fbccc464d7561b239c443`, tag `dsh-v0.1.7-rc.2` |
 
-The product version pins (`port/src-tauri/app/tauri.conf.json`, `port/src-tauri/Cargo.toml` and its lockfile, `port/fixtures/protocol/app-info.json`, the port-owned UI packages) are at `0.2.1-alpha.3`.
+The product version pins (`port/src-tauri/app/tauri.conf.json`, `port/src-tauri/Cargo.toml` and its lockfile, `port/fixtures/protocol/app-info.json`, the port-owned UI packages) are at `0.2.1-rc.2`.
 
 **What is recorded, and what is still not claimed.** The staged runtime payload
 (`port/runtime-payload/dsh/package.json`), the reviewed runtime-lock descriptors under
 `port/runtime-locks/` (`win-x64`, `REVIEWED` at the recorded `upstreamCommit`), and the account
 transformation reviews (`port/scripts/lib/account-*-runtime.mjs`) are recorded at this release
-(`0.2.1-alpha.3`) after re-materialization from a *built* checkout of the recorded target
+(`0.2.1-rc.2`) after re-materialization from a *built* checkout of the recorded target
 (sources alone are not enough: the transforms hash reviewed blocks of emitted `lib/`, and the lock
 refresh consumes the target's own pnpm `11.28.5`). The account transforms refuse unreviewed
 versions and emitted shapes, so a payload requires a matching transformation review. See

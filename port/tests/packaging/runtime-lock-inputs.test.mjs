@@ -165,7 +165,7 @@ test('descriptor uses stable relative tarball paths and pins local tarball integ
   } finally { rmSync(f.root, { recursive: true, force: true }) }
 })
 
-const patchedCommit = '2fbf4359b82fb94c03dcce0b831660d87f12ea5c'
+const patchedCommit = '687f282e8625c6b8d11ff58211a90524be2e4317'
 function patchedFixture() {
   const f = fixture()
   f.upstreamCommit = patchedCommit

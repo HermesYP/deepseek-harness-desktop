@@ -81,8 +81,8 @@ test('the recorded target probe accepts only the release the checkout declares',
   if (!existsSync(join(checkout, 'package.json'))) return
   const report = probeUpstreamRelease(checkout)
   assert.equal(report.ok, true, `the shipped checkout must be the recorded target: ${JSON.stringify(report.mismatches)}`)
-  assert.equal(TARGET_RELEASE.release, '0.2.1-alpha.3')
-  assert.equal(TARGET_RELEASE.upstreamCommit, '2fbf4359b82fb94c03dcce0b831660d87f12ea5c')
+  assert.equal(TARGET_RELEASE.release, '0.2.1-rc.2')
+  assert.equal(TARGET_RELEASE.upstreamCommit, '687f282e8625c6b8d11ff58211a90524be2e4317')
   assert.equal(TARGET_RELEASE.pnpmVersion, '11.28.5')
 })
 

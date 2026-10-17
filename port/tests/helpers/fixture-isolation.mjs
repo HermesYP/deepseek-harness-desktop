@@ -434,7 +434,7 @@ export function readFixtureDirectoryAcls(directory, { run }) {
 /**
  * Whether a principal is the account the fixture runs as.
  *
- * Windows resolves an unqualified account to its domain form (`YooPat\Yoova`),
+ * Windows resolves an unqualified account to its domain form (`CONTOSO\user`),
  * so the comparison is on the final segment rather than on the whole string.
  *
  * @param {string} principal

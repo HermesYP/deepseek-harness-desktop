@@ -1,7 +1,7 @@
 {
   "reviewStatus": "WITHDRAWN",
   "withdrawalReason": "The byte/integrity audit remains valid, but this initial standalone resolution omits the two upstream runtime dependency patches and is not authorised for staging.",
-  "candidate": "C:\\Users\\Yoova\\AppData\\Local\\DSH-Qualification\\lock021-input-3ef3ff85\\harness-021-alpha2",
+  "candidate": "%USERPROFILE%\\AppData\\Local\\DSH-Qualification\\lock021-input-3ef3ff85\\harness-021-alpha2",
   "target": "win-x64",
   "upstreamCommit": "d743267388641bc76f17c45ce8b4c231aed1d32c",
   "pnpmVersion": "11.28.5",

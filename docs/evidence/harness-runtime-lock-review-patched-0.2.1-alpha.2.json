@@ -1,6 +1,6 @@
 {
   "reviewStatus": "CANDIDATE",
-  "candidate": "C:\\Users\\Yoova\\AppData\\Local\\DSH-Qualification\\patched021-input-12c2f445\\harness-021-alpha2-patched",
+  "candidate": "%USERPROFILE%\\AppData\\Local\\DSH-Qualification\\patched021-input-12c2f445\\harness-021-alpha2-patched",
   "target": "win-x64",
   "upstreamCommit": "d743267388641bc76f17c45ce8b4c231aed1d32c",
   "pnpmVersion": "11.28.5",

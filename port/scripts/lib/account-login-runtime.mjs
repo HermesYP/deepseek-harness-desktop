@@ -10,6 +10,7 @@ const reviewedStartSignIn = new Map([
   ['0.1.7-rc.2', 'f9a87137ba5112e4e7ce2d6b839368b1977e97cf9c04ee51b70026437ee2aeb7'],
   ['0.2.1-alpha.2', 'f9a87137ba5112e4e7ce2d6b839368b1977e97cf9c04ee51b70026437ee2aeb7'],
   ['0.2.1-alpha.3', 'a7a354ced7b25f553e25ab87e3037f9761fb52a2262709f72cba0c502fce4ca2'],
+  ['0.2.1-rc.2', 'a7a354ced7b25f553e25ab87e3037f9761fb52a2262709f72cba0c502fce4ca2'],
 ])
 
 /** Retain caller validation, then select the owned Host callback for native login. */

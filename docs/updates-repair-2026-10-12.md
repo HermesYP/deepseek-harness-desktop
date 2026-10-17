@@ -78,7 +78,7 @@ evidence, not a native WebView2 screenshot.
 | Final runtime seal | Pass |
 | Preserved shell and authentic plugin production builds | Pass; loader wrapper matches upstream |
 
-Candidate: `C:\Users\Yoova\Hermes\dsh-desktop\updates-fixed-20261012-portable\`.
+Candidate: `%USERPROFILE%\Hermes\dsh-desktop\updates-fixed-20261012-portable\`.
 Native Release SHA-256:
 `b7ae70ec2469de9f871be2ff7144d1851f4687fe90cea5bbd4517fe4a7e38de8`.
 The native executable is freshly compiled. The pinned runtime closure is retained,

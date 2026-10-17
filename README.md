@@ -2,28 +2,30 @@
 
 A faithful port of the [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) web
 application into a **native desktop application**: a **Tauri 2 shell with a Rust application core**,
-shipping the **original web client unchanged**.
+shipping the upstream web client with a small, version-pinned set of port patches.
 
-This is a port, not a redesign. The user interface you see is upstream's own client, built with
-upstream's own official build profile; what is new here is the desktop shell around it — window
-lifecycle, process supervision, the gateway, OS credential storage, and packaging.
+This is a port, not a redesign. The user interface is upstream's own client, built with
+upstream's own official build profile; the port adds account integration and Settings > Updates
+patches at build time. What is new here is the desktop shell around it — window lifecycle,
+process supervision, the gateway, OS credential storage, and packaging.
 
 ## Upstream provenance
 
 - **Upstream:** `deepseek-ai/deepseek-harness`
-- **Pinned commit:** `477b4f420553e8a52c2fbccc464d7561b239c443` (`0.1.7-rc.2`)
-- **License:** MIT — upstream's copyright and license terms apply to upstream code.
+- **Pinned commit:** `687f282e8625c6b8d11ff58211a90524be2e4317` (`0.2.1-rc.2`)
+- **License:** MIT — see [LICENSE](LICENSE) and [NOTICE](NOTICE). Upstream's copyright and license terms apply to upstream-derived code.
 
-This repository contains **no upstream source**. The reference checkout lives in a sibling
-`_upstream/` clone that is deliberately excluded from version control, and the runtime payload the
-installer ships is generated from it at build time. Where upstream code *is* reproduced — the
-preserved client, rebuilt with upstream's official profile — it remains under upstream's license and
-its authorship.
+This repository contains **no upstream source**. The reference checkout is an `_upstream/` clone
+beside the tracked tree (git-ignored); the runtime payload the installer ships is generated from
+it at build time, and the UI build also compiles upstream source through that checkout. Where
+upstream code *is* reproduced — the preserved client, rebuilt with upstream's official profile and
+the version-pinned port patches — it remains under upstream's license and authorship.
 
 ## Status
 
 Start with [current status](STATUS.md) and [the active repair checkpoint](docs/repair-checkpoint-2026-10-10.md). They separate current source checks, exact artifact observations and installed release qualification. [The implementation plan](docs/port-fix-plan-2026-10-10.md) is not execution evidence. [The earlier repair ledger](docs/repair-ledger-2026-10-10.md), [source review](docs/commit-review-2026-10-10.md) and [verification report](docs/verification-report.md) retain historical successes **and failures**; their counts and images do not automatically accept newer bytes.
 
+- The current target is upstream **0.2.1-rc.2** (`687f282e…`); the runtime lock, account/Cordis transforms and product version pins were re-materialized from a built rc.2 checkout. Installer qualification for this build is recorded in the release notes for the exact artifact.
 - Rust owns the Tauri shell, credential boundary, gateway and Host supervision; the preserved client and agent runtime remain TypeScript/Node, not Rust.
 - Packaging pins Node **22.20.0** through [the runtime manifest](<port/installer/node-runtime.json>), not an arbitrary system-Node fallback. Installation with system Node absent still requires disposable clean-machine qualification.
 - Browser/Platform native-guest admission remains disabled. The renderer must use the real web fallback rather than advertise unusable native capabilities.

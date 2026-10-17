@@ -1,0 +1,72 @@
+name: ci
+
+on:
+  push:
+    branches: [master, "release/**"]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  hygiene:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22.20.0"
+      - name: Repository hygiene (paths, tokens, credential stores)
+        run: node scripts/check-repo-hygiene.mjs
+
+  rust:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: port/src-tauri
+      - name: Strict Clippy
+        working-directory: port/src-tauri
+        run: cargo clippy --workspace --all-targets --locked -- -D warnings
+      - name: Workspace tests
+        working-directory: port/src-tauri
+        run: cargo test --workspace --locked
+
+  ui:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      # The preserved UI imports upstream TypeScript source directly, so the
+      # pinned upstream checkout is a build input rather than an optional extra.
+      - uses: actions/checkout@v4
+        with:
+          repository: deepseek-ai/deepseek-harness
+          ref: 687f282e8625c6b8d11ff58211a90524be2e4317
+          path: _upstream
+          fetch-depth: 1
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 11.28.5
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22.20.0"
+          cache: pnpm
+          cache-dependency-path: |
+            port/ui/pnpm-lock.yaml
+            _upstream/pnpm-lock.yaml
+      - name: Install upstream source dependencies
+        working-directory: _upstream
+        run: pnpm install --frozen-lockfile --ignore-scripts
+      - name: Link the upstream UI toolchain
+        shell: pwsh
+        run: ./port/ui/link-toolchain.ps1 -UpstreamRoot "$env:GITHUB_WORKSPACE/_upstream"
+      - name: UI tests
+        working-directory: port/ui
+        run: pnpm test
+      - name: UI type checks
+        working-directory: port/ui
+        run: pnpm test:types

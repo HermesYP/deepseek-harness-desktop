@@ -346,10 +346,10 @@ test('a non-loopback target is refused', () => {
 })
 
 test('an unset or non-isolated DSH_HOME is refused', () => {
-  const scratch = 'C:\\Users\\Yoova\\OneDrive\\Dokumen\\Coding\\dsh\\port\\.scratch'
+  const scratch = '%USERPROFILE%\\OneDrive\\Dokumen\\Coding\\dsh\\port\\.scratch'
   assert.equal(caughtExit(() => assertIsolatedHome(undefined, scratch)).code, 2)
   assert.equal(caughtExit(() => assertIsolatedHome('', scratch)).code, 2)
-  const live = caughtExit(() => assertIsolatedHome('C:\\Users\\Yoova\\.dsh', scratch))
+  const live = caughtExit(() => assertIsolatedHome('%USERPROFILE%\\.dsh', scratch))
   assert.equal(live.code, 2)
   assert.match(live.message, /outside the isolated scratch root/u)
   assert.doesNotThrow(() => assertIsolatedHome(`${scratch}\\run-home`, scratch))

@@ -1,7 +1,7 @@
 # Startup core/deferred roster — desktop port (plan §1, SA-B)
 
-**Payload**: `C:\Users\Yoova\Hermes\dsh-desktop\onboarding-fixed-portable\dsh` — `@deepseek-ai/dsh-desktop-runtime` 0.1.7-rc.2, bundled Node v22.20.0 (win-x64), upstreamCommit `477b4f420553e8a52c2fbccc464d7561b239c443`, flat non-symlinked node_modules (~443 packages).
-**Profile**: `C:\Users\Yoova\.dsh\profiles\desktop` (cordis.yml = empty root `[]`; composition entirely from patch layers: `dsh-base` → `dsh-web-app` (+ its 4 preset files) → `@dsh-port/dsh-desktop-updates-bundle` (verified NO-OP) → profile `cordis.patch.yml` → home `$DSH_HOME/cordis.patch.yml`).
+**Payload**: `%USERPROFILE%\Hermes\dsh-desktop\onboarding-fixed-portable\dsh` — `@deepseek-ai/dsh-desktop-runtime` 0.1.7-rc.2, bundled Node v22.20.0 (win-x64), upstreamCommit `477b4f420553e8a52c2fbccc464d7561b239c443`, flat non-symlinked node_modules (~443 packages).
+**Profile**: `%USERPROFILE%\.dsh\profiles\desktop` (cordis.yml = empty root `[]`; composition entirely from patch layers: `dsh-base` → `dsh-web-app` (+ its 4 preset files) → `@dsh-port/dsh-desktop-updates-bundle` (verified NO-OP) → profile `cordis.patch.yml` → home `$DSH_HOME/cordis.patch.yml`).
 **Verification**: production composition loader (`dsh --dump-config` on the bundled node, isolated fixture). Credential files were never opened; the live portable copy and `_upstream` were never modified; the fixture is a copy of CONFIG files only.
 
 ## 1. Verification (exact command, exit code)
@@ -11,8 +11,8 @@ $env:DSH_HOME  = '<scratch>\fixture\home'   # fixture copy of the live profile, 
 $env:HOME      = $env:DSH_HOME;  $env:USERPROFILE = $env:DSH_HOME
 $env:TEMP      = '<scratch>\fixture\temp';  $env:TMP = $env:TEMP
 $env:NODE_OPTIONS = '';  $env:NODE_PATH = ''
-& 'C:\Users\Yoova\Hermes\dsh-desktop\onboarding-fixed-portable\dsh\node\node.exe' `
-  'C:\Users\Yoova\Hermes\dsh-desktop\onboarding-fixed-portable\dsh\node_modules\@deepseek-ai\dsh\lib\bin.js' `
+& '%USERPROFILE%\Hermes\dsh-desktop\onboarding-fixed-portable\dsh\node\node.exe' `
+  '%USERPROFILE%\Hermes\dsh-desktop\onboarding-fixed-portable\dsh\node_modules\@deepseek-ai\dsh\lib\bin.js' `
   --dump-config --profile desktop-audit 1>dump-config.stdout.txt 2>dump-config.stderr.txt
 # → EXIT=0, stderr empty, 1,268 lines of composed YAML
 ```

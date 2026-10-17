@@ -14,6 +14,7 @@
 //   4.0.4          members [PENDING, LOADING, ACTIVE, FAILED, DISPOSED, UNLOADING] -> ACTIVE 2
 //   4.0.5-alpha.1  members [PENDING, LOADING, ACTIVE, FAILED, DISPOSED, UNLOADING] -> ACTIVE 2
 //   4.0.5-alpha.2  members [PENDING, LOADING, ACTIVE, FAILED, DISPOSED, UNLOADING] -> ACTIVE 2
+//   4.0.5          members [PENDING, LOADING, ACTIVE, FAILED, DISPOSED, UNLOADING] -> ACTIVE 2
 //
 // `port/tests/packaging/config-editor-runtime-import.test.mjs` re-derives that
 // index from the reference checkout, so this table cannot drift from the source
@@ -22,6 +23,7 @@ export const REVIEWED_CORDIS_FIBER_STATES = Object.freeze({
   '4.0.4': 2,
   '4.0.5-alpha.1': 2,
   '4.0.5-alpha.2': 2,
+  '4.0.5': 2,
 })
 
 /**

@@ -16,9 +16,9 @@
     "uiEsbuildVersion": "0.25.12",
     "optionalBundleCount": 11
   },
-  "candidate": "C:/Users/Yoova/AppData/Local/DSH-Qualification/patched021-input-12c2f445/harness-021-alpha2-patched",
-  "reviewedInputRoot": "C:\\Users\\Yoova\\Hermes\\dsh-desktop\\worktrees\\harness-0.2.1-alpha.2\\port\\runtime-locks\\windows-x64",
-  "withdrawnInputBackup": "C:/Users/Yoova/AppData/Local/DSH-Qualification/withdrawn021-50837612/windows-x64-initial-candidate",
+  "candidate": "%USERPROFILE%/AppData/Local/DSH-Qualification/patched021-input-12c2f445/harness-021-alpha2-patched",
+  "reviewedInputRoot": "%USERPROFILE%\\Hermes\\dsh-desktop\\worktrees\\harness-0.2.1-alpha.2\\port\\runtime-locks\\windows-x64",
+  "withdrawnInputBackup": "%USERPROFILE%/AppData/Local/DSH-Qualification/withdrawn021-50837612/windows-x64-initial-candidate",
   "candidateDescriptorSha256": "1d2301923a385affa0d259e051cb9cfafa5c5ef2bf10c0d18c9ca39ab61712b0",
   "reviewedDescriptorSha256": "208cc9021fa93a9ad62f0dc73637e41deca35d0c7e45dbfa1e6897dc2ed189ce",
   "lockSha256": "cb390ebcbe4e89ec90ee91c96af2663793a4612d43c006b986c3c0c946e077fd",

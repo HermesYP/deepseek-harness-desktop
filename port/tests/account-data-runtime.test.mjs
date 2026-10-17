@@ -109,16 +109,16 @@ test('reviewed Host and client transforms preserve authentic loader boundaries a
  assert.ok(result.source.includes('accountRetry: "Retry account details"'))
  assert.throws(()=>repairAccountDataClient(client+'unreviewed',helper,accountUpstreamVersion))
  assert.throws(()=>repairAccountDataClient(client.replace('revision++;','revision += 2;'),helper,accountUpstreamVersion))
- assert.doesNotThrow(()=>repairAccountDataClient(client.replaceAll('C:\\Users\\Yoova\\OneDrive','D:\\CleanCheckout'),helper,accountUpstreamVersion),'build-location metadata must not reject the reviewed account semantics')
+ assert.doesNotThrow(()=>repairAccountDataClient(client.replaceAll('%USERPROFILE%\\OneDrive','D:\\CleanCheckout'),helper,accountUpstreamVersion),'build-location metadata must not reject the reviewed account semantics')
 })
 
 test('reviewed pins are version-exact: alpha.3 bytes are never approved by an alpha.2 entry',()=>{
  const host=readAccountUpstream('packages/credentials/deepseek-account-platform/lib/index.js')
  const client=readAccountUpstream('packages/client/ui-settings-account/lib/client.js')
  const helper=readFileSync(new URL('../ui/account-data/client-state.mjs',import.meta.url),'utf8')
- if(accountUpstreamVersion!=='0.2.1-alpha.3')return
+ if(accountUpstreamVersion==='0.2.1-alpha.2')return
  // The explicit literals are the point: the alpha.2 pins must reject alpha.3 bytes.
- assert.throws(()=>repairAccountDataRuntime(host,'0.2.1-alpha.2'),/Unreviewed account-data semantics/,'the host request pin may not be shared across releases')
+ assert.throws(()=>repairAccountDataRuntime(host,'0.2.1-alpha.2'),/Unreviewed account-data (semantics|shape)/,'the host request pin may not be shared across releases')
  assert.throws(()=>repairAccountDataClient(client,helper,'0.2.1-alpha.2'),/Unreviewed account-data semantics/,'the client pins may not be shared across releases')
  // Both new alpha.3 anchors are guarded: a moved 401 branch and a changed
  // AccountSection signature must fail the review rather than pass silently.

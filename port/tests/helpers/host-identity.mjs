@@ -147,6 +147,6 @@ export function assertIsolatedHome(home, scratchRoot) {
   const target = normalize(home)
   const root = normalize(scratchRoot)
   if (!pathApi.isAbsolute(home) || !target.startsWith(`${root}${pathApi.sep}`)) {
-    refuse(`refusing to use DSH_HOME ${home}: it is outside the isolated scratch root ${scratchRoot}. The live home C:\\Users\\Yoova\\.dsh must never be touched by these gates.`)
+    refuse(`refusing to use DSH_HOME ${home}: it is outside the isolated scratch root ${scratchRoot}. The live home %USERPROFILE%\\.dsh must never be touched by these gates.`)
   }
 }

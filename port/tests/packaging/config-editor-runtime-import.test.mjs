@@ -55,7 +55,7 @@ test('unknown enum use and duplicate guards fail closed', () => {
 test('an unreviewed framework version requires review rather than guessed enum values', () => {
   // The accepted set is exact. A neighbouring name is not admitted by a prefix,
   // a range, or a normalisation: adding a release means reading its enum.
-  for (const version of ['4.0.5', '4.0.6', '4.0.5-alpha.3', '4.0.4 ', ' 4.0.5-alpha.1', ' 4.0.5-alpha.2', '', 'unknown']) {
+  for (const version of ['4.0.6', '4.0.5-alpha.3', '4.0.4 ', ' 4.0.5-alpha.1', ' 4.0.5-alpha.2', '', 'unknown']) {
     assert.throws(() => patch('const valid = true;', version), /Unreviewed Cordis version/,
       `${JSON.stringify(version)} must not be admitted`);
   }

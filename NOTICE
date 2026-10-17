@@ -1,0 +1,45 @@
+DeepSeek Harness Desktop
+Copyright (c) 2026 DeepSeek
+
+This product is a desktop port of the DeepSeek Harness web application and
+distributes software derived from it.
+
+--------------------------------------------------------------------------
+1. Upstream-derived client (shipped inside the installer)
+--------------------------------------------------------------------------
+DeepSeek Harness (upstream project: deepseek-ai/deepseek-harness)
+Pinned upstream commit: 687f282e8625c6b8d11ff58211a90524be2e4317 (0.2.1-rc.2)
+Licensed under the MIT License. Copyright (c) 2026 DeepSeek.
+
+The desktop installer ships the upstream web client, built with upstream's
+own official build profile, under port/runtime-payload/dsh/. The runtime payload
+is generated at build time from a reference checkout of the upstream repository
+and is NOT tracked in this source repository. The upstream MIT license text
+governs that payload and is reproduced in the LICENSE file at the root of this
+repository.
+
+The port also applies a small, version-pinned set of source patches to the
+emitted client and host bundles for account integration and Settings > Updates.
+Those patched files remain upstream-derived and are governed by the same MIT
+license.
+
+--------------------------------------------------------------------------
+2. Bundled Node.js runtime
+--------------------------------------------------------------------------
+Node.js 22.20.0 (Linux/macOS/Windows x64 + arm64)
+https://nodejs.org/dist/v22.20.0/
+Licensed under the MIT License. Copyright (c) OpenJS Foundation and other
+contributors.
+
+The pinned interpreter is staged from the official nodejs.org archive whose
+SHA-256 digest is declared in port/installer/node-runtime.json. The archive's
+license text is copied into the payload as NODE-LICENSE.txt by
+port/scripts/lib/node-runtime.psm1 and is verified to be present, non-empty
+and non-symlinked by port/scripts/lib/seal-runtime.mjs.
+
+--------------------------------------------------------------------------
+3. Third-party components
+--------------------------------------------------------------------------
+The runtime payload bundles its dependency closure, whose packages retain
+their own license files in place under the payload's node_modules tree.
+Refer to each package's own license terms.

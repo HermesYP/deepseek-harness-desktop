@@ -6,7 +6,7 @@
     "dsf": 1
   },
   "theme": "light",
-  "baseUrl": "http://127.0.0.1:3085/?token=q8Fi7HeSe9Z518tc8ROnQcmBhQUsM1ELGb3SKgW1zAo",
+  "baseUrl": "http://127.0.0.1:3085/?token=<redacted>",
   "trace": [
     {
       "step": "00-boot",

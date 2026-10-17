@@ -600,7 +600,7 @@ fn validate_host_prerequisites(
         return Err(dsh_core::error::DshError::other(
             "host_adapter_missing",
             format!(
-                "The Desktop Host adapter is missing at {}. Reinstall the application or set DSH_DESKTOP_RUNTIME_ADAPTER to a valid adapter file.",
+                "The Desktop Host adapter is missing at {}. Reinstall the application; its packaged runtime payload is incomplete.",
                 adapter.display()
             ),
         ));
@@ -628,7 +628,7 @@ fn validate_host_prerequisites(
             dsh_core::error::DshError::other(
                 "node_missing",
                 format!(
-                    "Node.js 22.19+ or 24+ is required to run the Desktop Host. Install a supported Node.js version and ensure it is on PATH, or set DSH_DESKTOP_NODE to its executable. Checked: {}.",
+                    "The bundled Node.js runtime is missing or unusable at {}. Reinstall the application; its packaged runtime payload is incomplete.",
                     node.display()
                 ),
             )
@@ -653,7 +653,7 @@ fn validate_host_prerequisites(
         return Err(dsh_core::error::DshError::other(
             "node_unsupported",
             format!(
-                "Node.js 22.19+ or 24+ is required to run the Desktop Host. Install a supported Node.js version and ensure it is on PATH, or set DSH_DESKTOP_NODE to its executable. Checked: {}.",
+                "The bundled Node.js runtime at {} reports an unsupported version. Reinstall the application; its packaged runtime payload is incomplete.",
                 node.display()
             ),
         ));
@@ -739,9 +739,13 @@ fn resolve_shell_directory(
         .map(|directory| directory.join("ui"))
         .map_err(|error| dsh_core::error::DshError::other("resource_dir", error.to_string()));
     select_shell_directory(
-        std::env::var("DSH_DESKTOP_SHELL_DIR")
-            .ok()
-            .map(std::path::PathBuf::from),
+        cfg!(debug_assertions)
+            .then(|| {
+                std::env::var("DSH_DESKTOP_SHELL_DIR")
+                    .ok()
+                    .map(std::path::PathBuf::from)
+            })
+            .flatten(),
         bundled_ui,
         bundled_ui_present,
         development_source,
@@ -867,19 +871,29 @@ fn setup(app: &mut tauri::App) -> Result<(), dsh_core::error::DshError> {
         return record_startup_failure(app, &error);
     }
 
-    let runtime_dir = std::env::var("DSH_DESKTOP_RUNTIME_DIR")
+    // Development-only path overrides. A release build always uses the packaged
+    // payload beside its executable; an environment variable must never be able
+    // to redirect the privileged desktop origin at arbitrary local code.
+    let runtime_dir = cfg!(debug_assertions)
+        .then(|| std::env::var("DSH_DESKTOP_RUNTIME_DIR").ok())
+        .flatten()
         .map(std::path::PathBuf::from)
-        .unwrap_or_else(|_| exe_dir.join("dsh"));
+        .unwrap_or_else(|| exe_dir.join("dsh"));
     // The runtime manifest identity, the pinned Node and the adapter are
     // validated before any durable write, so a broken runtime payload can no
     // longer leave a durable secret (or user data) behind.
-    let node = match resolve_desktop_node(&runtime_dir, std::env::var_os("DSH_DESKTOP_NODE")) {
+    let node_override = cfg!(debug_assertions)
+        .then(|| std::env::var_os("DSH_DESKTOP_NODE"))
+        .flatten();
+    let node = match resolve_desktop_node(&runtime_dir, node_override) {
         Ok(node) => node,
         Err(error) => return record_startup_failure(app, &error),
     };
-    let adapter = std::env::var("DSH_DESKTOP_RUNTIME_ADAPTER")
+    let adapter = cfg!(debug_assertions)
+        .then(|| std::env::var("DSH_DESKTOP_RUNTIME_ADAPTER").ok())
+        .flatten()
         .map(std::path::PathBuf::from)
-        .unwrap_or_else(|_| runtime_dir.join("adapter.mjs"));
+        .unwrap_or_else(|| runtime_dir.join("adapter.mjs"));
     if let Err(error) = validate_host_prerequisites(&node, &adapter, &runtime_dir) {
         return record_startup_failure(app, &error);
     }
@@ -964,7 +978,7 @@ fn setup(app: &mut tauri::App) -> Result<(), dsh_core::error::DshError> {
         tracing::info!(%namespace, "using isolated qualification credential namespace");
     }
 
-    let settings = match SettingsStore::open(&paths.settings) {
+    let settings = match SettingsStore::open_recovering(&paths.settings) {
         Ok(settings) => settings,
         Err(error) => return record_startup_failure(app, &error),
     };
@@ -1032,9 +1046,10 @@ fn setup(app: &mut tauri::App) -> Result<(), dsh_core::error::DshError> {
         adapter,
         runtime_dir.clone(),
         desktop.profile.clone(),
-        std::env::var("DSH_DESKTOP_PRIMARY_RUNTIME_DIR")
-            .map(std::path::PathBuf::from)
-            .ok(),
+        cfg!(debug_assertions)
+            .then(|| std::env::var("DSH_DESKTOP_PRIMARY_RUNTIME_DIR").ok())
+            .flatten()
+            .map(std::path::PathBuf::from),
         None,
         None,
     );

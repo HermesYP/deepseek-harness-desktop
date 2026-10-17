@@ -61,6 +61,7 @@ Never claimed as delivered. See [`build-and-install.md`](build-and-install.md) �
 | E1 | Five of nineteen capture steps per run record an `actionError` and no DOM facts. | The error text is kept in `trace.json` rather than the row being dropped, so the gap is visible. Cause (corrected per review finding R-07): the modal overlay mask intercepts pointer events, so clicks behind it never land — several steps never got past the modal. |
 | E2 | The reference version badge reads `0.1.7-rc.2-477b4f4-dirty`. | `pnpm install` / `pnpm run build` write artifacts into the reference checkout. Cosmetic. |
 | E3 | The parity matrix's status column is only authoritative after the acceptance pass updates `verification-report.md` §4. | Any row still reading `specified` is **not** `verified`. |
+| E4 | Windows Job Object membership is assigned immediately **after** `CreateProcess` returns, not at creation. | A Host-spawned grandchild created in that small window would escape the job. Closing it requires a suspended create or a job-list create attribute; the residual is documented in `proc_tree.rs` rather than claimed away. |
 
 ## F. Honesty constraints stated for the record
 

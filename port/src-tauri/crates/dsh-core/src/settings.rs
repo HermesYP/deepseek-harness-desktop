@@ -196,6 +196,35 @@ impl SettingsStore {
         })
     }
 
+    /// Open the store, quarantining a malformed document instead of refusing to
+    /// start. A future `schemaVersion` is still refused: it belongs to a newer
+    /// application and silently discarding it would be data loss.
+    ///
+    /// The bad file is renamed beside the original (`settings.corrupt-<utc>.json`)
+    /// so the user can recover it manually. The original write is never modified.
+    pub fn open_recovering(path: &Path) -> Result<Self, DshError> {
+        match Self::open(path) {
+            Ok(store) => Ok(store),
+            Err(DshError::Io { ref operation, .. }) if operation == "parse" => {
+                let stamp = chrono::Utc::now().format("%Y%m%dT%H%M%SZ");
+                let quarantine = path.with_extension(format!("corrupt-{stamp}.json"));
+                std::fs::rename(path, &quarantine).map_err(|error| {
+                    DshError::io(
+                        "quarantine settings",
+                        Some(path.display().to_string()),
+                        &error,
+                    )
+                })?;
+                eprintln!(
+                    "settings document was malformed; preserved at {} and a default document was loaded",
+                    quarantine.display()
+                );
+                Self::open(path)
+            }
+            Err(error) => Err(error),
+        }
+    }
+
     /// Read one setting; `None` when the key is unset.
     pub fn get(&self, key: &str) -> Result<Option<&SettingValue>, DshError> {
         validate_key(key)?;
@@ -452,6 +481,44 @@ mod tests {
             SettingsStore::open(&path),
             Err(DshError::Io { .. })
         ));
+    }
+
+    #[test]
+    fn malformed_document_is_quarantined_by_the_recovering_open() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("settings.json");
+        std::fs::write(&path, "{not json").expect("seed");
+        let store = SettingsStore::open_recovering(&path).expect("recover");
+        assert!(store.list().is_empty(), "a default document is loaded");
+        let quarantined: Vec<_> = std::fs::read_dir(dir.path())
+            .expect("read_dir")
+            .filter_map(|entry| entry.ok())
+            .filter(|entry| {
+                entry
+                    .file_name()
+                    .to_string_lossy()
+                    .starts_with("settings.corrupt-")
+            })
+            .collect();
+        assert_eq!(quarantined.len(), 1, "the malformed file is preserved once");
+        assert_eq!(
+            std::fs::read_to_string(quarantined[0].path()).expect("quarantine read"),
+            "{not json"
+        );
+    }
+
+    #[test]
+    fn future_schema_is_not_quarantined() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("settings.json");
+        let raw = r#"{"schemaVersion":2,"settings":{}}"#;
+        std::fs::write(&path, raw).expect("seed");
+        assert!(SettingsStore::open_recovering(&path).is_err());
+        assert_eq!(
+            std::fs::read_to_string(&path).expect("reread"),
+            raw,
+            "a future schema must not be renamed or discarded"
+        );
     }
 
     #[test]

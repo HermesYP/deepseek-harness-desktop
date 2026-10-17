@@ -4,8 +4,13 @@
 //! reference runtime path has no job object and no tree kill, so grandchildren
 //! can survive a Host SIGKILL. This module guarantees the opposite:
 //! - Windows: one Job Object with `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE`. The
-//!   Host child is assigned at spawn and every descendant inherits membership,
-//!   so no child can outlive the shell and a forced stop kills the whole tree.
+//!   Host child is assigned **immediately after `CreateProcess` returns** and
+//!   every descendant created after that assignment inherits membership, so a
+//!   forced stop kills the tree. The residual pre-assignment window is recorded
+//!   rather than hidden: a grandchild the Host starts before
+//!   `AssignProcessToJobObject` would escape, and closing that window requires a
+//!   suspended create or a job-list create attribute, which this crate does not
+//!   use.
 //! - Unix: the child starts in its own process group (`setpgid`), so `killpg`
 //!   reaches the whole tree on shutdown.
 //!
